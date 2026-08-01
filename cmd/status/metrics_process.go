@@ -9,26 +9,66 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/shirou/gopsutil/v4/process"
 )
 
 var collectProcessesFunc = collectProcesses
 
 func collectProcesses() ([]ProcessInfo, error) {
-	if runtime.GOOS != "darwin" {
-		return nil, nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
+	if runtime.GOOS == "darwin" {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
 
-	out, err := runCmd(ctx, "ps", "-Aceo", "pid=,ppid=,pcpu=,pmem=,rss=,comm=", "-r")
-	if err != nil {
-		out, err = runCmd(ctx, "ps", "aux")
+		out, err := runCmd(ctx, "ps", "-Aceo", "pid=,ppid=,pcpu=,pmem=,rss=,comm=", "-r")
 		if err != nil {
-			return nil, err
+			out, err = runCmd(ctx, "ps", "aux")
+			if err != nil {
+				return nil, err
+			}
+			return parsePsAuxOutput(out), nil
 		}
-		return parsePsAuxOutput(out), nil
+		return parseProcessOutput(out), nil
 	}
-	return parseProcessOutput(out), nil
+
+	return collectProcessesGopsutil()
+}
+
+func collectProcessesGopsutil() ([]ProcessInfo, error) {
+	pids, err := process.Pids()
+	if err != nil {
+		return nil, err
+	}
+
+	procs := make([]ProcessInfo, 0, len(pids))
+	for _, pid := range pids {
+		p, err := process.NewProcess(pid)
+		if err != nil {
+			continue
+		}
+		name, err := p.Name()
+		if err != nil {
+			continue
+		}
+		cpuVal, _ := p.CPUPercent()
+		memVal, _ := p.MemoryPercent()
+		var rssBytes uint64
+		if memInfo, err := p.MemoryInfo(); err == nil && memInfo != nil {
+			rssBytes = memInfo.RSS
+		}
+		ppid, _ := p.Ppid()
+
+		procs = append(procs, ProcessInfo{
+			PID:         int(pid),
+			PPID:        int(ppid),
+			Name:        name,
+			Command:     name,
+			CPU:         cpuVal,
+			Memory:      float64(memVal),
+			MemoryBytes: rssBytes,
+		})
+	}
+	return procs, nil
 }
 
 func parseProcessOutput(raw string) []ProcessInfo {
