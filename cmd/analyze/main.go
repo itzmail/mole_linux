@@ -1,4 +1,4 @@
-//go:build darwin
+//go:build darwin || linux
 
 package main
 
@@ -138,16 +138,11 @@ func createOverviewEntriesWithInsights(insightEntries []dirEntry) []dirEntry {
 	home := os.Getenv("HOME")
 	entries := []dirEntry{}
 
-	// Separate Home and ~/Library to avoid double counting.
 	if home != "" {
 		entries = append(entries, dirEntry{Name: "Home", Path: home, IsDir: true, Size: -1})
 
-		userLibrary := filepath.Join(home, "Library")
-		if _, err := os.Stat(userLibrary); err == nil {
-			// Renamed from "App Library" to "User Library" so it parallels
-			// "System Library" (`/Library`) and is not confused with
-			// `/Applications`. Path unchanged.
-			entries = append(entries, dirEntry{Name: "User Library", Path: userLibrary, IsDir: true, Size: -1})
+		if extra, ok := platformHomeInsightEntry(home); ok {
+			entries = append(entries, extra)
 		}
 	}
 
@@ -157,13 +152,6 @@ func createOverviewEntriesWithInsights(insightEntries []dirEntry) []dirEntry {
 	entries = append(entries, insightEntries...)
 
 	return entries
-}
-
-func systemOverviewRoots() []dirEntry {
-	return []dirEntry{
-		{Name: "Applications", Path: "/Applications", IsDir: true, Size: -1},
-		{Name: "System Library", Path: "/Library", IsDir: true, Size: -1},
-	}
 }
 
 func sumKnownEntrySizes(entries []dirEntry) int64 {
