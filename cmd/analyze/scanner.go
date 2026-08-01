@@ -863,7 +863,13 @@ func getDirectorySizeFromDuWithExcludeAndIgnores(path string, excludePath string
 
 		args := []string{"-skPx"}
 		for _, ignoreName := range ignoreNames {
-			args = append(args, "-I", ignoreName)
+			// BSD du (macOS) takes -I <pattern>; GNU du (Linux) has no -I
+			// flag at all and uses --exclude=<pattern> instead.
+			if runtime.GOOS == "darwin" {
+				args = append(args, "-I", ignoreName)
+			} else {
+				args = append(args, "--exclude="+ignoreName)
+			}
 		}
 		args = append(args, target)
 		cmd := exec.CommandContext(ctx, "du", args...)
@@ -1104,5 +1110,5 @@ func getLastAccessTimeFromInfo(info fs.FileInfo) time.Time {
 	if !ok {
 		return time.Time{}
 	}
-	return time.Unix(stat.Atimespec.Sec, stat.Atimespec.Nsec)
+	return lastAccessTimeFromStat(stat)
 }
