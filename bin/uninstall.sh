@@ -167,7 +167,7 @@ uninstall_acquire_metadata_lock() {
     local attempts=0
 
     while ! mkdir "$lock_dir" 2> /dev/null; do
-        ((attempts++))
+        attempts=$((attempts + 1))
         if [[ $attempts -ge 40 ]]; then
             return 1
         fi
@@ -270,7 +270,7 @@ start_uninstall_metadata_refresh() {
 
         while IFS='|' read -r app_path app_mtime bundle_id display_name; do
             [[ -n "$app_path" && -d "$app_path" ]] || continue
-            ((worker_idx++))
+            worker_idx=$((worker_idx + 1))
             local worker_output="${updates_file}.${worker_idx}"
 
             # stdin from /dev/null: these workers never read the terminal, and a
@@ -733,7 +733,7 @@ _scan_resolve_uncached() {
     # this script targets) treats `"${empty[@]}"` as unbound under `set -u`.
     if ((total_apps > 0)); then
         for app_data_tuple in "${app_data_tuples[@]}"; do
-            ((app_count++))
+            app_count=$((app_count + 1))
             # Redirect stdin from /dev/null so the perl timeout fallback used by
             # process_app_metadata does not hand the controlling terminal to its
             # timed mdls/du child from this background worker (issue #1222).
@@ -1112,7 +1112,7 @@ scan_applications() {
                 else
                     printf "\r\033[K%s %s" "$c" "$status_message" >&2
                 fi
-                ((i++))
+                i=$((i + 1))
                 sleep 0.1 2> /dev/null || sleep 1
             done
         ) &
@@ -1539,7 +1539,7 @@ main() {
             local last_display
             last_display=$(uninstall_normalize_last_used_display "$last_used")
             printf "%d. %s  %s  |  Last: %s\n" "$index" "$app_name" "$size_display" "$last_display"
-            ((index++))
+            index=$((index + 1))
         done
 
         printf '\n'
@@ -1716,7 +1716,7 @@ main() {
             local printf_name_width=$((name_byte_count + padding_needed))
 
             printf "%d. %-*s  %*s  |  Last: %s\n" "$index" "$printf_name_width" "$name_cell" "$max_size_width" "$size_cell" "$last_cell"
-            ((index++))
+            index=$((index + 1))
         done
 
         batch_uninstall_applications

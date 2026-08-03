@@ -21,12 +21,16 @@ source "$SCRIPT_DIR/../lib/clean/hints.sh"
 source "$SCRIPT_DIR/../lib/clean/launch_services.sh"
 source "$SCRIPT_DIR/../lib/clean/system.sh"
 source "$SCRIPT_DIR/../lib/clean/user.sh"
+if [[ "$(uname -s)" == "Linux" ]]; then
+    source "$SCRIPT_DIR/../lib/clean/linux.sh"
+fi
 
 SYSTEM_CLEAN=false
 DRY_RUN=false
 PROTECT_FINDER_METADATA=false
 EXTERNAL_VOLUME_TARGET=""
 IS_M_SERIES=$([[ "$(uname -m)" == "arm64" ]] && echo "true" || echo "false")
+IS_LINUX=$([[ "$(uname -s)" == "Linux" ]] && echo "true" || echo "false")
 
 # Whitelist and preview belong to the invoking user even when the whole
 # command runs as root. Root dry-runs stage preview content in a root-owned
@@ -821,7 +825,11 @@ get_cleanup_path_size_kb() {
     # with a zero/invalid stat we also fall back; a symlink reports 0 directly.
     if [[ -L "$path" || -f "$path" ]] && command -v stat > /dev/null 2>&1; then
         local bytes
-        bytes=$(stat -f%z "$path" 2> /dev/null || echo "0")
+        if [[ "$IS_LINUX" == "true" ]]; then
+            bytes=$(stat -c%s "$path" 2> /dev/null || echo "0")
+        else
+            bytes=$(stat -f%z "$path" 2> /dev/null || echo "0")
+        fi
         if [[ "$bytes" =~ ^[0-9]+$ && "$bytes" -gt 0 ]]; then
             echo $(((bytes + 1023) / 1024))
             return 0
@@ -1059,7 +1067,7 @@ _safe_clean_impl() {
         [[ $max_sample -gt $sample_size ]] && sample_size=$max_sample
 
         for ((i = 0; i < sample_size && i < ${#existing_paths[@]}; i++)); do
-            [[ -d "${existing_paths[i]}" ]] && ((dir_count++))
+            [[ -d "${existing_paths[i]}" ]] && dir_count=$((dir_count + 1))
         done
 
         # Heuristic: mostly files -> bulk stat is faster than per-file subshells.
@@ -1080,7 +1088,7 @@ _safe_clean_impl() {
                     echo "0 0" > "$temp_dir/result_${idx}"
                 fi
                 idx=$((idx + 1))
-            done < <(stat -f%z "${existing_paths[@]}" 2> /dev/null)
+            done < <(if [[ "$IS_LINUX" == "true" ]]; then stat -c%s "${existing_paths[@]}" 2> /dev/null; else stat -f%z "${existing_paths[@]}" 2> /dev/null; fi)
             while [[ $idx -lt ${#existing_paths[@]} ]]; do
                 echo "0 0" > "$temp_dir/result_${idx}"
                 idx=$((idx + 1))
@@ -1540,6 +1548,9 @@ perform_cleanup() {
             start_section "System"
             clean_deep_system
             clean_local_snapshots
+            if [[ "$IS_LINUX" == "true" ]]; then
+                clean_linux_apt_cache
+            fi
             end_section
         fi
 
@@ -1565,6 +1576,9 @@ perform_cleanup() {
         # ===== 4. Browsers =====
         start_section "Browsers"
         clean_browsers
+        if [[ "$IS_LINUX" == "true" ]]; then
+            clean_linux_browser_caches
+        fi
         end_section
 
         # ===== 5. Cloud & Office =====
@@ -1589,6 +1603,9 @@ perform_cleanup() {
         # ===== 6. Developer tools (merged CLI and GUI tooling) =====
         start_section "Developer tools"
         clean_developer_tools
+        if [[ "$IS_LINUX" == "true" ]]; then
+            clean_linux_dev_caches
+        fi
         end_section
 
         # ===== 7. Applications =====

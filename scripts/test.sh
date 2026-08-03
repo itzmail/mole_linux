@@ -109,7 +109,7 @@ report_unit_result() {
         printf "${GREEN}${ICON_SUCCESS} Unit tests passed${NC}\n"
     else
         printf "${RED}${ICON_ERROR} Unit tests failed${NC}\n"
-        ((FAILED++))
+        FAILED=$((FAILED + 1))
     fi
 }
 
@@ -157,7 +157,7 @@ if command -v shellcheck > /dev/null 2>&1; then
             printf "${GREEN}${ICON_SUCCESS} Test script lint passed${NC}\n"
         else
             printf "${RED}${ICON_ERROR} Test script lint failed${NC}\n"
-            ((FAILED++))
+            FAILED=$((FAILED + 1))
         fi
     else
         printf "${YELLOW}${ICON_WARNING} No test scripts found, skipping${NC}\n"
@@ -347,7 +347,7 @@ if command -v go > /dev/null 2>&1; then
         printf "${GREEN}${ICON_SUCCESS} Go tests passed${NC}\n"
     else
         printf "${RED}${ICON_ERROR} Go tests failed${NC}\n"
-        ((FAILED++))
+        FAILED=$((FAILED + 1))
     fi
 else
     printf "${YELLOW}${ICON_WARNING} Go not installed, skipping Go tests${NC}\n"
@@ -359,7 +359,7 @@ if bash -c 'source lib/core/common.sh && echo "OK"' > /dev/null 2>&1; then
     printf "${GREEN}${ICON_SUCCESS} Module loading passed${NC}\n"
 else
     printf "${RED}${ICON_ERROR} Module loading failed${NC}\n"
-    ((FAILED++))
+    FAILED=$((FAILED + 1))
 fi
 echo ""
 
@@ -369,7 +369,7 @@ if bash -n mole && bash -n bin/clean.sh && bash -n bin/optimize.sh; then
     printf "${GREEN}${ICON_SUCCESS} Integration tests passed${NC}\n"
 else
     printf "${RED}${ICON_ERROR} Integration tests failed${NC}\n"
-    ((FAILED++))
+    FAILED=$((FAILED + 1))
 fi
 echo ""
 
@@ -400,11 +400,11 @@ else
             printf "${GREEN}${ICON_SUCCESS} Installation test passed${NC}\n"
         else
             printf "${RED}${ICON_ERROR} Installation test failed${NC}\n"
-            ((FAILED++))
+            FAILED=$((FAILED + 1))
         fi
     else
         printf "${RED}${ICON_ERROR} Installation test failed${NC}\n"
-        ((FAILED++))
+        FAILED=$((FAILED + 1))
     fi
     MO_NO_OPLOG=1 safe_remove "/tmp/mole-test" true || true
     if [[ -n "$install_test_home" ]]; then

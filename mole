@@ -171,8 +171,8 @@ interactive_main_menu() {
         fi
 
         case "$key" in
-            "UP") ((current_option > 1)) && ((current_option--)) ;;
-            "DOWN") ((current_option < 5)) && ((current_option++)) ;;
+            "UP") ((current_option > 1)) && current_option=$((current_option - 1)) ;;
+            "DOWN") ((current_option < 5)) && current_option=$((current_option + 1)) ;;
             "ENTER")
                 case $current_option in
                     1) launch_menu_command "$SCRIPT_DIR/bin/clean.sh" ;;

@@ -179,12 +179,17 @@ declare -a DEFAULT_OPTIMIZE_WHITELIST_PATTERNS=(
 # BSD Stat Compatibility
 # ============================================================================
 readonly STAT_BSD="/usr/bin/stat"
+readonly MOLE_IS_LINUX=$([[ "$(uname -s)" == "Linux" ]] && echo "true" || echo "false")
 
 # Get file size in bytes
 get_file_size() {
     local file="$1"
     local result
-    result=$($STAT_BSD -f%z "$file" 2> /dev/null)
+    if [[ "$MOLE_IS_LINUX" == "true" ]]; then
+        result=$(stat -c%s "$file" 2> /dev/null)
+    else
+        result=$($STAT_BSD -f%z "$file" 2> /dev/null)
+    fi
     echo "${result:-0}"
 }
 
@@ -196,7 +201,11 @@ get_file_mtime() {
         return
     }
     local result
-    result=$($STAT_BSD -f%m "$file" 2> /dev/null || echo "")
+    if [[ "$MOLE_IS_LINUX" == "true" ]]; then
+        result=$(stat -c%Y "$file" 2> /dev/null || echo "")
+    else
+        result=$($STAT_BSD -f%m "$file" 2> /dev/null || echo "")
+    fi
     if [[ "$result" =~ ^[0-9]+$ ]]; then
         echo "$result"
     else
@@ -225,7 +234,11 @@ get_epoch_seconds() {
 # Get file owner username
 get_file_owner() {
     local file="$1"
-    $STAT_BSD -f%Su "$file" 2> /dev/null || echo ""
+    if [[ "$MOLE_IS_LINUX" == "true" ]]; then
+        stat -c%U "$file" 2> /dev/null || echo ""
+    else
+        $STAT_BSD -f%Su "$file" 2> /dev/null || echo ""
+    fi
 }
 
 # ============================================================================
