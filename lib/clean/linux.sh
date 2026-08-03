@@ -31,3 +31,13 @@ clean_linux_browser_caches() {
     safe_clean ~/.cache/chromium/* "Chromium cache"
     safe_clean ~/.cache/mozilla/firefox/*/cache2/* "Firefox cache"
 }
+
+# apt archive cache cleanup. Only ever called from bin/clean.sh's
+# SYSTEM_CLEAN == true branch (same sudo gate Homebrew's system cleanup
+# already uses) — this function does not re-check SYSTEM_CLEAN itself,
+# matching clean_deep_system's contract.
+clean_linux_apt_cache() {
+    if command -v apt-get > /dev/null 2>&1; then
+        clean_tool_cache "apt archives" "/var/cache/apt/archives" run_with_timeout "$MOLE_TIMEOUT_PKG_CLEANUP_SEC" apt-get clean
+    fi
+}
