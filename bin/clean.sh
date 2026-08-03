@@ -21,12 +21,16 @@ source "$SCRIPT_DIR/../lib/clean/hints.sh"
 source "$SCRIPT_DIR/../lib/clean/launch_services.sh"
 source "$SCRIPT_DIR/../lib/clean/system.sh"
 source "$SCRIPT_DIR/../lib/clean/user.sh"
+if [[ "$(uname -s)" == "Linux" ]]; then
+    source "$SCRIPT_DIR/../lib/clean/linux.sh"
+fi
 
 SYSTEM_CLEAN=false
 DRY_RUN=false
 PROTECT_FINDER_METADATA=false
 EXTERNAL_VOLUME_TARGET=""
 IS_M_SERIES=$([[ "$(uname -m)" == "arm64" ]] && echo "true" || echo "false")
+IS_LINUX=$([[ "$(uname -s)" == "Linux" ]] && echo "true" || echo "false")
 
 # Whitelist and preview belong to the invoking user even when the whole
 # command runs as root. Root dry-runs stage preview content in a root-owned
