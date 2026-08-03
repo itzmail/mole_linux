@@ -54,6 +54,13 @@ fi
 This is the first OS-gate in the shell layer. It is additive only — every
 existing `source` line and every Darwin section is untouched.
 
+`bin/clean.sh` already computes `IS_M_SERIES` once near the top of the file
+(`IS_M_SERIES=$([[ "$(uname -m)" == "arm64" ]] && echo "true" || echo
+"false")`) rather than re-running `uname` at each call site. The same
+pattern is followed for the OS check: `IS_LINUX` is computed once
+alongside it and reused at every call site below, instead of re-invoking
+`uname -s` per section.
+
 ### 2. New module: `lib/clean/linux.sh`
 
 One new file, following the existing per-module convention (a handful of
@@ -89,17 +96,31 @@ underlying files directly).
 New Linux targets are appended to the existing pipeline, not gated behind a
 new flag:
 
-- Dev/package-manager caches (npm/yarn/pnpm/pip), journal vacuum, and
-  browser cache join the existing numbered sections that already exist for
-  equivalent purposes on macOS (e.g. "Developer tools", "Browsers") when
-  those sections run on Linux, rather than inventing parallel section
-  numbers.
-- `apt-get clean` joins the existing "System" section
-  (`SYSTEM_CLEAN == true`), the same gate Homebrew's system cleanup already
-  uses — no new sudo gate is introduced.
-- Docker's review-only notice joins "Developer tools" (Virtualization is
-  Darwin-only VM/container-app cleanup today; a Docker line fits better next
-  to other dev-tool cache reporting than as a new numbered section).
+No target lives inside an existing Darwin function (`clean_browsers`,
+`clean_developer_tools`, etc. stay untouched, unconditional, macOS-only
+bodies) — every macOS function in this codebase already runs with zero
+internal OS branching, and adding a Linux branch inside one would be the
+first such mix. Instead, each existing numbered section in `bin/clean.sh`
+gets one additional call, guarded at the call site the same way
+`SYSTEM_CLEAN == true` is already checked inline:
+
+- "Developer tools" section gains a call to a new
+  `clean_linux_dev_caches` (npm/yarn/pnpm/pip cache) guarded by
+  `[[ "$(uname -s)" == "Linux" ]]`.
+- "Browsers" section gains a call to a new `clean_linux_browser_caches`
+  under the same guard.
+- "System" section (`SYSTEM_CLEAN == true`) gains a call to a new
+  `clean_linux_apt_cache` under the same Linux guard, alongside the existing
+  `clean_deep_system` call — this is the same sudo gate Homebrew's system
+  cleanup already uses, no new gate is introduced.
+- Journal vacuum and the Docker review-only notice are both grouped into
+  `clean_linux_dev_caches` too (same section, same guard), since journalctl
+  and Docker are both dev-adjacent system tools with no dedicated section of
+  their own on macOS either.
+
+All four new functions live in `lib/clean/linux.sh` and are no-ops (return
+immediately) when called with `uname -s` other than `Linux`, so the
+call-site guard is defense in depth, not the only check.
 
 Every target still runs through the same dry-run ledger, whitelist check,
 and summary counters as macOS sections — no special-casing in the
