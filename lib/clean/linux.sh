@@ -16,4 +16,9 @@ clean_linux_dev_caches() {
     if command -v journalctl > /dev/null 2>&1; then
         clean_tool_cache "systemd journal" "" run_with_timeout "$MOLE_TIMEOUT_PKG_CLEANUP_SEC" journalctl --vacuum-time=7d
     fi
+
+    if command -v docker > /dev/null 2>&1; then
+        note_activity
+        echo -e "  ${GRAY}${ICON_WARNING}${NC} Docker unused data · skipped (review: docker system df)"
+    fi
 }

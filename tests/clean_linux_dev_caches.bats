@@ -116,3 +116,27 @@ EOF
     [[ "$status" -eq 0 ]] || return 1
     [[ "$output" == *"clean_tool_cache:systemd journal"* ]] || return 1
 }
+
+@test "clean_linux_dev_caches never deletes docker data, only reviews it" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/linux.sh"
+safe_clean() { echo "safe_clean:${*: -1}"; }
+clean_tool_cache() { echo "clean_tool_cache:$1"; }
+note_activity() { :; }
+docker() { echo "df line"; }
+command() {
+    if [[ "$1" == "-v" && "$2" == "docker" ]]; then
+        return 0
+    fi
+    builtin command "$@"
+}
+clean_linux_dev_caches
+EOF
+    [[ "$status" -eq 0 ]] || return 1
+    [[ "$output" == *"Docker"* ]] || return 1
+    [[ "$output" == *"review"* ]] || return 1
+    [[ "$output" != *"clean_tool_cache:Docker"* ]] || return 1
+    [[ "$output" != *"safe_clean:Docker"* ]] || return 1
+}
