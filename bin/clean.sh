@@ -1544,6 +1544,9 @@ perform_cleanup() {
             start_section "System"
             clean_deep_system
             clean_local_snapshots
+            if [[ "$IS_LINUX" == "true" ]]; then
+                clean_linux_apt_cache
+            fi
             end_section
         fi
 
@@ -1569,6 +1572,9 @@ perform_cleanup() {
         # ===== 4. Browsers =====
         start_section "Browsers"
         clean_browsers
+        if [[ "$IS_LINUX" == "true" ]]; then
+            clean_linux_browser_caches
+        fi
         end_section
 
         # ===== 5. Cloud & Office =====
@@ -1593,6 +1599,9 @@ perform_cleanup() {
         # ===== 6. Developer tools (merged CLI and GUI tooling) =====
         start_section "Developer tools"
         clean_developer_tools
+        if [[ "$IS_LINUX" == "true" ]]; then
+            clean_linux_dev_caches
+        fi
         end_section
 
         # ===== 7. Applications =====
