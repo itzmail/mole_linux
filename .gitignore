@@ -71,6 +71,7 @@ mole-analyze
 # Go binaries
 bin/analyze-go
 bin/status-go
+bin/trash-go
 bin/analyze-darwin-*
 bin/status-darwin-*
 

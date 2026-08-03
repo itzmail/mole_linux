@@ -12,10 +12,12 @@ GO_DOWNLOAD_RETRIES ?= 3
 # Binaries
 ANALYZE := analyze
 STATUS := status
+TRASH := trash
 
 # Source directories
 ANALYZE_SRC := ./cmd/analyze
 STATUS_SRC := ./cmd/status
+TRASH_SRC := ./cmd/trash
 
 # Build flags
 LDFLAGS := -s -w
@@ -42,6 +44,7 @@ build: mod-download
 	@echo "Building for local architecture..."
 	$(GO) build -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/$(ANALYZE)-go $(ANALYZE_SRC)
 	$(GO) build -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/$(STATUS)-go $(STATUS_SRC)
+	$(GO) build -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/$(TRASH)-go $(TRASH_SRC)
 
 check:
 	./scripts/check.sh --no-format
@@ -71,4 +74,4 @@ release-arm64: mod-download
 
 clean:
 	@echo "Cleaning binaries..."
-	rm -f $(BIN_DIR)/$(ANALYZE)-* $(BIN_DIR)/$(STATUS)-* $(BIN_DIR)/$(ANALYZE)-go $(BIN_DIR)/$(STATUS)-go
+	rm -f $(BIN_DIR)/$(ANALYZE)-* $(BIN_DIR)/$(STATUS)-* $(BIN_DIR)/$(ANALYZE)-go $(BIN_DIR)/$(STATUS)-go $(BIN_DIR)/$(TRASH)-* $(BIN_DIR)/$(TRASH)-go

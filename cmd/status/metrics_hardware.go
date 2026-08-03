@@ -10,13 +10,13 @@ import (
 
 func collectHardware(totalRAM uint64, disks []DiskStatus) HardwareInfo {
 	if runtime.GOOS != "darwin" {
+		// Leave Model/CPUModel/DiskSize/OSVersion empty rather than
+		// synthesizing placeholder values ("Unknown", GOARCH, GOOS): the
+		// view layer already omits any hardware field that is empty, and a
+		// literal "Unknown" or bare arch string would violate that rather
+		// than degrade gracefully like GPU/Bluetooth already do on Linux.
 		return HardwareInfo{
-			Model:       "Unknown",
-			CPUModel:    runtime.GOARCH,
-			TotalRAM:    humanBytes(totalRAM),
-			DiskSize:    "Unknown",
-			OSVersion:   runtime.GOOS,
-			RefreshRate: "",
+			TotalRAM: humanBytes(totalRAM),
 		}
 	}
 

@@ -1,4 +1,4 @@
-//go:build darwin
+//go:build darwin || linux
 
 package main
 
@@ -11,86 +11,6 @@ import (
 	"strings"
 	"time"
 )
-
-// createInsightEntries returns the list of hidden-space insight entries
-// to show in the overview screen alongside the standard directory entries.
-func createInsightEntries() []dirEntry {
-	home := os.Getenv("HOME")
-	if home == "" {
-		return nil
-	}
-
-	var entries []dirEntry
-
-	// iOS Backups: ~/Library/Application Support/MobileSync/Backup
-	backupPath := filepath.Join(home, "Library", "Application Support", "MobileSync", "Backup")
-	if info, err := os.Stat(backupPath); err == nil && info.IsDir() {
-		entries = append(entries, dirEntry{
-			Name:  "iOS Backups",
-			Path:  backupPath,
-			IsDir: true,
-			Size:  -1,
-		})
-	}
-
-	// Old Downloads: ~/Downloads (files older than 90 days)
-	downloadsPath := filepath.Join(home, "Downloads")
-	if info, err := os.Stat(downloadsPath); err == nil && info.IsDir() {
-		entries = append(entries, dirEntry{
-			Name:  "Old Downloads (90d+)",
-			Path:  downloadsPath,
-			IsDir: true,
-			Size:  -1,
-		})
-	}
-
-	// Cleanable paths: things mo clean can remove or the user can safely delete.
-	// System Caches (~Library/Caches) is intentionally omitted here because the
-	// specific cache subdirectories below are already its children; listing both
-	// would double-count the same bytes.
-	cleanablePaths := []struct {
-		name string
-		path string
-	}{
-		// Universal (everyone has these)
-		{"System Logs", filepath.Join(home, "Library", "Logs")},
-		{"Homebrew Cache", filepath.Join(home, "Library", "Caches", "Homebrew")},
-
-		// Developer-specific (only shown if path exists)
-		{"Xcode DerivedData", filepath.Join(home, "Library", "Developer", "Xcode", "DerivedData")},
-		{"Xcode Simulators", filepath.Join(home, "Library", "Developer", "CoreSimulator", "Devices")},
-		{"Xcode Archives", filepath.Join(home, "Library", "Developer", "Xcode", "Archives")},
-		{"Spotify Cache", filepath.Join(home, "Library", "Application Support", "Spotify", "PersistentCache")},
-		{"JetBrains Cache", filepath.Join(home, "Library", "Caches", "JetBrains")},
-		{"Docker Data", filepath.Join(home, "Library", "Containers", "com.docker.docker", "Data")},
-		{"pip Cache", filepath.Join(home, "Library", "Caches", "pip")},
-		{"Gradle Cache", filepath.Join(home, ".gradle", "caches")},
-		{"CocoaPods Cache", filepath.Join(home, "Library", "Caches", "CocoaPods")},
-	}
-	if matches, err := filepath.Glob(filepath.Join(home, "Library", "Group Containers", "*dev.orbstack", "data")); err == nil {
-		for _, match := range matches {
-			if info, statErr := os.Stat(match); statErr == nil && info.IsDir() {
-				cleanablePaths = append(cleanablePaths, struct {
-					name string
-					path string
-				}{"OrbStack Data", match})
-				break
-			}
-		}
-	}
-	for _, c := range cleanablePaths {
-		if info, err := os.Stat(c.path); err == nil && info.IsDir() {
-			entries = append(entries, dirEntry{
-				Name:  c.name,
-				Path:  c.path,
-				IsDir: true,
-				Size:  -1,
-			})
-		}
-	}
-
-	return entries
-}
 
 // measureInsightSize measures the size of a path.
 // Old Downloads is treated specially: only files older than 90 days are counted.
@@ -163,4 +83,33 @@ func getDirSizeFast(path string) (int64, error) {
 	}
 
 	return kb * 1024, nil
+}
+
+// oldDownloadsInsightEntry returns the shared "Old Downloads (90d+)" entry
+// if ~/Downloads exists, or false if there is nothing to show.
+func oldDownloadsInsightEntry(home string) (dirEntry, bool) {
+	downloadsPath := filepath.Join(home, "Downloads")
+	if info, err := os.Stat(downloadsPath); err == nil && info.IsDir() {
+		return dirEntry{
+			Name:  "Old Downloads (90d+)",
+			Path:  downloadsPath,
+			IsDir: true,
+			Size:  -1,
+		}, true
+	}
+	return dirEntry{}, false
+}
+
+// appendExistingPathEntries appends one dirEntry per (name, path) pair whose
+// path exists as a directory, in order.
+func appendExistingPathEntries(entries []dirEntry, candidates []struct {
+	name string
+	path string
+}) []dirEntry {
+	for _, c := range candidates {
+		if info, err := os.Stat(c.path); err == nil && info.IsDir() {
+			entries = append(entries, dirEntry{Name: c.name, Path: c.path, IsDir: true, Size: -1})
+		}
+	}
+	return entries
 }
