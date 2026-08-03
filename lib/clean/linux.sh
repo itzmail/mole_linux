@@ -22,3 +22,12 @@ clean_linux_dev_caches() {
         echo -e "  ${GRAY}${ICON_WARNING}${NC} Docker unused data · skipped (review: docker system df)"
     fi
 }
+
+# Generic per-browser cache cleanup for Chrome/Chromium/Firefox on Linux.
+# Not the macOS "old version" cleanup — pure runtime cache, always
+# rebuildable.
+clean_linux_browser_caches() {
+    safe_clean ~/.cache/google-chrome/* "Chrome cache"
+    safe_clean ~/.cache/chromium/* "Chromium cache"
+    safe_clean ~/.cache/mozilla/firefox/*/cache2/* "Firefox cache"
+}
