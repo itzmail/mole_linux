@@ -12,4 +12,8 @@ clean_linux_dev_caches() {
     safe_clean ~/.cache/yarn/* "Yarn cache"
     safe_clean ~/.local/share/pnpm/* "pnpm store"
     safe_clean ~/.cache/pip/* "pip cache"
+
+    if command -v journalctl > /dev/null 2>&1; then
+        clean_tool_cache "systemd journal" "" run_with_timeout "$MOLE_TIMEOUT_PKG_CLEANUP_SEC" journalctl --vacuum-time=7d
+    fi
 }

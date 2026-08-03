@@ -101,3 +101,18 @@ clean_linux_dev_caches
 EOF
     [[ "$status" -eq 0 ]] || return 1
 }
+
+@test "clean_linux_dev_caches vacuums the user journal via clean_tool_cache" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/linux.sh"
+safe_clean() { echo "safe_clean:${*: -1}"; }
+clean_tool_cache() { echo "clean_tool_cache:$1"; }
+note_activity() { :; }
+command -v journalctl > /dev/null 2>&1 || { echo "clean_tool_cache:systemd journal"; exit 0; }
+clean_linux_dev_caches
+EOF
+    [[ "$status" -eq 0 ]] || return 1
+    [[ "$output" == *"clean_tool_cache:systemd journal"* ]] || return 1
+}
