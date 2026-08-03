@@ -825,7 +825,11 @@ get_cleanup_path_size_kb() {
     # with a zero/invalid stat we also fall back; a symlink reports 0 directly.
     if [[ -L "$path" || -f "$path" ]] && command -v stat > /dev/null 2>&1; then
         local bytes
-        bytes=$(stat -f%z "$path" 2> /dev/null || echo "0")
+        if [[ "$IS_LINUX" == "true" ]]; then
+            bytes=$(stat -c%s "$path" 2> /dev/null || echo "0")
+        else
+            bytes=$(stat -f%z "$path" 2> /dev/null || echo "0")
+        fi
         if [[ "$bytes" =~ ^[0-9]+$ && "$bytes" -gt 0 ]]; then
             echo $(((bytes + 1023) / 1024))
             return 0
@@ -1063,7 +1067,7 @@ _safe_clean_impl() {
         [[ $max_sample -gt $sample_size ]] && sample_size=$max_sample
 
         for ((i = 0; i < sample_size && i < ${#existing_paths[@]}; i++)); do
-            [[ -d "${existing_paths[i]}" ]] && ((dir_count++))
+            [[ -d "${existing_paths[i]}" ]] && dir_count=$((dir_count + 1))
         done
 
         # Heuristic: mostly files -> bulk stat is faster than per-file subshells.
@@ -1084,7 +1088,7 @@ _safe_clean_impl() {
                     echo "0 0" > "$temp_dir/result_${idx}"
                 fi
                 idx=$((idx + 1))
-            done < <(stat -f%z "${existing_paths[@]}" 2> /dev/null)
+            done < <(if [[ "$IS_LINUX" == "true" ]]; then stat -c%s "${existing_paths[@]}" 2> /dev/null; else stat -f%z "${existing_paths[@]}" 2> /dev/null; fi)
             while [[ $idx -lt ${#existing_paths[@]} ]]; do
                 echo "0 0" > "$temp_dir/result_${idx}"
                 idx=$((idx + 1))
