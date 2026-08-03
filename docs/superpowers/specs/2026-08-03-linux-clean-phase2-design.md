@@ -67,21 +67,22 @@ splitting later is cheap.
 
 | Target | Path(s) | Mechanism | Privilege |
 |---|---|---|---|
-| npm cache | `~/.npm` | `mole_delete` | none |
-| yarn cache | `~/.cache/yarn` | `mole_delete` | none |
-| pnpm store | `~/.local/share/pnpm` | `mole_delete` | none |
-| pip cache | `~/.cache/pip` | `mole_delete` | none |
-| systemd journal | persistent journal | `journalctl --vacuum-time=<N>` (not a raw path delete) | none for user journal; falls back to informational skip if only the system journal is writable-only by root |
-| Browser cache (Chrome/Chromium/Firefox) | `~/.cache/google-chrome`, `~/.cache/chromium`, `~/.cache/mozilla/firefox/*/cache2` (existence-checked, not assumed) | `mole_delete` | none |
-| apt archives | `/var/cache/apt/archives` | `apt-get clean` (preview via `apt-get clean -s` / equivalent simulated listing) via CLI, **not** `mole_delete` | yes — routed through the existing `SYSTEM_CLEAN` gate |
-| Docker reclaimable data | dangling images, build cache, stopped containers | `docker system prune` (dry-run preview via `docker system df` / `--dry-run` where supported), **not** raw `/var/lib/docker` deletion | depends on rootless vs rootful Docker setup on the user's machine; Mole never touches the daemon's files directly |
+| npm cache | `~/.npm` | `safe_clean` (glob-based, same helper every Darwin section uses — internally routes through `mole_delete`/`should_protect_path`) | none |
+| yarn cache | `~/.cache/yarn` | `safe_clean` | none |
+| pnpm store | `~/.local/share/pnpm` | `safe_clean` | none |
+| pip cache | `~/.cache/pip` | `safe_clean` | none |
+| systemd journal | persistent journal | `clean_tool_cache` wrapping `journalctl --vacuum-time=<N>` (CLI-delegated, not a raw path delete) | none for user journal; falls back to informational skip if only the system journal is writable-only by root |
+| Browser cache (Chrome/Chromium/Firefox) | `~/.cache/google-chrome`, `~/.cache/chromium`, `~/.cache/mozilla/firefox/*/cache2` (existence-checked, not assumed) | `safe_clean` | none |
+| apt archives | `/var/cache/apt/archives` | `clean_tool_cache` wrapping `apt-get clean`, **not** `safe_clean`/`mole_delete` | yes — routed through the existing `SYSTEM_CLEAN` gate |
+| Docker reclaimable data | dangling images, build cache, stopped containers | **Review-only**, no deletion: print a skip line naming the reclaimable size (via `docker system df`) and pointing the user at `docker system prune` themselves — mirrors the existing macOS `clean_dev_docker` (`lib/clean/dev.sh:429`), which also never runs `docker system prune` itself | none — no privileged action taken |
 
-All file-level targets go through the same `mole_delete` /
-`should_protect_path` funnel every Darwin section uses — no second delete
-path is introduced. `apt` and `docker` are delegated entirely to their own
-CLIs, mirroring the existing `lib/clean/brew.sh` pattern (preview first,
-package manager decides what's safe, Mole never touches the underlying
-files).
+`safe_clean` and `clean_tool_cache` are the two existing helpers every Darwin
+section already uses (defined in `bin/clean.sh` and `lib/clean/dev.sh`
+respectively) — no second delete path is introduced for Linux. `apt` and
+`docker` are delegated to their own CLIs/review-only output, mirroring the
+existing `lib/clean/brew.sh` and `clean_dev_docker` patterns (preview or
+review first, package manager decides what's safe, Mole never touches the
+underlying files directly).
 
 ### 4. Section wiring
 
@@ -96,10 +97,9 @@ new flag:
 - `apt-get clean` joins the existing "System" section
   (`SYSTEM_CLEAN == true`), the same gate Homebrew's system cleanup already
   uses — no new sudo gate is introduced.
-- Docker joins "Developer tools" (Virtualization is Darwin-only
-  VM/container-app cleanup today; Docker's own CLI-delegated cleanup fits
-  better next to other dev-tool cache cleanup than as a new numbered
-  section).
+- Docker's review-only notice joins "Developer tools" (Virtualization is
+  Darwin-only VM/container-app cleanup today; a Docker line fits better next
+  to other dev-tool cache reporting than as a new numbered section).
 
 Every target still runs through the same dry-run ledger, whitelist check,
 and summary counters as macOS sections — no special-casing in the
@@ -127,10 +127,11 @@ section-runner loop itself.
   `~/.cache` sweep would risk deleting live application state that happens
   to live under XDG cache by convention but isn't safely rebuildable
   (example: some Electron apps store more than pure cache there).
-- Docker volumes and named images still in use are never targeted — only
-  what `docker system prune`'s own dangling/unused detection identifies.
+- Docker data is never deleted by Mole at all in this round, matching the
+  existing macOS behavior — only a review-only size notice is printed, same
+  as `clean_dev_docker` already does today.
 - `/var/lib/docker` and `~/.local/share/docker` are never read or deleted
-  directly by Mole; only the `docker` CLI touches them.
+  directly by Mole.
 
 ## Testing/Verification Commands
 
