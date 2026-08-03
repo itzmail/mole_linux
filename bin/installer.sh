@@ -391,7 +391,7 @@ select_installers() {
         for ((i = 0; i < total_items; i++)); do
             if [[ ${selected[i]} == true ]]; then
                 selected_size=$((selected_size + ${INSTALLER_SIZES[i]:-0}))
-                ((selected_count++))
+                selected_count=$((selected_count + 1))
             fi
         done
         local selected_human
@@ -465,9 +465,9 @@ select_installers() {
                                 local visible_count=$((total_items - top_index))
                                 [[ $visible_count -gt $items_per_page ]] && visible_count=$items_per_page
                                 if [[ $cursor_pos -lt $((visible_count - 1)) ]]; then
-                                    ((cursor_pos++))
+                                    cursor_pos=$((cursor_pos + 1))
                                 elif [[ $((top_index + visible_count)) -lt $total_items ]]; then
-                                    ((top_index++))
+                                    top_index=$((top_index + 1))
                                 fi
                             fi
                             ;;

@@ -35,6 +35,7 @@ setup_file() {
 }
 
 @test "System section calls clean_linux_apt_cache guarded by IS_LINUX inside SYSTEM_CLEAN" {
+    # shellcheck disable=SC2016
     run grep -A5 'if \[\[ "\$SYSTEM_CLEAN" == "true" \]\]; then' "$PROJECT_ROOT/bin/clean.sh"
     [[ "$status" -eq 0 ]] || return 1
     [[ "$output" == *"clean_linux_apt_cache"* ]] || return 1
