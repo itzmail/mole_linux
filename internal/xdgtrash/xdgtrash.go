@@ -216,6 +216,9 @@ func EmptyOne(name string) error {
 	filePath := filepath.Join(filesD, name)
 	infoPath := filepath.Join(infoD, name+".trashinfo")
 
+	if err := makeWritableRecursive(filePath); err != nil {
+		return fmt.Errorf("failed to prepare trashed item for removal: %w", err)
+	}
 	if err := os.RemoveAll(filePath); err != nil {
 		return fmt.Errorf("failed to remove trashed item: %w", err)
 	}
@@ -223,6 +226,37 @@ func EmptyOne(name string) error {
 		return fmt.Errorf("failed to remove trashinfo: %w", err)
 	}
 	return nil
+}
+
+// makeWritableRecursive ensures every directory under root (root included)
+// carries the owner write bit, so os.RemoveAll can unlink entries and
+// descend into subdirectories that were trashed read-only. This is a real
+// case in practice: Go's module cache (GOMODCACHE) ships package version
+// directories as read-only (mode 555) to prevent accidental modification,
+// and a plain os.RemoveAll fails partway through such a tree with
+// "permission denied" instead of completing the delete.
+func makeWritableRecursive(root string) error {
+	return filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode().Perm()&0o200 == 0 {
+			if chmodErr := os.Chmod(path, info.Mode().Perm()|0o200); chmodErr != nil {
+				return chmodErr
+			}
+		}
+		return nil
+	})
 }
 
 // EmptyAll permanently deletes every item currently in the trash.
