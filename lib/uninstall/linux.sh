@@ -43,3 +43,18 @@ linux_uninstall_package() {
     echo "Error: apt-get remove failed for $pkgname" >&2
     return 1
 }
+
+linux_clean_package_leftovers() {
+    local pkgname="$1"
+    local candidate
+
+    for candidate in \
+        "$HOME/.config/$pkgname" \
+        "$HOME/.cache/$pkgname" \
+        "$HOME/.local/share/$pkgname"; do
+        [[ -e "$candidate" ]] || continue
+        should_protect_path "$candidate" && continue
+        mole_delete "$candidate"
+    done
+    return 0
+}
