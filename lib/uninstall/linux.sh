@@ -13,3 +13,33 @@ linux_list_uninstallable_packages() {
             { print $1 "|" $2 "|" $5 }
         ' | sort -t'|' -k1,1
 }
+
+_linux_valid_package_name() {
+    [[ "$1" =~ ^[a-z0-9][a-z0-9+.-]*$ ]]
+}
+
+linux_uninstall_package() {
+    local pkgname="$1"
+
+    if ! _linux_valid_package_name "$pkgname"; then
+        echo "Error: invalid package name: $pkgname" >&2
+        return 1
+    fi
+
+    if [[ "${MOLE_DRY_RUN:-0}" == "1" ]]; then
+        echo "  would run: apt-get remove -y $pkgname"
+        return 0
+    fi
+
+    local -a sudo_prefix=()
+    if [[ "${MOLE_TEST_NO_AUTH:-0}" != "1" && "${MOLE_TEST_MODE:-0}" != "1" ]]; then
+        sudo -v
+        sudo_prefix=(sudo)
+    fi
+
+    if run_with_timeout "$MOLE_TIMEOUT_PKG_CLEANUP_SEC" "${sudo_prefix[@]}" apt-get remove -y "$pkgname"; then
+        return 0
+    fi
+    echo "Error: apt-get remove failed for $pkgname" >&2
+    return 1
+}
