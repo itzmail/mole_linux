@@ -79,7 +79,11 @@ jobs:
           bats tests/clean_linux_dev_caches.bats \
                tests/clean_linux_browser_caches.bats \
                tests/clean_linux_apt_cache.bats \
-               tests/clean_linux_wiring.bats
+               tests/clean_linux_wiring.bats \
+               tests/uninstall_linux_list.bats \
+               tests/uninstall_linux_package.bats \
+               tests/uninstall_linux_leftovers.bats \
+               tests/uninstall_linux_wiring.bats
 
   compatibility:
     name: macOS
