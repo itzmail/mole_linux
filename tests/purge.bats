@@ -847,6 +847,11 @@ EOF
 	run env HOME="$HOME" PATH="$mock_bin:$PATH" /bin/bash --noprofile --norc <<EOF
 set -euo pipefail
 source "$PROJECT_ROOT/lib/clean/project.sh"
+# Sourcing project.sh runs common.sh bootstrap maintenance (stale temp-file
+# pruning), which calls the real find and can trip the mock's marker file
+# before scan_purge_targets is even invoked. Clear it here so only find
+# calls made by scan_purge_targets itself are observed below.
+rm -f "$HOME/find-called"
 scan_purge_targets "$HOME/www" "$scan_output"
 [[ ! -e "$HOME/find-called" ]] || exit 1
 [[ -f "$scan_output" ]] || exit 1
