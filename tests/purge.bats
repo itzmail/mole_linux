@@ -1527,8 +1527,16 @@ EOF
 # stdin is a tty.
 _run_in_pty() {
 	local script_file="$1"
-	# A socket-backed runner stdin makes macOS script(1) fail before the child starts.
-	script -q /dev/null /bin/bash --noprofile --norc "$script_file" < /dev/null 2>/dev/null
+	# BSD script(1) (macOS) takes the command as trailing positional args.
+	# util-linux script(1) (Linux) parses leading dashes as its own options,
+	# so --noprofile/--norc there must go after `-c` inside a single string.
+	# A socket-backed runner stdin makes macOS script(1) fail before the
+	# child starts, so both branches keep stdin redirected from /dev/null.
+	if script --version 2>&1 | grep -qi "util-linux"; then
+		script -qc "/bin/bash --noprofile --norc '$script_file'" /dev/null < /dev/null 2>/dev/null
+	else
+		script -q /dev/null /bin/bash --noprofile --norc "$script_file" < /dev/null 2>/dev/null
+	fi
 }
 
 @test "sort: PURGE_CATEGORY_FULL_PATHS_ARRAY[0] is the largest artifact after size-descending sort" {
