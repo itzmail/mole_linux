@@ -160,10 +160,15 @@ warn_purge_config_write_failure() {
 # Save discovered paths to config.
 save_discovered_paths() {
     local -a paths=("$@")
+    local -a display_paths=()
+    local path
+    for path in "${paths[@]}"; do
+        display_paths+=("$(format_purge_target_path "$path")")
+    done
     write_purge_config "# Mole Purge Paths - Auto-discovered project directories
 # Edit this file to customize, or run: mo purge --paths
 # Add one path per line (supports ~ for home directory)
-" "${paths[@]}"
+" "${display_paths[@]}"
 }
 
 # Load purge paths from config or auto-discover
