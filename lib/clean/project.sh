@@ -157,13 +157,27 @@ warn_purge_config_write_failure() {
     echo -e "${YELLOW}${ICON_WARNING}${NC} Could not save purge paths to ${PURGE_CONFIG_FILE/#$HOME/~}, using discovered paths for this run" >&2
 }
 
+format_purge_target_path() {
+    local path="$1"
+    if [[ "$path" == "$HOME" || "$path" == "$HOME"/* ]]; then
+        printf '~%s\n' "${path#"$HOME"}"
+        return
+    fi
+    printf '%s\n' "$path"
+}
+
 # Save discovered paths to config.
 save_discovered_paths() {
     local -a paths=("$@")
+    local -a display_paths=()
+    local path
+    for path in "${paths[@]}"; do
+        display_paths+=("$(format_purge_target_path "$path")")
+    done
     write_purge_config "# Mole Purge Paths - Auto-discovered project directories
 # Edit this file to customize, or run: mo purge --paths
 # Add one path per line (supports ~ for home directory)
-" "${paths[@]}"
+" "${display_paths[@]}"
 }
 
 # Load purge paths from config or auto-discover
@@ -201,11 +215,6 @@ load_purge_config() {
 
 # Initialize paths on script load.
 load_purge_config
-
-format_purge_target_path() {
-    local path="$1"
-    echo "${path/#$HOME/~}"
-}
 
 compact_purge_menu_path() {
     local path="$1"
