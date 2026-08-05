@@ -204,7 +204,11 @@ load_purge_config
 
 format_purge_target_path() {
     local path="$1"
-    echo "${path/#$HOME/~}"
+    if [[ "$path" == "$HOME" || "$path" == "$HOME"/* ]]; then
+        printf '~%s\n' "${path#"$HOME"}"
+        return
+    fi
+    printf '%s\n' "$path"
 }
 
 compact_purge_menu_path() {
