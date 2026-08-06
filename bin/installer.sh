@@ -15,6 +15,12 @@ export MOLE_CURRENT_COMMAND="${MOLE_CURRENT_COMMAND:-installer}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../lib/core/common.sh"
+
+if [[ "$MOLE_IS_LINUX" == "true" ]]; then
+    echo "Error: mole installer is not supported on Linux (scans macOS-only installer formats: .dmg/.pkg/.mpkg/.xip)." >&2
+    exit 1
+fi
+
 source "$SCRIPT_DIR/../lib/ui/menu_paginated.sh"
 
 cleanup() {

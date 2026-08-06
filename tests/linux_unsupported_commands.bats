@@ -28,3 +28,27 @@ setup_file() {
     [[ "$status" -eq 1 ]] || return 1
     [[ "$output" == *"not supported on Linux"* ]] || return 1
 }
+
+@test "bin/installer.sh has valid bash syntax" {
+    run bash -n "$PROJECT_ROOT/bin/installer.sh"
+    [[ "$status" -eq 0 ]] || return 1
+}
+
+@test "bin/installer.sh guards on MOLE_IS_LINUX before sourcing menu_paginated" {
+    run grep -n 'MOLE_IS_LINUX' "$PROJECT_ROOT/bin/installer.sh"
+    [[ "$status" -eq 0 ]] || return 1
+
+    local guard_line source_line
+    guard_line=$(grep -n 'MOLE_IS_LINUX' "$PROJECT_ROOT/bin/installer.sh" | head -1 | cut -d: -f1)
+    source_line=$(grep -n 'lib/ui/menu_paginated.sh' "$PROJECT_ROOT/bin/installer.sh" | head -1 | cut -d: -f1)
+    [[ "$guard_line" -lt "$source_line" ]] || return 1
+}
+
+@test "mole installer exits 1 with a clear message on Linux" {
+    if [[ "$(uname -s)" != "Linux" ]]; then
+        skip "guard behavior only observable on a real Linux host"
+    fi
+    run "$PROJECT_ROOT/bin/installer.sh"
+    [[ "$status" -eq 1 ]] || return 1
+    [[ "$output" == *"not supported on Linux"* ]] || return 1
+}
