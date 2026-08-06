@@ -85,7 +85,8 @@ jobs:
                tests/uninstall_linux_leftovers.bats \
                tests/uninstall_linux_wiring.bats \
                tests/purge.bats \
-               tests/purge_config_paths.bats
+               tests/purge_config_paths.bats \
+               tests/linux_unsupported_commands.bats
 
   compatibility:
     name: macOS
