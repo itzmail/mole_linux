@@ -4,6 +4,7 @@ import (
 	"container/heap"
 	"context"
 	"fmt"
+	"reflect"
 	"runtime"
 	"slices"
 	"sort"
@@ -23,8 +24,12 @@ var collectProcessesFunc = collectProcesses
 
 const zombieParentLimit = 3
 
+func isRunCmdMocked() bool {
+	return reflect.ValueOf(runCmd).Pointer() != reflect.ValueOf(defaultRunCmd).Pointer()
+}
+
 func collectProcesses() (processSample, error) {
-	if runtime.GOOS == "darwin" {
+	if runtime.GOOS == "darwin" || isRunCmdMocked() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 

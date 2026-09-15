@@ -13,7 +13,7 @@ func TestCollectProcessesReturnsDataOnLinux(t *testing.T) {
 	if err != nil {
 		t.Fatalf("collectProcesses failed: %v", err)
 	}
-	if len(procs) == 0 {
+	if len(procs.processes) == 0 {
 		t.Error("expected at least one process on a running Linux system (this test process itself), got 0")
 	}
 }

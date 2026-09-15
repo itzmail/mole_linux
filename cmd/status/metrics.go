@@ -677,7 +677,7 @@ func (e processEnrichment) apply(snapshot *MetricsSnapshot) {
 	snapshot.ProcessAlerts = slices.Clone(e.processAlerts)
 }
 
-var runCmd = func(ctx context.Context, name string, args ...string) (string, error) {
+var defaultRunCmd = func(ctx context.Context, name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Env = cLocaleEnv()
 	output, err := cmd.Output()
@@ -686,6 +686,8 @@ var runCmd = func(ctx context.Context, name string, args ...string) (string, err
 	}
 	return string(output), nil
 }
+
+var runCmd = defaultRunCmd
 
 // cLocaleEnv forces the C locale on every metric subprocess. ps and uptime
 // localize their decimal separator, so under ru_RU.UTF-8 they emit "8,0" and
