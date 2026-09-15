@@ -1708,7 +1708,7 @@ perform_cleanup() {
                 _run_cleanup_step clean_deep_system || return $?
                 _run_cleanup_step clean_local_snapshots || return $?
                 if [[ "$IS_LINUX" == "true" ]]; then
-                    _run_cleanup_step clean_linux_apt_cache || return $?
+                    _run_cleanup_step clean_linux_package_cache || return $?
                 fi
                 end_section
             fi

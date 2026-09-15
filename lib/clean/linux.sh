@@ -12,6 +12,8 @@ clean_linux_dev_caches() {
     safe_clean ~/.cache/yarn/* "Yarn cache"
     safe_clean ~/.local/share/pnpm/* "pnpm store"
     safe_clean ~/.cache/pip/* "pip cache"
+    safe_clean ~/.cache/yay/* "yay AUR cache"
+    safe_clean ~/.cache/paru/* "paru AUR cache"
 
     if command -v journalctl > /dev/null 2>&1; then
         clean_tool_cache "systemd journal" "" run_with_timeout "$MOLE_TIMEOUT_PKG_CLEANUP_SEC" journalctl --vacuum-time=7d
@@ -32,12 +34,22 @@ clean_linux_browser_caches() {
     safe_clean ~/.cache/mozilla/firefox/*/cache2/* "Firefox cache"
 }
 
-# apt archive cache cleanup. Only ever called from bin/clean.sh's
-# SYSTEM_CLEAN == true branch (same sudo gate Homebrew's system cleanup
-# already uses) — this function does not re-check SYSTEM_CLEAN itself,
-# matching clean_deep_system's contract.
-clean_linux_apt_cache() {
-    if command -v apt-get > /dev/null 2>&1; then
+# Linux package cache cleanup (apt, pacman, etc.).
+# Only ever called from bin/clean.sh's SYSTEM_CLEAN == true branch.
+clean_linux_package_cache() {
+    if command -v paccache > /dev/null 2>&1; then
+        clean_tool_cache "pacman cache (uninstalled)" "/var/cache/pacman/pkg" run_with_timeout "$MOLE_TIMEOUT_PKG_CLEANUP_SEC" paccache -ruk0
+        clean_tool_cache "pacman cache (keep latest 2)" "/var/cache/pacman/pkg" run_with_timeout "$MOLE_TIMEOUT_PKG_CLEANUP_SEC" paccache -rk2
+    elif command -v pacman > /dev/null 2>&1; then
+        clean_tool_cache "pacman cache" "/var/cache/pacman/pkg" run_with_timeout "$MOLE_TIMEOUT_PKG_CLEANUP_SEC" pacman -Sc --noconfirm
+    elif command -v apt-get > /dev/null 2>&1; then
         clean_tool_cache "apt archives" "/var/cache/apt/archives" run_with_timeout "$MOLE_TIMEOUT_PKG_CLEANUP_SEC" apt-get clean
+    elif command -v dnf > /dev/null 2>&1; then
+        clean_tool_cache "dnf cache" "/var/cache/dnf" run_with_timeout "$MOLE_TIMEOUT_PKG_CLEANUP_SEC" dnf clean all
     fi
+}
+
+# Alias for backward compatibility with existing tests
+clean_linux_apt_cache() {
+    clean_linux_package_cache
 }

@@ -30,11 +30,18 @@ func createInsightEntries() []dirEntry {
 		name string
 		path string
 	}{
+		{"Pacman Package Cache", "/var/cache/pacman/pkg"},
 		{"APT Package Cache", "/var/cache/apt/archives"},
+		{"yay AUR Cache", filepath.Join(home, ".cache", "yay")},
+		{"paru AUR Cache", filepath.Join(home, ".cache", "paru")},
 		{"npm Cache", filepath.Join(home, ".npm")},
 		{"Yarn Cache", filepath.Join(home, ".cache", "yarn")},
 		{"pnpm Store", filepath.Join(home, ".local", "share", "pnpm")},
 		{"pip Cache", filepath.Join(home, ".cache", "pip")},
+		{"uv Cache", filepath.Join(home, ".cache", "uv")},
+		{"Bun Cache", filepath.Join(home, ".cache", "bun")},
+		{"Cargo Cache", filepath.Join(home, ".cargo", "registry")},
+		{"Go Build Cache", filepath.Join(home, ".cache", "go-build")},
 		{"Gradle Cache", filepath.Join(home, ".gradle", "caches")},
 		{"Docker Data (rootless)", filepath.Join(home, ".local", "share", "docker")},
 		{"Docker Data", "/var/lib/docker"},
