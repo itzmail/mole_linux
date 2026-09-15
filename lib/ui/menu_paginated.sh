@@ -448,7 +448,7 @@ paginated_multi_select() {
         if [[ $cursor_pos -ge $current_visible ]]; then
             cursor_pos=$((current_visible > 0 ? current_visible - 1 : 0))
         fi
-        [[ $cursor_pos -lt 0 ]] && cursor_pos=0
+        [[ $cursor_pos -lt 0 ]] && cursor_pos=0 || true
     }
 
     # Initial view (default sort)
@@ -528,7 +528,7 @@ paginated_multi_select() {
         [[ $visible_count -le 0 ]] && visible_count=1
         if [[ $cursor_pos -ge $visible_count ]]; then
             cursor_pos=$((visible_count - 1))
-            [[ $cursor_pos -lt 0 ]] && cursor_pos=0
+            [[ $cursor_pos -lt 0 ]] && cursor_pos=0 || true
         fi
 
         printf "${clear_line}\n" >&2

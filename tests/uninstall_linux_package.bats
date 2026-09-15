@@ -72,3 +72,40 @@ EOF
     [[ "$status" -eq 0 ]] || return 1
     [[ "$output" != *"SUDO -v CALLED"* ]] || return 1
 }
+
+@test "linux_uninstall_package removes local webapp via mole_delete" {
+    run env PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_NO_AUTH=1 /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/linux.sh"
+TEST_DIR="$(mktemp -d)"
+export HOME="$TEST_DIR"
+mkdir -p "$TEST_DIR/.local/share/applications"
+touch "$TEST_DIR/.local/share/applications/Discord.desktop"
+mole_delete() { echo "MOLE_DELETED:$1"; rm -f "$1"; }
+linux_uninstall_package "webapp:Discord.desktop"
+[[ ! -f "$TEST_DIR/.local/share/applications/Discord.desktop" ]] || exit 1
+rm -rf "$TEST_DIR"
+EOF
+    [[ "$status" -eq 0 ]] || return 1
+    [[ "$output" == *"MOLE_DELETED:"*"Discord.desktop"* ]] || return 1
+}
+
+@test "linux_uninstall_package dry-run for webapp prints without deleting" {
+    run env PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_NO_AUTH=1 MOLE_DRY_RUN=1 /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/linux.sh"
+TEST_DIR="$(mktemp -d)"
+export HOME="$TEST_DIR"
+mkdir -p "$TEST_DIR/.local/share/applications"
+touch "$TEST_DIR/.local/share/applications/Discord.desktop"
+mole_delete() { echo "MOLE_DELETED:$1"; }
+linux_uninstall_package "Discord"
+[[ -f "$TEST_DIR/.local/share/applications/Discord.desktop" ]] || exit 1
+rm -rf "$TEST_DIR"
+EOF
+    [[ "$status" -eq 0 ]] || return 1
+    [[ "$output" == *"would remove webapp:"*"Discord.desktop"* ]] || return 1
+    [[ "$output" != *"MOLE_DELETED"* ]] || return 1
+}

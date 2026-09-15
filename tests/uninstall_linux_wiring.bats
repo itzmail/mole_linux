@@ -74,19 +74,34 @@ EOF
     [[ "$output" == *"LEFTOVERS_CHECKED:firefox"* ]] || return 1
 }
 
-@test "linux_uninstall_main exits 1 with a clear message when apt-get is absent" {
+@test "linux_uninstall_main exits 1 with a clear message when package manager is absent" {
     run env PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/linux.sh"
 command() {
-    if [[ "$1" == "-v" && "$2" == "apt-get" ]]; then return 1; fi
+    if [[ "$1" == "-v" && ("$2" == "apt-get" || "$2" == "pacman") ]]; then return 1; fi
     builtin command "$@"
 }
 linux_uninstall_main --list
 EOF
     [[ "$status" -eq 1 ]] || return 1
     [[ "$output" == *"not supported"* ]] || return 1
+}
+
+@test "linux_uninstall_main --help prints usage" {
+    run env PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/linux.sh"
+command() {
+    if [[ "$1" == "-v" ]]; then return 0; fi
+    builtin command "$@"
+}
+linux_uninstall_main --help
+EOF
+    [[ "$status" -eq 0 ]] || return 1
+    [[ "$output" == *"Usage:"* ]] || return 1
 }
 
 @test "linux_uninstall_main with no args opens the interactive menu and uninstalls the selection" {

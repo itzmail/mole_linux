@@ -10,6 +10,8 @@ setup_file() {
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/linux.sh"
+_linux_detect_pkg_manager() { echo "apt"; }
+_linux_list_webapps() { :; }
 dpkg-query() {
     cat <<'FIXTURE'
 firefox|120.0|install ok installed|optional|350000
@@ -18,7 +20,7 @@ FIXTURE
 linux_list_uninstallable_packages
 EOF
     [[ "$status" -eq 0 ]] || return 1
-    [[ "$output" == "firefox|120.0|350000" ]] || return 1
+    [[ "$output" == "firefox|120.0|350000|CLI|firefox" ]] || return 1
 }
 
 @test "linux_list_uninstallable_packages excludes essential/required/important/standard priority packages" {
@@ -26,6 +28,8 @@ EOF
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/linux.sh"
+_linux_detect_pkg_manager() { echo "apt"; }
+_linux_list_webapps() { :; }
 dpkg-query() {
     cat <<'FIXTURE'
 bash|5.2|install ok installed|required|8000
@@ -38,7 +42,7 @@ FIXTURE
 linux_list_uninstallable_packages
 EOF
     [[ "$status" -eq 0 ]] || return 1
-    [[ "$output" == "firefox|120.0|350000" ]] || return 1
+    [[ "$output" == "firefox|120.0|350000|CLI|firefox" ]] || return 1
 }
 
 @test "linux_list_uninstallable_packages excludes library packages" {
@@ -46,6 +50,8 @@ EOF
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/linux.sh"
+_linux_detect_pkg_manager() { echo "apt"; }
+_linux_list_webapps() { :; }
 dpkg-query() {
     cat <<'FIXTURE'
 libc6|2.37|install ok installed|optional|12000
@@ -56,7 +62,7 @@ FIXTURE
 linux_list_uninstallable_packages
 EOF
     [[ "$status" -eq 0 ]] || return 1
-    [[ "$output" == "firefox|120.0|350000" ]] || return 1
+    [[ "$output" == "firefox|120.0|350000|CLI|firefox" ]] || return 1
 }
 
 @test "linux_list_uninstallable_packages excludes non-installed packages" {
@@ -64,6 +70,8 @@ EOF
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/linux.sh"
+_linux_detect_pkg_manager() { echo "apt"; }
+_linux_list_webapps() { :; }
 dpkg-query() {
     cat <<'FIXTURE'
 oldpkg|1.0|deinstall ok config-files|optional|0
@@ -73,7 +81,7 @@ FIXTURE
 linux_list_uninstallable_packages
 EOF
     [[ "$status" -eq 0 ]] || return 1
-    [[ "$output" == "firefox|120.0|350000" ]] || return 1
+    [[ "$output" == "firefox|120.0|350000|CLI|firefox" ]] || return 1
 }
 
 @test "linux_list_uninstallable_packages sorts by name" {
@@ -81,6 +89,8 @@ EOF
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/linux.sh"
+_linux_detect_pkg_manager() { echo "apt"; }
+_linux_list_webapps() { :; }
 dpkg-query() {
     cat <<'FIXTURE'
 zsh|5.9|install ok installed|optional|3000
@@ -91,6 +101,6 @@ linux_list_uninstallable_packages
 EOF
     [[ "$status" -eq 0 ]] || return 1
     local expected
-    expected=$'ansible|8.5|20000\nzsh|5.9|3000'
+    expected=$'ansible|8.5|20000|CLI|ansible\nzsh|5.9|3000|CLI|zsh'
     [[ "$output" == "$expected" ]] || return 1
 }
