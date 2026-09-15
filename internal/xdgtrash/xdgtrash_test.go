@@ -10,6 +10,7 @@ import (
 func TestMoveCreatesFileAndTrashinfo(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", "")
 
 	srcDir := filepath.Join(home, "work")
 	if err := os.MkdirAll(srcDir, 0o755); err != nil {
@@ -53,6 +54,7 @@ func TestMoveCreatesFileAndTrashinfo(t *testing.T) {
 func TestMoveHandlesNameCollision(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", "")
 
 	makeAndTrash := func(n int) {
 		src := filepath.Join(home, "dup.txt")
@@ -78,6 +80,7 @@ func TestMoveHandlesNameCollision(t *testing.T) {
 func TestListAndTotalSize(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", "")
 
 	src := filepath.Join(home, "sized.txt")
 	if err := os.WriteFile(src, []byte("12345"), 0o644); err != nil {
@@ -113,6 +116,7 @@ func TestListAndTotalSize(t *testing.T) {
 func TestEmptyOneAndEmptyAll(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", "")
 
 	for _, name := range []string{"a.txt", "b.txt"} {
 		src := filepath.Join(home, name)
@@ -152,5 +156,48 @@ func TestEmptyOneAndEmptyAll(t *testing.T) {
 	}
 	if len(items) != 0 {
 		t.Fatalf("expected 0 items after EmptyAll, got %d", len(items))
+	}
+}
+
+func TestMoveCrossDevice(t *testing.T) {
+	// Uses t.TempDir (which is in /tmp, often a tmpfs) and sets HOME to a subfolder
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "fakehome")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", "")
+
+	srcDir := filepath.Join(tmp, "outside-tree")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	srcFile := filepath.Join(srcDir, "test.txt")
+	if err := os.WriteFile(srcFile, []byte("cross-device content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Move(srcDir); err != nil {
+		t.Fatalf("Move directory failed: %v", err)
+	}
+
+	if _, err := os.Stat(srcDir); !os.IsNotExist(err) {
+		t.Fatal("source directory should no longer exist after Move")
+	}
+
+	items, err := List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	if items[0].OriginalPath != srcDir {
+		t.Errorf("OriginalPath = %q, want %q", items[0].OriginalPath, srcDir)
+	}
+
+	if err := EmptyAll(); err != nil {
+		t.Fatalf("EmptyAll failed: %v", err)
 	}
 }

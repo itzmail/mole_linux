@@ -14,6 +14,7 @@ import (
 func TestEmptyOneRemovesReadOnlyTree(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", "")
 
 	// Matches Go's module cache layout: the top-level package directory
 	// itself stays writable (so it can still be renamed into the trash),

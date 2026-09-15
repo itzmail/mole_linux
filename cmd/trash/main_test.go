@@ -12,6 +12,7 @@ import (
 func TestRunListShowsTrashedItem(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", "")
 
 	src := filepath.Join(home, "keepme.txt")
 	if err := os.WriteFile(src, []byte("hello"), 0o644); err != nil {
@@ -37,6 +38,7 @@ func TestRunListShowsTrashedItem(t *testing.T) {
 func TestRunEmptyAllClearsTrash(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", "")
 
 	src := filepath.Join(home, "gone.txt")
 	if err := os.WriteFile(src, []byte("x"), 0o644); err != nil {
