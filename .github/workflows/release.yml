@@ -16,12 +16,18 @@ jobs:
     strategy:
       matrix:
         include:
+          - os: ubuntu-latest
+            target: release-linux-amd64
+            artifact_name: binaries-linux-amd64
+          - os: ubuntu-latest
+            target: release-linux-arm64
+            artifact_name: binaries-linux-arm64
           - os: macos-latest
             target: release-amd64
-            artifact_name: binaries-amd64
+            artifact_name: binaries-darwin-amd64
           - os: macos-latest
             target: release-arm64
-            artifact_name: binaries-arm64
+            artifact_name: binaries-darwin-arm64
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -46,13 +52,20 @@ jobs:
         run: |
           make ${{ matrix.target }}
           ls -l bin/
-          ./scripts/check_release_minos.sh
+          if [[ "${{ matrix.os }}" == "macos-latest" ]]; then
+            ./scripts/check_release_minos.sh
+          fi
 
-      - name: Package binaries for Homebrew
+      - name: Package binaries
         run: |
           cd bin
-          # Package binaries into tar.gz for Homebrew resource
-          if [[ "${{ matrix.target }}" == "release-arm64" ]]; then
+          if [[ "${{ matrix.target }}" == "release-linux-arm64" ]]; then
+            tar -czf binaries-linux-arm64.tar.gz analyze-linux-arm64 status-linux-arm64 trash-linux-arm64
+            ls -lh binaries-linux-arm64.tar.gz
+          elif [[ "${{ matrix.target }}" == "release-linux-amd64" ]]; then
+            tar -czf binaries-linux-amd64.tar.gz analyze-linux-amd64 status-linux-amd64 trash-linux-amd64
+            ls -lh binaries-linux-amd64.tar.gz
+          elif [[ "${{ matrix.target }}" == "release-arm64" ]]; then
             tar -czf binaries-darwin-arm64.tar.gz analyze-darwin-arm64 status-darwin-arm64
             ls -lh binaries-darwin-arm64.tar.gz
           else
@@ -64,7 +77,11 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ matrix.artifact_name }}
-          path: bin/*-darwin-*
+          path: |
+            bin/analyze-*
+            bin/status-*
+            bin/trash-*
+            bin/binaries-*.tar.gz
           retention-days: 1
 
   release:
@@ -102,9 +119,10 @@ jobs:
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
-            bin/analyze-darwin-*
-            bin/status-darwin-*
-            bin/binaries-darwin-*.tar.gz
+            bin/analyze-*
+            bin/status-*
+            bin/trash-*
+            bin/binaries-*.tar.gz
             bin/SHA256SUMS
 
       - name: Create Release
@@ -119,6 +137,7 @@ jobs:
 
   update-homebrew-core:
     name: Update Homebrew Core
+    if: github.repository == 'tw93/mole'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: release

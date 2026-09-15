@@ -1,6 +1,6 @@
 # Makefile for Mole
 
-.PHONY: all build clean check format test test-go verify release release-amd64 release-arm64 mod-download
+.PHONY: all build clean check format test test-go verify release release-amd64 release-arm64 release-linux-amd64 release-linux-arm64 mod-download
 
 # Output directory
 BIN_DIR := bin
@@ -71,6 +71,18 @@ release-arm64: mod-download
 	@echo "Building release binaries (arm64)..."
 	$(RELEASE_GO_ENV) GOOS=darwin GOARCH=arm64 $(GO) build -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/$(ANALYZE)-darwin-arm64 $(ANALYZE_SRC)
 	$(RELEASE_GO_ENV) GOOS=darwin GOARCH=arm64 $(GO) build -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/$(STATUS)-darwin-arm64 $(STATUS_SRC)
+
+release-linux-amd64: mod-download
+	@echo "Building release binaries (linux-amd64)..."
+	$(RELEASE_GO_ENV) GOOS=linux GOARCH=amd64 $(GO) build -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/$(ANALYZE)-linux-amd64 $(ANALYZE_SRC)
+	$(RELEASE_GO_ENV) GOOS=linux GOARCH=amd64 $(GO) build -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/$(STATUS)-linux-amd64 $(STATUS_SRC)
+	$(RELEASE_GO_ENV) GOOS=linux GOARCH=amd64 $(GO) build -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/$(TRASH)-linux-amd64 $(TRASH_SRC)
+
+release-linux-arm64: mod-download
+	@echo "Building release binaries (linux-arm64)..."
+	$(RELEASE_GO_ENV) GOOS=linux GOARCH=arm64 $(GO) build -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/$(ANALYZE)-linux-arm64 $(ANALYZE_SRC)
+	$(RELEASE_GO_ENV) GOOS=linux GOARCH=arm64 $(GO) build -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/$(STATUS)-linux-arm64 $(STATUS_SRC)
+	$(RELEASE_GO_ENV) GOOS=linux GOARCH=arm64 $(GO) build -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/$(TRASH)-linux-arm64 $(TRASH_SRC)
 
 clean:
 	@echo "Cleaning binaries..."
