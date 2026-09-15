@@ -4,18 +4,61 @@
 # Never a second delete path: leftovers route through mole_delete /
 # should_protect_path, same as every other Mole deletion.
 
+_linux_detect_pkg_manager() {
+    if command -v pacman > /dev/null 2>&1; then
+        echo "pacman"
+    elif command -v apt-get > /dev/null 2>&1 && command -v dpkg-query > /dev/null 2>&1; then
+        echo "apt"
+    else
+        echo "none"
+    fi
+}
+
 linux_list_uninstallable_packages() {
-    dpkg-query -W -f='${Package}|${Version}|${Status}|${Priority}|${Installed-Size}\n' 2> /dev/null |
-        awk -F'|' '
-            $3 !~ /install ok installed/ { next }
-            $4 == "required" || $4 == "essential" || $4 == "important" || $4 == "standard" { next }
-            $1 ~ /^lib[0-9a-z.+-]*$/ { next }
-            { print $1 "|" $2 "|" $5 }
-        ' | sort -t'|' -k1,1
+    local pm
+    pm=$(_linux_detect_pkg_manager)
+
+    case "$pm" in
+        pacman)
+            pacman -Qie 2> /dev/null | awk -F': ' '
+                /^Name/ { name=$2; sub(/^[ \t]+/, "", name); sub(/[ \t]+$/, "", name) }
+                /^Version/ { ver=$2; sub(/^[ \t]+/, "", ver); sub(/[ \t]+$/, "", ver) }
+                /^Installed Size/ {
+                    size_str=$2
+                    sub(/^[ \t]+/, "", size_str)
+                    split(size_str, arr, " ")
+                    val = arr[1]
+                    unit = arr[2]
+                    kb = 0
+                    if (unit == "B") kb = int((val + 1023) / 1024)
+                    else if (unit == "KiB") kb = int(val + 0.5)
+                    else if (unit == "MiB") kb = int(val * 1024 + 0.5)
+                    else if (unit == "GiB") kb = int(val * 1024 * 1024 + 0.5)
+                    else kb = int(val)
+                    if (name != "" && ver != "") {
+                        print name "|" ver "|" kb
+                    }
+                    name = ""; ver = ""
+                }
+            ' | sort -t'|' -k1,1
+            ;;
+        apt)
+            dpkg-query -W -f='${Package}|${Version}|${Status}|${Priority}|${Installed-Size}\n' 2> /dev/null |
+                awk -F'|' '
+                    $3 !~ /install ok installed/ { next }
+                    $4 == "required" || $4 == "essential" || $4 == "important" || $4 == "standard" { next }
+                    $1 ~ /^lib[0-9a-z.+-]*$/ { next }
+                    { print $1 "|" $2 "|" $5 }
+                ' | sort -t'|' -k1,1
+            ;;
+        *)
+            return 1
+            ;;
+    esac
 }
 
 _linux_valid_package_name() {
-    [[ "$1" =~ ^[a-z0-9][a-z0-9+.-]*$ ]]
+    [[ "$1" =~ ^[a-zA-Z0-9][a-zA-Z0-9+._-]*$ ]]
 }
 
 linux_uninstall_package() {
@@ -26,8 +69,25 @@ linux_uninstall_package() {
         return 1
     fi
 
+    local pm
+    pm=$(_linux_detect_pkg_manager)
+
+    local -a remove_cmd=()
+    case "$pm" in
+        pacman)
+            remove_cmd=(pacman -Rns --noconfirm "$pkgname")
+            ;;
+        apt)
+            remove_cmd=(apt-get remove -y "$pkgname")
+            ;;
+        *)
+            echo "Error: no supported package manager found (pacman or apt required)" >&2
+            return 1
+            ;;
+    esac
+
     if [[ "${MOLE_DRY_RUN:-0}" == "1" ]]; then
-        echo "  would run: apt-get remove -y $pkgname"
+        echo "  would run: ${remove_cmd[*]}"
         return 0
     fi
 
@@ -37,10 +97,10 @@ linux_uninstall_package() {
         sudo_prefix=(sudo)
     fi
 
-    if run_with_timeout "$MOLE_TIMEOUT_PKG_CLEANUP_SEC" "${sudo_prefix[@]}" apt-get remove -y "$pkgname"; then
+    if run_with_timeout "$MOLE_TIMEOUT_PKG_CLEANUP_SEC" "${sudo_prefix[@]}" "${remove_cmd[@]}"; then
         return 0
     fi
-    echo "Error: apt-get remove failed for $pkgname" >&2
+    echo "Error: package removal failed for $pkgname" >&2
     return 1
 }
 
@@ -59,12 +119,18 @@ linux_clean_package_leftovers() {
     return 0
 }
 
-_linux_uninstall_require_apt() {
-    if ! command -v apt-get > /dev/null 2>&1 || ! command -v dpkg-query > /dev/null 2>&1; then
-        echo "Error: mole uninstall is not supported on this system (apt-get/dpkg-query not found)." >&2
+_linux_uninstall_require_supported_pm() {
+    local pm
+    pm=$(_linux_detect_pkg_manager)
+    if [[ "$pm" == "none" ]]; then
+        echo "Error: mole uninstall is not supported on this system (pacman or apt-get/dpkg-query not found)." >&2
         return 1
     fi
     return 0
+}
+
+_linux_uninstall_require_apt() {
+    _linux_uninstall_require_supported_pm
 }
 
 _linux_print_package_table() {
@@ -132,7 +198,7 @@ _linux_uninstall_interactive() {
 }
 
 linux_uninstall_main() {
-    _linux_uninstall_require_apt || return 1
+    _linux_uninstall_require_supported_pm || return 1
 
     if [[ $# -eq 0 ]]; then
         _linux_uninstall_interactive
