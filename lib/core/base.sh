@@ -522,8 +522,14 @@ detect_architecture() {
         return 0
     fi
 
-    if [[ "$(uname -m)" == "arm64" ]]; then
-        export MOLE_ARCH_CACHE="Apple Silicon"
+    local arch
+    arch=$(uname -m)
+    if [[ "$arch" == "arm64" || "$arch" == "aarch64" ]]; then
+        if [[ "$(uname -s)" == "Darwin" ]]; then
+            export MOLE_ARCH_CACHE="Apple Silicon"
+        else
+            export MOLE_ARCH_CACHE="ARM64"
+        fi
     else
         export MOLE_ARCH_CACHE="Intel"
     fi

@@ -281,6 +281,24 @@ run_install_probe_with_timeout() {
     ' "$duration" "$@"
 }
 
+_install_stat_uid() {
+    local target="$1"
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        /usr/bin/stat -f%u "$target" 2> /dev/null || stat -f%u "$target" 2> /dev/null || true
+    else
+        stat -c%u "$target" 2> /dev/null || /usr/bin/stat -c%u "$target" 2> /dev/null || true
+    fi
+}
+
+_install_stat_mode() {
+    local target="$1"
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        /usr/bin/stat -f%Lp "$target" 2> /dev/null || stat -f%Lp "$target" 2> /dev/null || true
+    else
+        stat -c%a "$target" 2> /dev/null || /usr/bin/stat -c%a "$target" 2> /dev/null || true
+    fi
+}
+
 install_lock_has_unsafe_ancestor() {
     local use_sudo="$1"
     local probe="$INSTALL_DIR"
@@ -295,8 +313,8 @@ install_lock_has_unsafe_ancestor() {
         INSTALL_LOCK_UNSAFE_ANCESTOR="$probe"
         INSTALL_LOCK_UNSAFE_ANCESTOR_REASON="symlink"
         [[ ! -L "$probe" ]] || return 0
-        owner_uid=$(/usr/bin/stat -f%u "$probe" 2> /dev/null || true)
-        mode=$(/usr/bin/stat -f%Lp "$probe" 2> /dev/null || true)
+        owner_uid=$(_install_stat_uid "$probe")
+        mode=$(_install_stat_mode "$probe")
         INSTALL_LOCK_UNSAFE_ANCESTOR_REASON="unreadable"
         [[ "$owner_uid" =~ ^[0-9]+$ && "$mode" =~ ^[0-7]+$ ]] || return 0
         if [[ "$use_sudo" == "true" || ${EUID:-0} -eq 0 ]]; then
@@ -313,12 +331,14 @@ install_lock_has_unsafe_ancestor() {
             INSTALL_LOCK_UNSAFE_ANCESTOR_REASON="writable"
             (((8#$mode & 0002) == 0)) || return 0
         fi
-        INSTALL_LOCK_UNSAFE_ANCESTOR_REASON="unreadable"
-        acl_listing=$(/bin/ls -lde "$probe" 2> /dev/null) || return 0
-        INSTALL_LOCK_UNSAFE_ANCESTOR_REASON="acl"
-        if printf '%s\n' "$acl_listing" |
-            /usr/bin/grep -Eq '^[[:space:]]+[0-9]+:.*[[:space:]]allow[[:space:]]'; then
-            return 0
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            INSTALL_LOCK_UNSAFE_ANCESTOR_REASON="unreadable"
+            acl_listing=$(/bin/ls -lde "$probe" 2> /dev/null) || return 0
+            INSTALL_LOCK_UNSAFE_ANCESTOR_REASON="acl"
+            if printf '%s\n' "$acl_listing" |
+                /usr/bin/grep -Eq '^[[:space:]]+[0-9]+:.*[[:space:]]allow[[:space:]]'; then
+                return 0
+            fi
         fi
         [[ "$probe" == "/" ]] && break
         local parent_probe="${probe%/*}"
@@ -392,18 +412,25 @@ install_lock_prepare_dir() {
         install_lock_command "$use_sudo" mkdir -m 0700 "$lock_dir" 2> /dev/null || return 1
     fi
     [[ -d "$lock_dir" && ! -L "$lock_dir" ]] || return 1
-    # macOS applies inherited ACLs even when mkdir requests mode 0700. Remove
-    # them before touching the lock file, then verify that no ACL entry remains.
-    # Once this succeeds, only the expected owner can mutate directory entries.
-    install_lock_command "$use_sudo" /bin/chmod -N "$lock_dir" 2> /dev/null || return 1
-    acl_listing=$(install_lock_command "$use_sudo" /bin/ls -lde "$lock_dir" 2> /dev/null) || return 1
-    if printf '%s\n' "$acl_listing" | /usr/bin/grep -Eq '^[[:space:]]+[0-9]+:'; then
-        return 1
+
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        # macOS applies inherited ACLs even when mkdir requests mode 0700. Remove
+        # them before touching the lock file, then verify that no ACL entry remains.
+        # Once this succeeds, only the expected owner can mutate directory entries.
+        install_lock_command "$use_sudo" /bin/chmod -N "$lock_dir" 2> /dev/null || return 1
+        acl_listing=$(install_lock_command "$use_sudo" /bin/ls -lde "$lock_dir" 2> /dev/null) || return 1
+        if printf '%s\n' "$acl_listing" | /usr/bin/grep -Eq '^[[:space:]]+[0-9]+:'; then
+            return 1
+        fi
     fi
-    owner_uid=$(install_lock_command "$use_sudo" /usr/bin/stat -f%u "$lock_dir" 2> /dev/null || true)
-    mode=$(install_lock_command "$use_sudo" /usr/bin/stat -f%Lp "$lock_dir" 2> /dev/null || true)
+
     if [[ "$use_sudo" == "true" ]]; then
         expected_uid=0
+        owner_uid=$(sudo -n stat -c%u "$lock_dir" 2> /dev/null || sudo -n /usr/bin/stat -f%u "$lock_dir" 2> /dev/null || true)
+        mode=$(sudo -n stat -c%a "$lock_dir" 2> /dev/null || sudo -n /usr/bin/stat -f%Lp "$lock_dir" 2> /dev/null || true)
+    else
+        owner_uid=$(_install_stat_uid "$lock_dir")
+        mode=$(_install_stat_mode "$lock_dir")
     fi
     [[ "$owner_uid" == "$expected_uid" && "$mode" =~ ^[0-7]+$ ]] || return 1
     (((8#$mode & 0077) == 0)) || return 1
@@ -1156,28 +1183,30 @@ normalize_install_dir() {
 
 # Environment checks and directory setup
 check_requirements() {
-    if [[ "$OSTYPE" != "darwin"* ]]; then
-        log_error "This tool is designed for macOS only"
+    if [[ "$OSTYPE" != "darwin"* && "$OSTYPE" != "linux"* ]]; then
+        log_error "This tool is designed for macOS and Linux"
         exit 1
     fi
 
-    local minimum_macos_major=12
-    local macos_version=""
-    local macos_version_rc=0
-    macos_version=$(run_install_probe_with_timeout 2 \
-        /usr/bin/sw_vers -productVersion 2> /dev/null) || macos_version_rc=$?
-    if [[ $macos_version_rc -ne 0 ||
-        ! "$macos_version" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]]; then
-        log_error "Could not determine a supported macOS version (probe exit $macos_version_rc)"
-        log_error "Verify sw_vers works, then retry the installation"
-        exit 1
-    fi
-    local macos_major="${macos_version%%.*}"
-    macos_major=$((10#$macos_major))
-    if [[ $macos_major -lt $minimum_macos_major ]]; then
-        log_error "Mole requires macOS $minimum_macos_major or newer; found $macos_version"
-        log_error "Upgrade macOS before installing this release"
-        exit 1
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        local minimum_macos_major=12
+        local macos_version=""
+        local macos_version_rc=0
+        macos_version=$(run_install_probe_with_timeout 2 \
+            /usr/bin/sw_vers -productVersion 2> /dev/null) || macos_version_rc=$?
+        if [[ $macos_version_rc -ne 0 ||
+            ! "$macos_version" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]]; then
+            log_error "Could not determine a supported macOS version (probe exit $macos_version_rc)"
+            log_error "Verify sw_vers works, then retry the installation"
+            exit 1
+        fi
+        local macos_major="${macos_version%%.*}"
+        macos_major=$((10#$macos_major))
+        if [[ $macos_major -lt $minimum_macos_major ]]; then
+            log_error "Mole requires macOS $minimum_macos_major or newer; found $macos_version"
+            log_error "Upgrade macOS before installing this release"
+            exit 1
+        fi
     fi
 
     if homebrew_owns_mole; then
@@ -1240,6 +1269,9 @@ build_binary_from_source() {
         status)
             cmd_dir="cmd/status"
             ;;
+        trash)
+            cmd_dir="cmd/trash"
+            ;;
         *)
             return 1
             ;;
@@ -1284,7 +1316,7 @@ download_binary() {
     local arch
     arch=$(uname -m)
     local arch_suffix="amd64"
-    if [[ "$arch" == "arm64" ]]; then
+    if [[ "$arch" == "arm64" || "$arch" == "aarch64" ]]; then
         arch_suffix="arm64"
     fi
 
@@ -1306,7 +1338,7 @@ download_binary() {
         return 0
     fi
 
-    if [[ "${MOLE_EDGE_INSTALL:-}" == "true" ]]; then
+    if [[ "$OSTYPE" == "linux"* || "${MOLE_EDGE_INSTALL:-}" == "true" ]]; then
         if build_binary_from_source "$binary_name" "$staged_path" &&
             install_staged_binary "$staged_path" "$target_path"; then
             return 0
@@ -1490,9 +1522,12 @@ install_files() {
     fi
 
     if [[ "$source_dir_abs" != "$install_dir_abs" ]]; then
-        # Use absolute /usr/bin/sed (always BSD on macOS) so PATH-shadowed
-        # GNU sed from Homebrew gnu-sed does not break the -i '' syntax.
-        if ! maybe_sudo /usr/bin/sed -i '' "s|SCRIPT_DIR=.*|SCRIPT_DIR=\"$CONFIG_DIR\"|" "$INSTALL_DIR/mole"; then
+        # Use portable sed invocation for macOS (BSD sed) vs Linux (GNU sed)
+        local -a sed_cmd=(sed -i)
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            sed_cmd=(/usr/bin/sed -i '')
+        fi
+        if ! maybe_sudo "${sed_cmd[@]}" "s|SCRIPT_DIR=.*|SCRIPT_DIR=\"$CONFIG_DIR\"|" "$INSTALL_DIR/mole"; then
             log_error "Failed to point $INSTALL_DIR/mole at $CONFIG_DIR"
             return 1
         fi
@@ -1511,6 +1546,11 @@ install_files() {
     fi
     if ! download_binary "status"; then
         exit 1
+    fi
+    if [[ "$OSTYPE" == "linux"* ]] || [[ -d "$SOURCE_DIR/cmd/trash" ]]; then
+        if ! download_binary "trash"; then
+            exit 1
+        fi
     fi
     rm -f "$helper_install_marker"
 }
