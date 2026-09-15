@@ -72,6 +72,11 @@ paginated_multi_select() {
     local title="$1"
     shift
     local -a items=("$@")
+    # A deliberate quit and a real failure both leave through return 1, and
+    # callers deciding between "user cancelled" and "selection broke" need to
+    # tell them apart. Reset here so a stale value from a previous menu can
+    # never masquerade as this run's answer.
+    _MOLE_MENU_USER_QUIT=0
     local external_alt_screen=false
     if [[ "${MOLE_MANAGED_ALT_SCREEN:-}" == "1" || "${MOLE_MANAGED_ALT_SCREEN:-}" == "true" ]]; then
         external_alt_screen=true
@@ -602,9 +607,13 @@ paginated_multi_select() {
                 [[ $i -lt $((seg_count - 1)) ]] && total_len=$((total_len + 3))
             done
 
-            # Level 1: Remove "Space Select" if too wide
+            # Level 1: drop the page and search hints. "Space Select" is the
+            # only footer entry that teaches the primary interaction, so it
+            # outranks paging, sorting and filtering, which a user finds by
+            # trying keys. Dropping it first made multi-select invisible below
+            # 76 columns and read as "uninstall has no multi-select" (#1382).
             if [[ $total_len -gt $term_width ]]; then
-                _segs=("$nav" "$page_ctrl" "$enter" "$sort_ctrl" "$order_ctrl" "$filter_ctrl" "$cancel_label")
+                _segs=("$nav" "$space_select" "$enter" "$sort_ctrl" "$order_ctrl" "$cancel_label")
 
                 total_len=0
                 seg_count=${#_segs[@]}
@@ -613,9 +622,9 @@ paginated_multi_select() {
                     [[ $i -lt $((seg_count - 1)) ]] && total_len=$((total_len + 3))
                 done
 
-                # Level 2: Remove sort label and page hint if still too wide
+                # Level 2: keep only selection, save and cancel.
                 if [[ $total_len -gt $term_width ]]; then
-                    _segs=("$nav" "$enter" "$order_ctrl" "$filter_ctrl" "$cancel_label")
+                    _segs=("$nav" "$space_select" "$enter" "$cancel_label")
                 fi
             fi
 
@@ -663,6 +672,7 @@ paginated_multi_select() {
                     top_index=0
                     need_full_redraw=true
                 else
+                    _MOLE_MENU_USER_QUIT=1
                     _pm_cleanup
                     return 1
                 fi

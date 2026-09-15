@@ -27,23 +27,25 @@ jobs:
         with:
           path: |
             ~/Library/Caches/Homebrew
-            /usr/local/Cellar/shfmt
             /usr/local/Cellar/shellcheck
             /usr/local/Cellar/golangci-lint
           key: ${{ runner.os }}-brew-quality-v2-${{ hashFiles('**/Brewfile') }}
           restore-keys: |
             ${{ runner.os }}-brew-quality-v2-
 
-      - name: Install tools
-        run: brew install shfmt shellcheck
-
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
 
+      - name: Install tools
+        run: |
+          brew install shellcheck
+          go install mvdan.cc/sh/v3/cmd/shfmt@v3.13.1
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
       - name: Install goimports
-        run: go install golang.org/x/tools/cmd/goimports@latest
+        run: go install golang.org/x/tools/cmd/goimports@v0.49.0
 
       - name: Check shell formatting (shfmt -d)
         run: |
@@ -85,7 +87,6 @@ jobs:
         with:
           path: |
             ~/Library/Caches/Homebrew
-            /usr/local/Cellar/shfmt
             /usr/local/Cellar/shellcheck
             /usr/local/Cellar/golangci-lint
           key: ${{ runner.os }}-brew-quality-v2-${{ hashFiles('**/Brewfile') }}
@@ -93,7 +94,7 @@ jobs:
             ${{ runner.os }}-brew-quality-v2-
 
       - name: Install tools
-        run: brew install shfmt shellcheck
+        run: brew install shellcheck
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0

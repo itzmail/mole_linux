@@ -1,6 +1,7 @@
 #!/usr/bin/env bats
 
 setup_file() {
+    export MOLE_PURGE_YES=1
     PROJECT_ROOT="$(cd "${BATS_TEST_DIRNAME}/.." && pwd)"
     export PROJECT_ROOT
     
@@ -153,8 +154,11 @@ EOF
     # On case-insensitive FS (macOS default) both resolve to the same path,
     # so count should be 1. On case-sensitive FS, Code doesn't exist, so
     # resolve_path_case returns it unchanged, count may be 2 which is correct
-    # since they really are different directories.
-    if [[ -d "$HOME/Code" && "$(cd "$HOME/Code" && pwd -P)" == "$(cd "$HOME/code" && pwd -P)" ]]; then
+    # since they really are different directories. /bin/pwd queries the
+    # filesystem (getcwd) so the case-folding test actually fires here,
+    # unlike the bash builtin `pwd -P` which reuses the cd argument's
+    # casing and makes this guard a no-op on APFS (#1416).
+    if [[ -d "$HOME/Code" && "$(cd "$HOME/Code" && /bin/pwd -P)" == "$(cd "$HOME/code" && /bin/pwd -P)" ]]; then
         [ "$output" = "1" ]
     fi
 }
@@ -172,10 +176,61 @@ EOF
 
     [ "$status" -eq 0 ]
 
-    # On case-insensitive FS, $HOME/code should appear only once
-    if [[ -d "$HOME/Code" && "$(cd "$HOME/Code" && pwd -P)" == "$(cd "$HOME/code" && pwd -P)" ]]; then
+    # On case-insensitive FS, $HOME/code should appear only once. See the
+    # load_purge_config test above for why the guard uses /bin/pwd -P.
+    if [[ -d "$HOME/Code" && "$(cd "$HOME/Code" && /bin/pwd -P)" == "$(cd "$HOME/code" && /bin/pwd -P)" ]]; then
         local count
         count=$(echo "$output" | grep -c "$HOME/code" || true)
         [ "$count" -le 1 ]
     fi
+}
+
+@test "discover_project_dirs shows a Workspace default once when the on-disk dir is workspace (#1416)" {
+    # The default search paths include ~/Workspace (capital W). When the
+    # real on-disk directory is ~/workspace (lowercase) on a
+    # case-insensitive APFS volume, mole_purge_resolve_path_case used to
+    # return ~/Workspace (bash's `pwd -P` reuses the cd argument's casing
+    # instead of querying the filesystem), so the string dedup failed and
+    # the project appeared twice in `mo purge` output.
+    mkdir -p "$HOME/workspace/myproject"
+    touch "$HOME/workspace/myproject/package.json"
+
+    run env HOME="$HOME" /bin/bash -c "
+        source '$PROJECT_ROOT/lib/clean/project.sh'
+        discover_project_dirs
+    "
+
+    [ "$status" -eq 0 ]
+
+    # Only run the count assertion where ~/Workspace folds onto
+    # ~/workspace. On a case-sensitive FS ~/Workspace genuinely does not
+    # exist and is correctly absent, so there is nothing to dedup.
+    if [[ -d "$HOME/Workspace" && "$(cd "$HOME/Workspace" && /bin/pwd -P)" == "$(cd "$HOME/workspace" && /bin/pwd -P)" ]]; then
+        local workspace_count
+        workspace_count=$(printf '%s\n' "$output" | grep -c -iE "${HOME//\//\\/}/[Ww]orkspace$" || true)
+        [ "$workspace_count" -eq 1 ]
+    fi
+}
+
+@test "incomplete discovery keeps completed roots without saving a partial scope" {
+    mkdir -p "$HOME/discovery"
+    run env HOME="$HOME/discovery" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/clean/project.sh"
+mkdir -p "$HOME/Alpha/app" "$HOME/Slow/app"
+touch "$HOME/Alpha/app/package.json"
+run_with_timeout() {
+    shift
+    case "$2" in
+        */Slow) return 124 ;;
+        *) "$@" ;;
+    esac
+}
+load_purge_config
+[[ $PURGE_DISCOVERY_STATUS -eq 124 ]]
+[[ "${PURGE_SEARCH_PATHS[*]}" == *"$HOME/Alpha"* ]]
+[[ ! -e "$PURGE_CONFIG_FILE" ]]
+EOF
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"discovery was incomplete"* ]] || return 1
 }

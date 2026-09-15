@@ -49,6 +49,73 @@ EOF
     [[ -z "$(ls -A "$MOLE_TEST_TRASH_DIR" 2> /dev/null || true)" ]]
 }
 
+@test "safe_remove final sink guard preserves timeout and signal cancellation" {
+    local victim="$SANDBOX/final-guard-victim"
+    mkdir -p "$victim"
+    : > "$victim/keep.txt"
+
+    run /bin/bash --noprofile --norc <<EOF
+$(prelude)
+export MOLE_CURRENT_COMMAND=clean
+guard_rc=0
+final_guard() { return "\$guard_rc"; }
+_MOLE_SAFE_REMOVE_FINAL_GUARD=final_guard
+for guard_rc in 124 130; do
+    MOLE_CLEAN_CANCEL_STATUS=0
+    set +e
+    safe_remove "$victim" true 1
+    actual_rc=\$?
+    set -e
+    printf 'GUARD:%s ACTUAL:%s CANCEL:%s\n' \
+        "\$guard_rc" "\$actual_rc" "\$MOLE_CLEAN_CANCEL_STATUS"
+done
+[[ -d "$victim" ]]
+EOF
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+    [[ "$output" == *"GUARD:124 ACTUAL:124 CANCEL:124"* ]] || return 1
+    [[ "$output" == *"GUARD:130 ACTUAL:130 CANCEL:130"* ]] || return 1
+    [[ -d "$victim" ]]
+}
+
+@test "safe_remove rebinds identity after a final sink guard" {
+    local victim="$SANDBOX/final-guard-replaced"
+    local original="$SANDBOX/final-guard-original"
+    mkdir -p "$victim"
+    : > "$victim/old.txt"
+
+    run /bin/bash --noprofile --norc <<EOF
+$(prelude)
+_mole_snapshot_path_identity "$victim"
+expected_parent="\$_MOLE_PATH_SNAPSHOT_PARENT"
+expected_parent_id="\$_MOLE_PATH_SNAPSHOT_PARENT_ID"
+expected_target_id="\$_MOLE_PATH_SNAPSHOT_TARGET_ID"
+final_guard() {
+    mv "\$1" "$original"
+    mkdir -p "\$1"
+    : > "\$1/replacement.txt"
+}
+_MOLE_SAFE_REMOVE_FINAL_GUARD=final_guard
+set +e
+safe_remove "$victim" true 1 "" \
+    "\$expected_parent" "\$expected_parent_id" "\$expected_target_id"
+actual_rc=\$?
+set -e
+printf 'RC:%s ORIGINAL:%s REPLACEMENT:%s\n' \
+    "\$actual_rc" "\$(test -f "$original/old.txt" && echo kept || echo missing)" \
+    "\$(test -f "$victim/replacement.txt" && echo kept || echo missing)"
+EOF
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+    [[ "$output" == *"RC:1 ORIGINAL:kept REPLACEMENT:kept"* ]]
+}
+
 @test "mole_delete trash mode moves the target instead of rm -rf" {
     local victim="$SANDBOX/victim_trash"
     mkdir -p "$victim"
@@ -309,6 +376,41 @@ EOF
     grep -qF "direct:/Applications/Microsoft Word.app:false" "$trace"
     [[ "$(grep -c '^trash:' "$trace" 2> /dev/null || true)" -eq 0 ]] || return 1
     [[ "$(grep -c '^osascript:' "$trace" 2> /dev/null || true)" -eq 0 ]]
+}
+
+@test "mixed-case app suffix still uses the application Trash path" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+_mole_path_is_application_bundle "/Applications/Example.APP"
+_mole_path_requires_direct_trash "/Applications/Example.App"
+EOF
+
+    [ "$status" -eq 0 ]
+}
+
+@test "application Trash falls back to Finder after a direct TCC denial" {
+    local trace="$SANDBOX/app-finder-fallback.log"
+
+    run /bin/bash --noprofile --norc <<EOF
+$(prelude)
+unset MOLE_TEST_TRASH_DIR
+unset MOLE_TEST_NO_AUTH
+export MOLE_DELETE_MODE=trash
+_mole_move_path_to_user_trash() {
+    printf 'direct:%s:%s\n' "\$1" "\$2" >> "$trace"
+    return "\$MOLE_ERR_PRIVACY_DENIED"
+}
+_mole_move_app_to_trash_via_finder() {
+    printf 'finder:%s\n' "\$1" >> "$trace"
+    return 0
+}
+_mole_move_to_trash "/Applications/Developer.app" false
+EOF
+
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [[ "$(grep -c '^direct:/Applications/Developer.app:false$' "$trace" 2> /dev/null || true)" -eq 1 ]] || return 1
+    [[ "$(grep -c '^finder:/Applications/Developer.app$' "$trace" 2> /dev/null || true)" -eq 1 ]]
 }
 
 @test "Trash mode refuses sudo-required app below mutable Applications" {
@@ -979,6 +1081,247 @@ EOF
     [ "$size_col" = "unknown" ]
 }
 
+@test "mole_delete stops before Trash or permanent removal when sizing is interrupted" {
+    local trash_victim="$SANDBOX/interrupted-trash-size"
+    local sudo_victim="$SANDBOX/interrupted-sudo-size"
+    mkdir -p "$trash_victim" "$sudo_victim"
+
+    run /bin/bash --noprofile --norc <<EOF
+$(prelude)
+get_path_size_kb() { return 130; }
+_mole_move_to_trash() {
+    printf 'UNEXPECTED_TRASH:%s\n' "\$1"
+    return 99
+}
+safe_remove() {
+    printf 'UNEXPECTED_REMOVE:%s\n' "\$1"
+    return 99
+}
+
+export MOLE_DELETE_MODE=trash
+trash_rc=0
+mole_delete "$trash_victim" || trash_rc=\$?
+printf 'TRASH_RC=%s\n' "\$trash_rc"
+
+unset MOLE_TEST_NO_AUTH
+export MOLE_DELETE_MODE=permanent
+_mole_privileged_path_has_mutable_ancestor() { return 1; }
+run_with_timeout() { return 130; }
+safe_sudo_remove() {
+    printf 'UNEXPECTED_SUDO_REMOVE:%s\n' "\$1"
+    return 99
+}
+sudo_rc=0
+mole_delete "$sudo_victim" true || sudo_rc=\$?
+printf 'SUDO_RC=%s\n' "\$sudo_rc"
+EOF
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"TRASH_RC=130"* ]] || return 1
+    [[ "$output" == *"SUDO_RC=130"* ]] || return 1
+    [[ "$output" != *"UNEXPECTED_"* ]] || return 1
+    [[ -e "$trash_victim" ]] || return 1
+    [[ -e "$sudo_victim" ]]
+}
+
+@test "mole_delete preserves an interrupted Trash action in its return code and forensic log" {
+    local victim="$SANDBOX/interrupted-trash-action"
+    mkdir -p "$victim"
+
+    run /bin/bash --noprofile --norc <<EOF
+$(prelude)
+export MOLE_DELETE_MODE=trash
+_mole_move_to_trash() { return 130; }
+safe_remove() {
+    printf 'UNEXPECTED_REMOVE:%s\n' "\$1"
+    return 99
+}
+rc=0
+mole_delete "$victim" || rc=\$?
+printf 'RC=%s\n' "\$rc"
+EOF
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"RC=130"* ]] || return 1
+    [[ "$output" != *"UNEXPECTED_REMOVE"* ]] || return 1
+    [[ -d "$victim" ]] || return 1
+    [ "$(awk -F'\t' 'END { print $4 }' "$MOLE_DELETE_LOG")" = "interrupted" ]
+}
+
+@test "safe_remove refuses a replacement reached through a swapped parent" {
+    local parent="$SANDBOX/bound-parent"
+    local victim="$parent/victim"
+    mkdir -p "$victim"
+    printf 'original\n' > "$victim/data"
+
+    run /bin/bash --noprofile --norc <<EOF
+$(prelude)
+_mole_snapshot_path_identity "$victim"
+expected_parent="\$_MOLE_PATH_SNAPSHOT_PARENT"
+expected_parent_id="\$_MOLE_PATH_SNAPSHOT_PARENT_ID"
+expected_target_id="\$_MOLE_PATH_SNAPSHOT_TARGET_ID"
+
+mv "$parent" "$parent.original"
+mkdir -p "$victim"
+printf 'replacement\n' > "$victim/data"
+
+rc=0
+safe_remove "$victim" true 1 "" \
+    "\$expected_parent" "\$expected_parent_id" "\$expected_target_id" || rc=\$?
+[[ \$rc -ne 0 ]] || exit 1
+[[ -f "$victim/data" && -f "$parent.original/victim/data" ]]
+EOF
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+}
+
+@test "safe_remove records a clean interruption and blocks later deletion sinks" {
+    local first="$SANDBOX/interrupted-clean-delete"
+    local second="$SANDBOX/later-clean-delete"
+    mkdir -p "$first" "$second"
+
+    run /bin/bash --noprofile --norc <<EOF
+$(prelude)
+export MOLE_CURRENT_COMMAND=clean
+export MOLE_CLEAN_CANCEL_STATUS=0
+rm() { return 130; }
+rc=0
+safe_remove "$first" true 1 || rc=\$?
+[[ \$rc -eq 130 ]] || exit 1
+[[ \$MOLE_CLEAN_CANCEL_STATUS -eq 130 ]] || exit 1
+
+rm() {
+    printf 'UNEXPECTED_RM:%s\n' "\$1"
+    /bin/rm "\$@"
+}
+rc=0
+safe_remove "$second" true 1 || rc=\$?
+[[ \$rc -eq 130 ]] || exit 1
+[[ -d "$first" && -d "$second" ]]
+EOF
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+    [[ "$output" != *"UNEXPECTED_RM"* ]]
+}
+
+@test "path identity rejects incomplete metadata without retaining a previous binding" {
+    run env PROJECT_ROOT="$PROJECT_ROOT" SANDBOX="$SANDBOX" /bin/bash <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+mkdir -p "$SANDBOX/artifact with spaces"
+_mole_snapshot_path_identity "$SANDBOX/artifact with spaces"
+[[ -n "$_MOLE_PATH_SNAPSHOT_TARGET_ID" ]] || exit 1
+function /usr/bin/stat { printf '1:2\n'; }
+if _mole_snapshot_path_identity "$SANDBOX/artifact with spaces"; then
+    exit 1
+fi
+[[ -z "$_MOLE_PATH_SNAPSHOT_PARENT" && -z "$_MOLE_PATH_SNAPSHOT_PARENT_ID" && -z "$_MOLE_PATH_SNAPSHOT_TARGET_ID" ]] || exit 1
+EOF
+    [ "$status" -eq 0 ]
+}
+
+@test "mole_delete never binds a replacement installed during identity snapshot" {
+    local victim="$SANDBOX/snapshot-race.app"
+    mkdir -p "$victim"
+    printf 'original\n' > "$victim/data"
+
+    run /bin/bash --noprofile --norc <<EOF
+$(prelude)
+export MOLE_DELETE_MODE=permanent
+expected_identity=\$("\$STAT_BSD" -f%d:%i:%m "$victim")
+eval "\$(declare -f _mole_snapshot_path_identity | sed '1s/_mole_snapshot_path_identity/_real_mole_snapshot_path_identity/')"
+_mole_snapshot_path_identity() {
+    _real_mole_snapshot_path_identity "\$1" || return \$?
+    mv "\$1" "\$1.original"
+    mkdir -p "\$1"
+    printf 'replacement\n' > "\$1/data"
+}
+safe_remove() {
+    printf 'UNEXPECTED_REMOVE:%s\n' "\$1"
+    return 0
+}
+
+rc=0
+mole_delete "$victim" false "\$expected_identity" || rc=\$?
+[[ \$rc -ne 0 ]] || exit 1
+[[ -f "$victim/data" && -f "$victim.original/data" ]]
+EOF
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+    [[ "$output" != *"UNEXPECTED_REMOVE"* ]]
+}
+
+@test "Finder fallback refuses an app replaced after direct Trash denial" {
+    local victim="$SANDBOX/Raced.app"
+    local trace="$SANDBOX/raced-finder.log"
+    mkdir -p "$victim"
+    printf 'original\n' > "$victim/data"
+
+    run /bin/bash --noprofile --norc <<EOF
+$(prelude)
+unset MOLE_TEST_TRASH_DIR
+unset MOLE_TEST_NO_AUTH
+export MOLE_DELETE_MODE=trash
+expected_identity=\$("\$STAT_BSD" -f%d:%i:%m "$victim")
+_mole_path_requires_direct_trash() { return 0; }
+_mole_path_is_application_bundle() { return 0; }
+_mole_move_path_to_user_trash() {
+    mv "\$1" "\$1.original"
+    mkdir -p "\$1"
+    printf 'replacement\n' > "\$1/data"
+    return "\$MOLE_ERR_PRIVACY_DENIED"
+}
+osascript() {
+    printf 'UNEXPECTED_FINDER:%s\n' "\$*" >> "$trace"
+    return 0
+}
+
+rc=0
+mole_delete "$victim" false "\$expected_identity" || rc=\$?
+[[ \$rc -ne 0 ]] || exit 1
+[[ -f "$victim/data" && -f "$victim.original/data" ]]
+EOF
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+    [[ ! -e "$trace" ]]
+}
+
+@test "mole_delete dry-run propagates an interrupted preview registration" {
+    local victim="$SANDBOX/interrupted-preview"
+    mkdir -p "$victim"
+
+    run /bin/bash --noprofile --norc <<EOF
+$(prelude)
+export MOLE_DRY_RUN=1
+_record_file_ops_dry_run_target() { return 130; }
+safe_remove() {
+    printf 'UNEXPECTED_REMOVE:%s\n' "\$1"
+    return 99
+}
+rc=0
+mole_delete "$victim" || rc=\$?
+printf 'RC=%s\n' "\$rc"
+EOF
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"RC=130"* ]] || return 1
+    [[ "$output" != *"UNEXPECTED_REMOVE"* ]] || return 1
+    [[ -d "$victim" ]] || return 1
+    [ "$(awk -F'\t' 'END { print $4 }' "$MOLE_DELETE_LOG")" = "interrupted" ]
+}
+
 @test "mole_delete warns once per session when audit log is unwritable" {
     local victim="$SANDBOX/log_blocked"
     : > "$victim"
@@ -1011,8 +1354,8 @@ EOF
     # Regression: the primary sizing du (file_ops.sh get_path_size_kb) ran
     # WITHOUT run_with_timeout while every sibling call site was bounded, so
     # one stalled SMB/FUSE mount wedged a parallel scan worker forever. The
-    # stub du sleeps far past the 1s override; a bounded helper returns "0"
-    # quickly, an unbounded one trips the bats timeout.
+    # stub du sleeps far past the 1s override; a bounded helper returns the
+    # timeout status quickly, while an unbounded one trips the bats timeout.
     local stub_dir="$SANDBOX/stub-bin"
     mkdir -p "$stub_dir"
     cat > "$stub_dir/du" <<'STUB'
@@ -1037,8 +1380,8 @@ get_path_size_kb "$victim_dir"
 EOF
     elapsed=$((SECONDS - started))
 
-    [ "$status" -eq 0 ]
-    [ "$output" = "0" ] || return 1
+    [ "$status" -eq 124 ]
+    [ -z "$output" ] || return 1
     # Generous ceiling: 1s timeout + escalation grace, never 30s.
     [ "$elapsed" -lt 10 ] || return 1
 }

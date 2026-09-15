@@ -55,6 +55,27 @@ func TestCreateInsightEntriesIncludesOrbStackData(t *testing.T) {
 	t.Fatal("OrbStack Data insight not found")
 }
 
+func TestCreateInsightEntriesIncludesUvCache(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	uvCache := filepath.Join(home, ".cache", "uv")
+	if err := os.MkdirAll(uvCache, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	entries := createInsightEntries()
+	for _, entry := range entries {
+		if entry.Name == "uv Cache" {
+			if entry.Path != uvCache {
+				t.Fatalf("uv Cache path = %q, want %q", entry.Path, uvCache)
+			}
+			return
+		}
+	}
+	t.Fatal("uv Cache insight not found")
+}
+
 func TestMeasureOldDownloads(t *testing.T) {
 	// Create a temp directory with old and new files.
 	dir := t.TempDir()

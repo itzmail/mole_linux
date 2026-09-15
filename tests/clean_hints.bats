@@ -198,35 +198,9 @@ EOT_NESTED
     [[ "$output" == *"skipped=true"* ]]
 }
 
-@test "show_system_data_hint_notice reports large clue paths" {
-    mkdir -p "$HOME/Library/Developer/Xcode/DerivedData"
-
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOT3'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/clean/hints.sh"
-run_with_timeout() {
-    shift
-    if [[ "${1:-}" == "du" ]]; then
-        printf '3145728 %s\n' "${4:-/tmp}"
-        return 0
-    fi
-    "$@"
-}
-bytes_to_human() { echo "3.00GB"; }
-note_activity() { :; }
-show_system_data_hint_notice
-EOT3
-
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"Xcode DerivedData"* ]] || return 1
-    [[ "$output" == *"3.00GB"* ]] || return 1
-    [[ "$output" == *"~/Library/Developer/Xcode/DerivedData"* ]] || return 1
-}
-
 @test "show_user_launch_agent_hint_notice reports missing app-backed target" {
     mkdir -p "$HOME/Library/LaunchAgents"
-    cat > "$HOME/Library/LaunchAgents/com.example.stale.plist" <<'PLIST'
+    cat > "$HOME/Library/LaunchAgents/com.example.stale.plist" << 'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -241,7 +215,7 @@ EOT3
 </plist>
 PLIST
 
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOT4'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOT4'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/hints.sh"
@@ -250,9 +224,9 @@ show_user_launch_agent_hint_notice
 EOT4
 
     [ "$status" -eq 0 ]
-	[[ "$output" == *"Stale login item · ~/Library/LaunchAgents/com.example.stale.plist"* ]] || return 1
-	[[ "$output" == *"Missing app/helper target"* ]] || return 1
-	[[ "$output" == *"review before removing"* ]] || return 1
+    [[ "$output" == *"Stale login item · ~/Library/LaunchAgents/com.example.stale.plist"* ]] || return 1
+    [[ "$output" == *"Missing app/helper target"* ]] || return 1
+    [[ "$output" == *"review before removing"* ]] || return 1
 }
 
 @test "show_user_launch_agent_hint_notice trusts an existing executable Program target (#1262)" {
@@ -260,7 +234,7 @@ EOT4
     mkdir -p "$HOME/Library/LaunchAgents" "$(dirname "$updater")"
     touch "$updater"
     chmod +x "$updater"
-    cat > "$HOME/Library/LaunchAgents/com.google.GoogleUpdater.wake.plist" <<PLIST
+    cat > "$HOME/Library/LaunchAgents/com.google.GoogleUpdater.wake.plist" << PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -280,7 +254,7 @@ EOT4
 </plist>
 PLIST
 
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" UPDATER="$updater" /bin/bash --noprofile --norc <<'EOT4A'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" UPDATER="$updater" /bin/bash --noprofile --norc << 'EOT4A'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/hints.sh"
@@ -288,7 +262,7 @@ bundle_has_installed_app() { return 0; }
 note_activity() { :; }
 
 live_output=$(show_user_launch_agent_hint_notice)
-[[ "$live_output" != *"Stale login item"* ]]
+[[ "$live_output" != *"Stale login item"* ]] || exit 1
 
 chmod -x "$UPDATER"
 show_user_launch_agent_hint_notice
@@ -299,14 +273,14 @@ show_user_launch_agent_hint_notice
 EOT4A
 
     [ "$status" -eq 0 ]
-	[[ "$output" == *"Stale login item · ~/Library/LaunchAgents/com.google.GoogleUpdater.wake.plist"* ]] || return 1
+    [[ "$output" == *"Stale login item · ~/Library/LaunchAgents/com.google.GoogleUpdater.wake.plist"* ]] || return 1
     [[ "$output" == *"Program target is not executable"* ]] || return 1
     [[ "$output" == *"Missing app/helper target"* ]] || return 1
 }
 
 @test "show_user_launch_agent_hint_notice gives Program precedence over ProgramArguments.0" {
     mkdir -p "$HOME/Library/LaunchAgents"
-    cat > "$HOME/Library/LaunchAgents/com.example.program-precedence.plist" <<'PLIST'
+    cat > "$HOME/Library/LaunchAgents/com.example.program-precedence.plist" << 'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -324,7 +298,7 @@ EOT4A
 </plist>
 PLIST
 
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOT4B'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOT4B'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/hints.sh"
@@ -333,13 +307,13 @@ show_user_launch_agent_hint_notice
 EOT4B
 
     [ "$status" -eq 0 ]
-	[[ "$output" == *"Stale login item · ~/Library/LaunchAgents/com.example.program-precedence.plist"* ]] || return 1
+    [[ "$output" == *"Stale login item · ~/Library/LaunchAgents/com.example.program-precedence.plist"* ]] || return 1
     [[ "$output" == *"Missing app/helper target"* ]] || return 1
 }
 
 @test "show_user_launch_agent_hint_notice skips custom shell wrappers" {
     mkdir -p "$HOME/Library/LaunchAgents"
-    cat > "$HOME/Library/LaunchAgents/com.example.custom.plist" <<'PLIST'
+    cat > "$HOME/Library/LaunchAgents/com.example.custom.plist" << 'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -356,7 +330,7 @@ EOT4B
 </plist>
 PLIST
 
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOT5'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOT5'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/hints.sh"
@@ -371,7 +345,7 @@ EOT5
 
 @test "show_user_launch_agent_hint_notice skips MachServices-only plists" {
     mkdir -p "$HOME/Library/LaunchAgents"
-    cat > "$HOME/Library/LaunchAgents/com.google.keystone.agent.plist" <<'PLIST'
+    cat > "$HOME/Library/LaunchAgents/com.google.keystone.agent.plist" << 'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -387,7 +361,7 @@ EOT5
 </plist>
 PLIST
 
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOT6'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOT6'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/hints.sh"
@@ -400,376 +374,28 @@ EOT6
     [[ "$output" != *"Associated app not found"* ]] || return 1
 }
 
-# ---- Orphan dotfile hint tests ----
-
-@test "show_orphan_dotdir_hint_notice skips known-safe directories" {
-    mkdir -p "$HOME/.ssh" "$HOME/.config" "$HOME/.npm" "$HOME/.cargo" "$HOME/.putty"
-    touch -t 202401010000 "$HOME/.ssh" "$HOME/.config" "$HOME/.npm" "$HOME/.cargo" "$HOME/.putty"
-
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOTD'
+@test "project artifact hint shows a loading state while probing" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOT7'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/hints.sh"
 note_activity() { :; }
-run_with_timeout() { shift; "$@"; }
-hint_get_path_size_kb_with_timeout() { echo "100"; }
-show_orphan_dotdir_hint_notice
-EOTD
+start_section_spinner() { echo "SPIN:$1"; }
+stop_section_spinner() { echo "SPIN-STOP"; }
+# The probe itself can take up to its 15s budget; the section must show a
+# loading state for that whole window, not pop the row out of silence.
+probe_project_artifact_hints() {
+    echo "PROBE"
+    PROJECT_ARTIFACT_HINT_DETECTED=false
+    PROJECT_ARTIFACT_HINT_SCAN_SKIPPED=false
+}
+show_project_artifact_hint_notice
+EOT7
 
     [ "$status" -eq 0 ]
-    [[ "$output" != *"Orphan dotfiles"* ]] || return 1
-}
-
-@test "show_orphan_dotdir_hint_notice skips whitelisted directories" {
-    mkdir -p "$HOME/.custom-orphan-keep"
-    touch -t 202401010000 "$HOME/.custom-orphan-keep"
-
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOTD'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/clean/hints.sh"
-WHITELIST_PATTERNS=("$HOME/.custom-orphan-keep")
-note_activity() { :; }
-run_with_timeout() { shift; "$@"; }
-hint_get_path_size_kb_with_timeout() { echo "100"; }
-show_orphan_dotdir_hint_notice
-EOTD
-
-    [ "$status" -eq 0 ]
-    [[ "$output" != *".custom-orphan-keep"* ]] || return 1
-    [[ "$output" != *"Orphan dotfiles"* ]] || return 1
-}
-
-@test "show_orphan_dotdir_hint_notice reports dir with no matching binary" {
-    mkdir -p "$HOME/.fakecli-test-orphan"
-    touch -t 202401010000 "$HOME/.fakecli-test-orphan"
-
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOTD'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/clean/hints.sh"
-note_activity() { :; }
-run_with_timeout() { shift; "$@"; }
-hint_get_path_size_kb_with_timeout() { echo "1024"; }
-show_orphan_dotdir_hint_notice
-EOTD
-
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"Orphan dotfiles"* ]] || return 1
-    [[ "$output" == *".fakecli-test-orphan"* ]] || return 1
-}
-
-@test "show_orphan_dotdir_hint_notice skips empty dotdirs (nothing to reclaim)" {
-    mkdir -p "$HOME/.fakecli-empty-orphan"
-    touch -t 202401010000 "$HOME/.fakecli-empty-orphan"
-
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOTD'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/clean/hints.sh"
-note_activity() { :; }
-run_with_timeout() { shift; "$@"; }
-hint_get_path_size_kb_with_timeout() { echo "0"; }
-show_orphan_dotdir_hint_notice
-EOTD
-
-    [ "$status" -eq 0 ]
-    [[ "$output" != *"Orphan dotfiles"* ]] || return 1
-    [[ "$output" != *".fakecli-empty-orphan"* ]] || return 1
-}
-
-@test "show_orphan_dotdir_hint_notice keeps dotdir when size probe times out" {
-    mkdir -p "$HOME/.fakecli-slow-orphan"
-    touch -t 202401010000 "$HOME/.fakecli-slow-orphan"
-
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOTD'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/clean/hints.sh"
-note_activity() { :; }
-run_with_timeout() { shift; "$@"; }
-hint_get_path_size_kb_with_timeout() { return 1; }
-show_orphan_dotdir_hint_notice
-EOTD
-
-    [ "$status" -eq 0 ]
-    [[ "$output" == *".fakecli-slow-orphan"* ]] || return 1
-}
-
-@test "show_orphan_dotdir_hint_notice skips dotdir owned by installed GUI app (#872)" {
-    mkdir -p "$HOME/.bridge"
-    touch -t 202401010000 "$HOME/.bridge"
-
-    local app_path="$HOME/Applications/Proton Mail Bridge.app"
-    mkdir -p "$app_path/Contents"
-    cat > "$app_path/Contents/Info.plist" <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleIdentifier</key>
-    <string>ch.protonmail.bridge</string>
-    <key>CFBundleName</key>
-    <string>Proton Mail Bridge</string>
-</dict>
-</plist>
-PLIST
-
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOTD'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/clean/hints.sh"
-note_activity() { :; }
-run_with_timeout() { shift; "$@"; }
-hint_get_path_size_kb_with_timeout() { echo "1024"; }
-show_orphan_dotdir_hint_notice
-EOTD
-
-    [ "$status" -eq 0 ]
-    [[ "$output" != *".bridge"* ]]
-}
-
-@test "show_orphan_dotdir_hint_notice skips state dir owned by an enabled Claude Code plugin (#889)" {
-    mkdir -p "$HOME/.cc-safety-net"
-    touch -t 202401010000 "$HOME/.cc-safety-net"
-
-    mkdir -p "$HOME/.claude"
-    cat > "$HOME/.claude/settings.json" <<'JSON'
-{
-  "enabledPlugins": {
-    "safety-net@cc-marketplace": true
-  }
-}
-JSON
-
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOTD'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/clean/hints.sh"
-note_activity() { :; }
-run_with_timeout() { shift; "$@"; }
-hint_get_path_size_kb_with_timeout() { echo "1024"; }
-show_orphan_dotdir_hint_notice
-EOTD
-
-    [ "$status" -eq 0 ]
-    [[ "$output" != *".cc-safety-net"* ]]
-}
-
-@test "show_orphan_dotdir_hint_notice still flags a plugin-shaped dir with no enabled plugin (#889)" {
-    mkdir -p "$HOME/.cc-safety-net"
-    touch -t 202401010000 "$HOME/.cc-safety-net"
-
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOTD'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/clean/hints.sh"
-note_activity() { :; }
-run_with_timeout() { shift; "$@"; }
-hint_get_path_size_kb_with_timeout() { echo "1024"; }
-show_orphan_dotdir_hint_notice
-EOTD
-
-    [ "$status" -eq 0 ]
-    [[ "$output" == *".cc-safety-net"* ]]
-}
-
-@test "show_orphan_dotdir_hint_notice survives Claude config that has no plugins (#889)" {
-    mkdir -p "$HOME/.fakecli-test-orphan"
-    touch -t 202401010000 "$HOME/.fakecli-test-orphan"
-
-    # Claude Code installed but no plugins: settings.json without
-    # enabledPlugins and an installed_plugins.json with no plugin tokens.
-    # The token-collection greps match nothing here, which must not abort
-    # the hint under `set -euo pipefail`.
-    mkdir -p "$HOME/.claude/plugins"
-    echo '{"theme":"dark"}' > "$HOME/.claude/settings.json"
-    echo '{"marketplaces":{}}' > "$HOME/.claude/plugins/installed_plugins.json"
-
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOTD'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/clean/hints.sh"
-note_activity() { :; }
-run_with_timeout() { shift; "$@"; }
-hint_get_path_size_kb_with_timeout() { echo "1024"; }
-show_orphan_dotdir_hint_notice
-EOTD
-
-    [ "$status" -eq 0 ]
-    [[ "$output" == *".fakecli-test-orphan"* ]]
-}
-
-@test "show_orphan_dotdir_hint_notice skips dir with existing binary" {
-    mkdir -p "$HOME/.bash"
-    touch -t 202401010000 "$HOME/.bash"
-
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOTD'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/clean/hints.sh"
-note_activity() { :; }
-run_with_timeout() { shift; "$@"; }
-hint_get_path_size_kb_with_timeout() { echo "100"; }
-show_orphan_dotdir_hint_notice
-EOTD
-
-    [ "$status" -eq 0 ]
-    [[ "$output" != *".bash"* ]]
-}
-
-@test "show_orphan_dotdir_hint_notice skips dirs younger than threshold" {
-    mkdir -p "$HOME/.youngcli-test"
-
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOTD'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/clean/hints.sh"
-note_activity() { :; }
-run_with_timeout() { shift; "$@"; }
-hint_get_path_size_kb_with_timeout() { echo "100"; }
-show_orphan_dotdir_hint_notice
-EOTD
-
-    [ "$status" -eq 0 ]
-    [[ "$output" != *".youngcli-test"* ]]
-}
-
-@test "show_orphan_dotdir_hint_notice skips dotdir whose name matches an installed .app token (#872)" {
-    mkdir -p "$HOME/.bridge"
-    touch -t 202401010000 "$HOME/.bridge"
-
-    local fake_apps_root="$HOME/fake-Applications"
-    mkdir -p "$fake_apps_root/Proton Mail Bridge.app"
-
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" FAKE_APPS_ROOT="$fake_apps_root" \
-        /bin/bash --noprofile --norc <<'EOTD'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/clean/hints.sh"
-note_activity() { :; }
-run_with_timeout() { shift; "$@"; }
-hint_get_path_size_kb_with_timeout() { echo "100"; }
-brew() { return 0; }
-export -f brew
-_MOLE_DOTDIR_OWNER_APP_ROOTS=("$FAKE_APPS_ROOT")
-show_orphan_dotdir_hint_notice
-EOTD
-
-    [ "$status" -eq 0 ]
-    [[ "$output" != *".bridge"* ]] || return 1
-    [[ "$output" != *"Orphan dotfiles"* ]] || return 1
-}
-
-@test "show_orphan_dotdir_hint_notice skips dotdir whose name matches a brew cask token (#872)" {
-    mkdir -p "$HOME/.bridge"
-    touch -t 202401010000 "$HOME/.bridge"
-
-    local empty_apps_root="$HOME/empty-Applications"
-    mkdir -p "$empty_apps_root"
-
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" EMPTY_APPS_ROOT="$empty_apps_root" \
-        /bin/bash --noprofile --norc <<'EOTD'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/clean/hints.sh"
-note_activity() { :; }
-run_with_timeout() { shift; "$@"; }
-hint_get_path_size_kb_with_timeout() { echo "100"; }
-brew() {
-    if [[ "${1:-}" == "list" && "${2:-}" == "--cask" ]]; then
-        printf '%s\n' "proton-mail-bridge" "1password"
-        return 0
-    fi
-    return 0
-}
-export -f brew
-_MOLE_DOTDIR_OWNER_APP_ROOTS=("$EMPTY_APPS_ROOT")
-show_orphan_dotdir_hint_notice
-EOTD
-
-    [ "$status" -eq 0 ]
-    [[ "$output" != *".bridge"* ]] || return 1
-    [[ "$output" != *"Orphan dotfiles"* ]] || return 1
-}
-
-@test "show_orphan_dotdir_hint_notice still flags dotdir whose name has no matching app or cask (#872)" {
-    mkdir -p "$HOME/.fakeorphan42xyz"
-    touch -t 202401010000 "$HOME/.fakeorphan42xyz"
-
-    local empty_apps_root="$HOME/empty-Applications2"
-    mkdir -p "$empty_apps_root"
-
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" EMPTY_APPS_ROOT="$empty_apps_root" \
-        /bin/bash --noprofile --norc <<'EOTD'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/clean/hints.sh"
-note_activity() { :; }
-run_with_timeout() { shift; "$@"; }
-hint_get_path_size_kb_with_timeout() { echo "100"; }
-brew() {
-    if [[ "${1:-}" == "list" && "${2:-}" == "--cask" ]]; then
-        printf '%s\n' "1password" "rectangle"
-        return 0
-    fi
-    return 0
-}
-export -f brew
-_MOLE_DOTDIR_OWNER_APP_ROOTS=("$EMPTY_APPS_ROOT")
-show_orphan_dotdir_hint_notice
-EOTD
-
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"Orphan dotfiles"* ]] || return 1
-    [[ "$output" == *".fakeorphan42xyz"* ]]
-}
-
-@test "show_orphan_dotdir_hint_notice ignores short app-name tokens (<4 chars) to avoid false matches (#872)" {
-    # `.ai-old`: token `ai` is 2 chars; an `AI.app` should NOT exempt it.
-    mkdir -p "$HOME/.ai-old"
-    touch -t 202401010000 "$HOME/.ai-old"
-
-    local fake_apps_root="$HOME/fake-Applications-short"
-    mkdir -p "$fake_apps_root/AI.app"
-
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" FAKE_APPS_ROOT="$fake_apps_root" \
-        /bin/bash --noprofile --norc <<'EOTD'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/clean/hints.sh"
-note_activity() { :; }
-run_with_timeout() { shift; "$@"; }
-hint_get_path_size_kb_with_timeout() { echo "100"; }
-brew() { return 0; }
-export -f brew
-_MOLE_DOTDIR_OWNER_APP_ROOTS=("$FAKE_APPS_ROOT")
-show_orphan_dotdir_hint_notice
-EOTD
-
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"Orphan dotfiles"* ]] || return 1
-    [[ "$output" == *".ai-old"* ]]
-}
-
-@test "show_orphan_dotdir_hint_notice limits output to max 5 candidates" {
-    for i in $(seq 1 8); do
-        mkdir -p "$HOME/.orphantest${i}"
-        touch -t 202401010000 "$HOME/.orphantest${i}"
-    done
-
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOTD'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/clean/hints.sh"
-note_activity() { :; }
-run_with_timeout() { shift; "$@"; }
-hint_get_path_size_kb_with_timeout() { echo "100"; }
-show_orphan_dotdir_hint_notice
-EOTD
-
-    [ "$status" -eq 0 ]
-    local count
-    count=$(echo "$output" | grep -o "orphantest" | wc -l | tr -d ' ')
-    [ "$count" -le 5 ]
+    [[ "$output" == *"SPIN:Scanning project artifacts..."* ]] || return 1
+    # Spinner starts before the probe runs and stops after it.
+    [[ "$output" == *"SPIN:Scanning project artifacts...
+PROBE
+SPIN-STOP"* ]]
 }

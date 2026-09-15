@@ -20,6 +20,49 @@ Options:
 EOF
 }
 
+check_diagnostic_guidance() {
+    local file
+    local status=0
+
+    for file in "$@"; do
+        [[ -f "$file" ]] || continue
+        if ! awk '
+        function inspect_block() {
+            normalized = block
+            gsub(/\$[\047"]/, "", normalized)
+            gsub(/[\047"]/, "", normalized)
+            while (match(normalized, /\\[[:alnum:]_]/)) {
+                normalized = substr(normalized, 1, RSTART - 1) \
+                    substr(normalized, RSTART + 1, 1) \
+                    substr(normalized, RSTART + 2)
+            }
+            if (normalized ~ /Mole-Diagnose[.]command/ &&
+                normalized ~ /\|[[:space:]]*([^|;&[:space:]]+[[:space:]]+)*([^|;&[:space:]]*\/)?(ba|z|da|k)?sh([^[:alnum:]_]|$)/) {
+                printf "%s:%d: unsafe diagnostic pipe-to-shell guidance\n", FILENAME, block_start
+                found = 1
+            }
+            block = ""
+        }
+        /^[[:space:]]*$/ {
+            inspect_block()
+            next
+        }
+        {
+            if (block == "") block_start = FNR
+            block = block " " $0
+        }
+        END {
+            inspect_block()
+            exit found ? 1 : 0
+        }
+        ' "$file"; then
+            status=1
+        fi
+    done
+
+    return "$status"
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --format)
@@ -185,5 +228,40 @@ find lib -name "*.sh" | while read -r script; do
     fi
 done
 echo -e "${GREEN}${ICON_SUCCESS} Syntax check passed${NC}\n"
+
+# Same body, different name. Grep cannot see this class once the variables have
+# been renamed, and review reads the copies as separate helpers, so it needs a
+# gate rather than a habit. Run with --list to inspect every group.
+#
+# python3 is a hard requirement here, not an optional tool like shfmt: six Bats
+# files already fail without it, so a developer who can run the suite can run
+# this. Mole itself never shells out to python3, so this stays a dev-only need.
+if ! command -v python3 > /dev/null 2>&1; then
+    echo -e "${RED}${ICON_ERROR} python3 not installed; it is required by the test suite and this check${NC}\n"
+    exit 1
+fi
+if ! duplication_output=$(python3 "$SCRIPT_DIR/audit_function_duplication.py" 2>&1); then
+    printf '%s\n' "$duplication_output"
+    echo -e "${RED}${ICON_ERROR} Duplicate shell function bodies found${NC}\n"
+    exit 1
+fi
+printf '%s\n' "$duplication_output"
+echo -e "${GREEN}${ICON_SUCCESS} Function duplication check passed${NC}\n"
+
+if ! destructive_output=$(python3 "$SCRIPT_DIR/audit_destructive_sinks.py" 2>&1); then
+    printf '%s\n' "$destructive_output"
+    echo -e "${RED}${ICON_ERROR} Destructive sink annotation check failed${NC}\n"
+    exit 1
+fi
+printf '%s\n' "$destructive_output"
+echo -e "${GREEN}${ICON_SUCCESS} Destructive sink annotation check passed${NC}\n"
+
+diagnostic_guidance_files=(AGENTS.md README.md .claude/skills/*/SKILL.md)
+if ! diagnostic_guidance_output=$(check_diagnostic_guidance "${diagnostic_guidance_files[@]}"); then
+    [[ -n "$diagnostic_guidance_output" ]] && printf '%s\n' "$diagnostic_guidance_output"
+    echo -e "${RED}${ICON_ERROR} Diagnostic instructions must download for review before execution${NC}\n"
+    exit 1
+fi
+echo -e "${GREEN}${ICON_SUCCESS} Diagnostic install guidance passed${NC}\n"
 
 echo -e "${GREEN}=== Checks Completed ===${NC}"

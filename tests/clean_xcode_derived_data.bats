@@ -23,7 +23,7 @@ teardown_file() {
 }
 
 @test "clean_xcode_derived_data reports project count and size" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/app_caches.sh"
@@ -51,11 +51,13 @@ echo "build output" > "$dd_dir/ProjectBeta-ghijkl456/build.o"
 echo "build output" > "$dd_dir/ProjectGamma-mnopqr789/build.o"
 
 clean_xcode_derived_data
+printf 'COUNTERS:%s:%s:%s\n' "$files_cleaned" "$total_size_cleaned" "$total_items"
 EOF
 
     [ "$status" -eq 0 ]
     [[ "$output" == *"3 projects"* ]] || return 1
     [[ "$output" == *"Xcode DerivedData"* ]] || return 1
+    [[ "$output" == *"COUNTERS:3:"*":1"* ]]
 }
 
 @test "clean_xcode_derived_data honors a real DerivedData whitelist entry (#710)" {
@@ -63,7 +65,7 @@ EOF
     # pattern. clean_xcode_derived_data deletes via safe_remove directly, so
     # the protection has to live in safe_remove; before that fix this test
     # deletes the build dirs and fails.
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/app_caches.sh"
@@ -102,7 +104,7 @@ EOF
 }
 
 @test "clean_xcode_derived_data skips when xcodebuild is running" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/app_caches.sh"
@@ -111,6 +113,7 @@ start_section_spinner() { :; }
 stop_section_spinner() { :; }
 note_activity() { :; }
 is_path_whitelisted() { return 1; }
+defer_cleanup_family() { echo "DEFER:$1"; }
 DRY_RUN=false
 
 pgrep() { [[ "$1" == "-x" && "$2" == "xcodebuild" ]]; }
@@ -121,14 +124,16 @@ mkdir -p "$dd_dir/SomeProject-abc123"
 echo "data" > "$dd_dir/SomeProject-abc123/build.o"
 
 clean_xcode_derived_data
+[[ -f "$dd_dir/SomeProject-abc123/build.o" ]] || exit 1
 EOF
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *"Xcode DerivedData · skipped (Xcode or build tooling running)"* ]]
+    [[ "$output" == *"DEFER:Xcode"* ]] || return 1
+    [[ "$output" != *"Xcode DerivedData · skipped"* ]]
 }
 
 @test "clean_xcode_derived_data keeps build output when pgrep fails" {
-    run env HOME="$HOME/probe-error" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME/probe-error" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/app_caches.sh"
@@ -143,13 +148,16 @@ clean_xcode_derived_data
 [[ -f "$dd_dir/OwnedProject/build.o" ]] || exit 1
 EOF
 
-    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
     [[ "$output" == *"skipped (process state unknown)"* ]] || return 1
     [[ "$output" != *"UNEXPECTED_REMOVE"* ]]
 }
 
 @test "clean_xcode_derived_data keeps build output when pgrep is unavailable" {
-    run env HOME="$HOME/probe-missing" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME/probe-missing" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/app_caches.sh"
@@ -163,12 +171,15 @@ clean_xcode_derived_data
 [[ -f "$dd_dir/OwnedProject/build.o" ]] || exit 1
 EOF
 
-    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
     [[ "$output" == *"skipped (process state unknown)"* ]]
 }
 
 @test "clean_xcode_derived_data reports completed removals before a tooling race stops it" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/app_caches.sh"
@@ -210,13 +221,16 @@ remaining=$(command find "$dd_dir" -mindepth 1 -maxdepth 1 -type d | wc -l | tr 
 rm -rf "$dd_dir"
 EOF
 
-    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
     [[ "$output" == *"Xcode DerivedData · 1 project"* ]] || return 1
-    [[ "$output" == *"Xcode DerivedData · stopped (Xcode or build tooling running)"* ]]
+    [[ "$output" != *"Xcode DerivedData · stopped"* ]]
 }
 
 @test "clean_xcode_derived_data rechecks tooling after the size probe" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/app_caches.sh"
@@ -241,13 +255,16 @@ clean_xcode_derived_data
 rm -rf "$dd_dir" "$HOME/xcode-started"
 EOF
 
-    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
-    [[ "$output" == *"Xcode DerivedData · stopped (Xcode or build tooling running)"* ]] || return 1
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+    [[ "$output" != *"Xcode DerivedData · stopped"* ]] || return 1
     [[ "$output" != *"UNEXPECTED_REMOVE"* ]]
 }
 
 @test "clean_xcode_derived_data passes its measured size to the real deletion sink" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/app_caches.sh"
@@ -281,11 +298,14 @@ clean_xcode_derived_data
 rm -rf "$dd_dir" "$HOME/derived-size-probes"
 EOF
 
-    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
 }
 
 @test "clean_xcode_derived_data handles empty DerivedData" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/app_caches.sh"
@@ -294,8 +314,9 @@ start_section_spinner() { :; }
 stop_section_spinner() { :; }
 note_activity() { :; }
 is_path_whitelisted() { return 1; }
+defer_cleanup_family() { echo "UNEXPECTED_DEFER:$1"; }
 DRY_RUN=false
-pgrep() { return 1; }
+pgrep() { return 0; }
 export -f pgrep
 
 mkdir -p "$HOME/Library/Developer/Xcode/DerivedData"
@@ -305,10 +326,11 @@ EOF
 
     [ "$status" -eq 0 ]
     [[ "$output" != *"projects"* ]]
+    [[ "$output" != *"UNEXPECTED_DEFER"* ]]
 }
 
 @test "clean_xcode_derived_data handles missing DerivedData dir" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/app_caches.sh"
@@ -328,7 +350,7 @@ EOF
 }
 
 @test "clean_xcode_derived_data dry run shows would-clean message" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/app_caches.sh"
@@ -350,4 +372,105 @@ EOF
 
     [ "$status" -eq 0 ]
     [[ "$output" == *"1 project"* ]]
+}
+
+@test "clean_xcode_derived_data dry run sizes only eligible projects" {
+    run env HOME="$HOME/dry-run-filtered" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+
+note_activity() { :; }
+DRY_RUN=true
+pgrep() { return 1; }
+bytes_to_human() { echo "$1 bytes"; }
+get_path_size_kb() {
+    [[ "$1" == *"/Eligible" ]] && echo 7 || echo 900
+}
+
+dd_dir="$HOME/Library/Developer/Xcode/DerivedData"
+eligible="$dd_dir/Eligible"
+excluded="$dd_dir/Excluded"
+mkdir -p "$eligible" "$excluded"
+touch "$eligible/build.o" "$excluded/private.o"
+should_protect_path() { return 1; }
+is_path_whitelisted() { [[ "$1" == "$excluded" ]]; }
+
+clean_xcode_derived_data
+EOF
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+    [[ "$output" == *"Xcode DerivedData · 1 project, 7168 bytes"* ]] || return 1
+    [[ "$output" != *"928768 bytes"* ]]
+}
+
+@test "clean_xcode_derived_data dry run hides projects rejected after sizing" {
+    run env HOME="$HOME/dry-run-policy-race" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+
+note_activity() { echo "UNEXPECTED_ACTIVITY"; }
+DRY_RUN=true
+pgrep() { return 1; }
+get_path_size_kb() {
+    mkdir -p "$1/com.apple.e5rt.e5bundlecache"
+    echo 7
+}
+record_dry_run_cleanup_target() {
+    holds_compiled_model_cache "$1" && return 1
+    echo "UNEXPECTED_REGISTER:$1"
+    return 0
+}
+
+dd_dir="$HOME/Library/Developer/Xcode/DerivedData"
+mkdir -p "$dd_dir/EligibleBeforeSizing"
+touch "$dd_dir/EligibleBeforeSizing/build.o"
+clean_xcode_derived_data
+EOF
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+    [[ "$output" != *"Xcode DerivedData"* ]] || return 1
+    [[ "$output" != *"UNEXPECTED_REGISTER"* ]] || return 1
+    [[ "$output" != *"UNEXPECTED_ACTIVITY"* ]]
+}
+
+@test "clean_xcode_derived_data dry run rechecks Xcode after sizing" {
+    run env HOME="$HOME/dry-run-process-race" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+
+DRY_RUN=true
+get_path_size_kb() {
+    : > "$HOME/xcode-started"
+    echo 7
+}
+_xcode_cleanup_process_state() {
+    [[ -e "$HOME/xcode-started" ]] && return 0
+    return 1
+}
+record_dry_run_cleanup_target() { echo "UNEXPECTED_REGISTER:$1"; return 0; }
+defer_cleanup_family() { echo "DEFER:$1"; }
+note_activity() { :; }
+
+dd_dir="$HOME/Library/Developer/Xcode/DerivedData"
+mkdir -p "$dd_dir/EligibleBeforeSizing"
+touch "$dd_dir/EligibleBeforeSizing/build.o"
+clean_xcode_derived_data
+EOF
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+    [[ "$output" == *"DEFER:Xcode"* ]] || return 1
+    [[ "$output" != *"UNEXPECTED_REGISTER"* ]] || return 1
+    [[ "$output" != *"Xcode DerivedData · 1 project"* ]]
 }

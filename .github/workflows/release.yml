@@ -26,6 +26,17 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Verify release tag matches source version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          SOURCE_VERSION=$(sed -n 's/^VERSION="\([^"]*\)"$/\1/p' mole)
+          EXPECTED_TAG="V${SOURCE_VERSION}"
+          if [[ -z "$SOURCE_VERSION" || "$RELEASE_TAG" != "$EXPECTED_TAG" ]]; then
+            echo "Release tag ${RELEASE_TAG} does not match source ${EXPECTED_TAG}" >&2
+            exit 1
+          fi
+
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -88,7 +99,7 @@ jobs:
           cat SHA256SUMS
 
       - name: Generate artifact attestation
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
             bin/analyze-darwin-*
@@ -97,7 +108,7 @@ jobs:
             bin/SHA256SUMS
 
       - name: Create Release
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         if: startsWith(github.ref, 'refs/tags/')
         with:
           name: ${{ github.ref_name }}
@@ -158,17 +169,25 @@ jobs:
           git reset --hard upstream/main
           git checkout -B "$BRANCH"
 
+          REMOTE_BRANCH_SHA=$(git ls-remote --heads origin "refs/heads/${BRANCH}" | awk 'NR == 1 { print $1 }')
+
           # Only rewrite url and the source sha256 right after it. The bottle
           # block stays untouched: Homebrew's check-bottle-block CI hook fails
           # PRs that modify it because BrewTestBot rebuilds bottles after the
           # url change lands.
-          awk -v new_url="https://github.com/tw93/Mole/archive/refs/tags/${TAG}.tar.gz" \
-              -v new_sha="$SOURCE_SHA" '
-            BEGIN { url_done = 0; sha_done = 0 }
+          if ! awk -v new_url="https://github.com/tw93/Mole/archive/refs/tags/${TAG}.tar.gz" \
+                  -v new_sha="$SOURCE_SHA" '
+            BEGIN { url_done = 0; sha_done = 0; url_matches = 0; sha_matches = 0 }
+            /^  url "/ { url_matches++ }
+            /^  sha256 "/ { sha_matches++ }
             !url_done && /^  url "/ { print "  url \"" new_url "\""; url_done = 1; next }
             url_done && !sha_done && /^  sha256 "/ { print "  sha256 \"" new_sha "\""; sha_done = 1; next }
             { print }
-          ' Formula/m/mole.rb > Formula/m/mole.rb.new
+            END { if (url_matches != 1 || sha_matches != 1) exit 1 }
+          ' Formula/m/mole.rb > Formula/m/mole.rb.new; then
+            echo "Expected exactly one source url and sha256 in the Homebrew formula" >&2
+            exit 1
+          fi
           mv Formula/m/mole.rb.new Formula/m/mole.rb
 
           if git diff --quiet -- Formula/m/mole.rb; then
@@ -178,9 +197,15 @@ jobs:
             exit 0
           fi
 
+          if [[ -n "$REMOTE_BRANCH_SHA" ]]; then
+            echo "Homebrew release branch ${BRANCH} already exists; refusing to overwrite it." >&2
+            echo "Inspect the existing release PR and remove the branch only after resolving it, then rerun." >&2
+            exit 1
+          fi
+
           git add Formula/m/mole.rb
           git commit -m "mole ${VERSION}" -m "Automated release via GitHub Actions"
-          git push --force-with-lease origin "$BRANCH"
+          git push "--force-with-lease=refs/heads/${BRANCH}:" origin "$BRANCH"
 
           # Homebrew closes PRs that omit its current template. Keep the full
           # checklist, with unperformed local checks left unticked, so the PR

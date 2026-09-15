@@ -105,8 +105,9 @@ func collectDisksWithCorrections(useCorrections bool) ([]DiskStatus, error) {
 		}
 		used := usage.Used
 		usedPercent := usage.UsedPercent
+		purgeable := uint64(0)
 		if useCorrections && runtime.GOOS == "darwin" && strings.ToLower(part.Fstype) == "apfs" {
-			used, usedPercent = correctAPFSDiskUsage(part.Mountpoint, total, usage.Used)
+			used, usedPercent, purgeable = correctAPFSDiskUsage(part.Mountpoint, total, usage.Used, usage.Free)
 		}
 
 		disks = append(disks, DiskStatus{
@@ -118,6 +119,7 @@ func collectDisksWithCorrections(useCorrections bool) ([]DiskStatus, error) {
 			Fstype:      part.Fstype,
 			External:    !useCorrections && strings.HasPrefix(part.Mountpoint, "/Volumes/"),
 			SmartStatus: smartStatusUnknown,
+			Purgeable:   purgeable,
 		})
 		seenDevice[baseDevice] = true
 		seenVolume[volKey] = true
@@ -330,20 +332,21 @@ func getDiskutilTotalBytes(mountpoint string) (uint64, error) {
 	return extractPlistUint(out, "TotalSize", "DiskSize", "Size")
 }
 
-// correctAPFSDiskUsage returns Finder-accurate used bytes and percent for an
-// APFS volume, accounting for purgeable caches and APFS local snapshots that
-// statfs incorrectly counts as "used". Uses a three-tier fallback:
+// correctAPFSDiskUsage returns Finder-accurate used bytes, percent, and the
+// purgeable bytes Finder counts as free, for an APFS volume. It accounts for
+// purgeable caches and APFS local snapshots that statfs incorrectly counts as
+// "used". Uses a three-tier fallback:
 //  1. Finder via osascript (startup disk only), exact match with macOS Finder
 //  2. diskutil APFSContainerFree, corrects APFS snapshot space
 //  3. Raw gopsutil values, original statfs-based calculation
-func correctAPFSDiskUsage(mountpoint string, total, rawUsed uint64) (used uint64, usedPercent float64) {
+func correctAPFSDiskUsage(mountpoint string, total, rawUsed, rawFree uint64) (used uint64, usedPercent float64, purgeable uint64) {
 	// Tier 1: Finder via osascript (startup disk at "/" only).
 	if mountpoint == "/" && commandExists("osascript") {
 		if finderFree, finderTotal, err := getFinderStartupDiskFreeBytes(); err == nil &&
 			finderTotal > 0 && finderFree <= finderTotal {
 			used = finderTotal - finderFree
 			usedPercent = float64(used) / float64(finderTotal) * 100.0
-			return
+			return used, usedPercent, finderPurgeableBytes(rawFree, finderFree)
 		}
 	}
 
@@ -355,13 +358,26 @@ func correctAPFSDiskUsage(mountpoint string, total, rawUsed uint64) (used uint64
 			if rawUsed > corrected && rawUsed-corrected > 1<<30 {
 				used = corrected
 				usedPercent = float64(used) / float64(total) * 100.0
-				return
+				return used, usedPercent, 0
 			}
 		}
 	}
 
 	// Tier 3: fall back to raw gopsutil values.
-	return rawUsed, float64(rawUsed) / float64(total) * 100.0
+	return rawUsed, float64(rawUsed) / float64(total) * 100.0, 0
+}
+
+// finderPurgeableBytes returns the purgeable portion of Finder's free space:
+// Finder counts reclaimable purgeable files as free, while statfs (df) does
+// not, so the difference is the purgeable total. Both inputs must come from
+// the same accounting: rawFree is the statfs free figure, never a value
+// derived from the diskutil-corrected total, or the correction itself would
+// be misreported as purgeable space.
+func finderPurgeableBytes(rawFree, finderFree uint64) uint64 {
+	if finderFree <= rawFree {
+		return 0
+	}
+	return finderFree - rawFree
 }
 
 // getAPFSContainerFreeBytes returns the APFS container free space (including

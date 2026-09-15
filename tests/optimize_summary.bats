@@ -71,3 +71,35 @@ assert session["items"] == 0
 assert session["failed_tasks"] == 1
 '
 }
+
+@test "optimize cleanup records startup and interrupt failures in history" {
+	run env HOME="$TEST_HOME/cleanup-history" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/optimize/outcomes.sh"
+eval "$(sed -n '/^cleanup_all() {/,/^}/p' "$PROJECT_ROOT/bin/optimize.sh")"
+
+stop_inline_spinner() { :; }
+stop_sudo_session() { :; }
+cleanup_temp_files() { :; }
+log_operation_session_end() { :; }
+log_operation() { printf '%s|%s|%s|%s\n' "$1" "$2" "$3" "$4"; }
+
+optimize_outcomes_reset
+cleanup_all 1
+cleanup_all 130
+EOF
+
+	[[ "$status" -eq 0 ]] || { echo "$output"; return 1; }
+	[[ "$output" == *"optimize|TASK_FAILED|session|exit status 1"* ]] || return 1
+	[[ "$output" == *"optimize|TASK_FAILED|interrupted|exit status 130"* ]]
+}
+
+@test "optimize EXIT trap forwards the terminal status to cleanup" {
+	run env PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+grep -qF "trap 'cleanup_all \"\$?\"' EXIT" "$PROJECT_ROOT/bin/optimize.sh"
+EOF
+
+	[[ "$status" -eq 0 ]] || { echo "$output"; return 1; }
+}

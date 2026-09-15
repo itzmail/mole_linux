@@ -155,11 +155,19 @@ log_error() {
 # shellcheck disable=SC2329
 debug_log() {
     if [[ "${MO_DEBUG:-}" == "1" ]]; then
-        echo -e "${GRAY}[DEBUG]${NC} $*" >&2
+        printf '%b%s\n' "${GRAY}[DEBUG]${NC} " "$*" >&2
         local timestamp
         timestamp=$(get_timestamp)
         append_log_line "$DEBUG_LOG_FILE" "[$timestamp] DEBUG: $*"
     fi
+}
+
+mole_terminal_safe_text() {
+    local value="${1:-}"
+    value=$(printf '%s' "$value" |
+        LC_ALL=C tr '\r\n\t' '   ' |
+        LC_ALL=C tr '\001-\010\013\014\016-\037\177' '?') || value=""
+    printf '%s' "$value"
 }
 
 # Phase-level performance timing, gated behind MO_DEBUG=1.

@@ -67,7 +67,7 @@ func (m *model) scheduleOverviewScans() tea.Cmd {
 
 func (m model) Init() tea.Cmd {
 	if m.inOverviewMode() {
-		return m.scheduleOverviewScans()
+		return tea.Batch(m.scheduleOverviewScans(), m.detectLocalSnapshotsCmd())
 	}
 	return tea.Batch(m.scanCmd(m.path), tickCmd())
 }
@@ -237,16 +237,6 @@ func (m *model) finishLiveScan(result scanResult) {
 		_ = saveCacheToDisk(path, scan)
 	}(m.path, result)
 	m.status = fmt.Sprintf("Scanned %s", humanizeBytes(m.totalSize))
-}
-
-func (m *model) finishCanceledLiveScan() {
-	m.scanning = false
-	m.liveScanID = 0
-	m.liveScanCancel = nil
-	m.liveScanEvents = nil
-	m.liveScanningPaths = nil
-	m.autoSortLiveEntries = false
-	m.status = "Scan cancelled"
 }
 
 func (m *model) sortLiveEntriesForActiveMode() {
@@ -464,9 +454,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case liveScanFailed:
 			m.status = fmt.Sprintf("Scan failed: %v", msg.err)
 			return m, waitLiveScanEventCmd(m.liveScanEvents)
-		case liveScanCanceled:
-			m.finishCanceledLiveScan()
-			return m, nil
 		default:
 			return m, waitLiveScanEventCmd(m.liveScanEvents)
 		}
@@ -499,6 +486,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			cmd := m.scheduleOverviewScans()
 			return m, cmd
+		}
+		return m, nil
+	case localSnapshotMsg:
+		if msg.probeID == m.snapshotProbeID {
+			if msg.err == nil {
+				m.localSnapshotCount = msg.count
+				m.localSnapshotFresh = true
+			} else {
+				m.localSnapshotFresh = false
+			}
 		}
 		return m, nil
 	case tickMsg:
@@ -689,7 +686,8 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 			m.status = "Refreshing..."
 			m.overviewScanning = true
-			return m, tea.Batch(m.scheduleOverviewScans(), tickCmd())
+			m.snapshotProbeID++
+			return m, tea.Batch(m.scheduleOverviewScans(), m.detectLocalSnapshotsCmd(), tickCmd())
 		}
 
 		invalidateCacheTree(m.path)
@@ -1133,12 +1131,13 @@ func (m *model) switchToOverviewMode() tea.Cmd {
 	m.selected = 0
 	m.offset = 0
 	m.hydrateOverviewEntries()
+	m.snapshotProbeID++
 	cmd := m.scheduleOverviewScans()
 	if cmd == nil {
 		m.status = "Ready"
-		return nil
+		return m.detectLocalSnapshotsCmd()
 	}
-	return tea.Batch(cmd, tickCmd())
+	return tea.Batch(cmd, m.detectLocalSnapshotsCmd(), tickCmd())
 }
 
 func (m model) enterSelectedDir() (tea.Model, tea.Cmd) {

@@ -77,6 +77,10 @@ readonly MOLE_PURGE_MONOREPO_INDICATORS=(
     "pnpm-workspace.yaml"
     "nx.json"
     "rush.json"
+    # A repository or worktree is the project-wide ownership boundary even
+    # when nested packages have their own manifests. Keep .git in the project
+    # indicators too because container discovery consumes that list directly.
+    ".git"
 )
 
 readonly MOLE_PURGE_PROJECT_INDICATORS=(
@@ -100,6 +104,26 @@ readonly MOLE_PURGE_PROJECT_INDICATORS=(
 
 readonly MOLE_CACHEDIR_TAG_NAME="CACHEDIR.TAG"
 readonly MOLE_CACHEDIR_TAG_SIGNATURE="Signature: 8a477f597d28d172789f06886806bc55"
+
+# Normalize an integer or fractional timeout into the whole-second budget used
+# by SECONDS. Shared by clean's project-cache scan and purge's size pool so both
+# keep fractional overrides without duplicating deadline arithmetic.
+mole_purge_timeout_budget_seconds() {
+    local fallback_seconds="${2:-30}"
+    [[ "$fallback_seconds" =~ ^[1-9][0-9]*$ ]] || fallback_seconds=30
+    local timeout_seconds="${1:-$fallback_seconds}"
+    if [[ ! "$timeout_seconds" =~ ^[0-9]+(\.[0-9]+)?$ || "$timeout_seconds" =~ ^0+(\.0+)?$ ]]; then
+        timeout_seconds="$fallback_seconds"
+    fi
+
+    local timeout_whole="${timeout_seconds%%.*}"
+    local timeout_budget=$((10#$timeout_whole))
+    if [[ "$timeout_seconds" == *.* && "${timeout_seconds#*.}" =~ [1-9] ]]; then
+        timeout_budget=$((timeout_budget + 1))
+    fi
+    [[ $timeout_budget -ge 2 ]] || timeout_budget=2
+    printf '%s\n' "$timeout_budget"
+}
 
 # High-noise targets intentionally excluded from quick hint scans in mo clean.
 readonly MOLE_PURGE_QUICK_HINT_EXCLUDED_TARGETS=(
@@ -172,10 +196,18 @@ mole_purge_quick_hint_target_names() {
 # On case-insensitive macOS (APFS), ~/Code and ~/code point to the same
 # directory but with different display names.  This function returns the
 # real (on-disk) path so that string comparisons work correctly for dedup.
+#
+# Uses the external /bin/pwd rather than the bash builtin: bash's `pwd -P`
+# resolves symlink chains in $PWD but reuses the casing of the `cd`
+# argument instead of querying the filesystem, so on case-insensitive APFS
+# it returns ~/Workspace even when the on-disk directory is ~/workspace.
+# That breaks the string dedup in discover_project_dirs and a project
+# appears twice (#1416). /bin/pwd calls getcwd(3), which returns the real
+# on-disk name.
 mole_purge_resolve_path_case() {
     local path="$1"
     if [[ -d "$path" ]]; then
-        (cd "$path" 2> /dev/null && pwd -P) || printf '%s\n' "$path"
+        (cd "$path" 2> /dev/null && /bin/pwd -P) || printf '%s\n' "$path"
     else
         printf '%s\n' "$path"
     fi

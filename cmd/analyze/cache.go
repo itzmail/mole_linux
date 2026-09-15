@@ -25,11 +25,13 @@ import (
 // cacheSchemaVersion is bumped whenever directory-size semantics change so
 // stale on-disk cache entries are rejected instead of silently reused.
 // v2: analyze deduplicates hardlinked files to match `du`.
-const cacheSchemaVersion = 2
+// v3: ordinary Parallels VM storage is included instead of skipped by name.
+const cacheSchemaVersion = 3
 
 type overviewSizeSnapshot struct {
-	Size    int64     `json:"size"`
-	Updated time.Time `json:"updated"`
+	Size          int64     `json:"size"`
+	Updated       time.Time `json:"updated"`
+	SchemaVersion int       `json:"schema_version"`
 }
 
 var (
@@ -116,7 +118,7 @@ func ensureOverviewSnapshotCacheLocked() error {
 	// and each save re-serialized all of them.
 	now := time.Now()
 	for path, snapshot := range snapshots {
-		if snapshot.Size <= 0 || now.Sub(snapshot.Updated) >= overviewCacheTTL {
+		if snapshot.SchemaVersion != cacheSchemaVersion || snapshot.Size <= 0 || now.Sub(snapshot.Updated) >= overviewCacheTTL {
 			delete(snapshots, path)
 		}
 	}
@@ -175,8 +177,9 @@ func storeOverviewSize(path string, size int64) error {
 		return nil
 	}
 	overviewSnapshotCache[path] = overviewSizeSnapshot{
-		Size:    size,
-		Updated: time.Now(),
+		Size:          size,
+		Updated:       time.Now(),
+		SchemaVersion: cacheSchemaVersion,
 	}
 	evictOverviewSnapshotsLocked()
 	return persistOverviewSnapshotLocked()
@@ -641,10 +644,14 @@ func loadStaleCacheFromDisk(path string) (*cacheEntry, error) {
 }
 
 func saveCacheToDisk(path string, result scanResult) error {
-	return saveCacheToDiskWithOptions(path, result, false)
+	ctx := context.Background()
+	return saveCacheToDiskWithOptions(newScanPublication(ctx, nil), path, result, false)
 }
 
-func saveCacheToDiskWithOptions(path string, result scanResult, needsRefresh bool) error {
+func saveCacheToDiskWithOptions(publication *scanPublication, path string, result scanResult, needsRefresh bool) error {
+	if err := publication.ctx.Err(); err != nil {
+		return err
+	}
 	cachePath, err := getCachePath(path)
 	if err != nil {
 		return err
@@ -688,11 +695,21 @@ func saveCacheToDiskWithOptions(path string, result scanResult, needsRefresh boo
 		_ = os.Remove(tmpPath)
 		return err
 	}
-	if err := os.Rename(tmpPath, cachePath); err != nil {
+	err = publication.commit(func() error {
+		return os.Rename(tmpPath, cachePath)
+	})
+	if err != nil {
 		_ = os.Remove(tmpPath)
 		return err
 	}
 	return nil
+}
+
+func removeCacheEntryForScan(publication *scanPublication, path string) error {
+	return publication.commit(func() error {
+		removeCacheEntry(path)
+		return nil
+	})
 }
 
 // peekCacheTotalFiles reads the total file count from cache, ignoring

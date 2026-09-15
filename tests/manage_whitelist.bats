@@ -82,8 +82,30 @@ setup() {
         defaults+=("$line")
     done < "$HOME/default_whitelist.txt"
 
-    [ "${#current[@]}" -eq "${#defaults[@]}" ]
+    # Every convenience default must survive, and the hard-safety entries are
+    # merged on top. Asserting a count would re-pin a number that changes
+    # whenever either list grows; assert the containment instead.
+    [ "${#defaults[@]}" -gt 0 ]
+    local expected
+    for expected in "${defaults[@]}"; do
+        expected="${expected/\$HOME/$HOME}"
+        printf '%s\n' "${current[@]}" | grep -qxF "$expected" || {
+            echo "missing default: $expected"
+            return 1
+        }
+    done
     [ "${current[0]}" = "${defaults[0]/\$HOME/$HOME}" ]
+
+    safety=()
+    while IFS= read -r line; do
+        safety+=("$line")
+    done < <(HOME="$HOME" /bin/bash --noprofile --norc -c "source '$PROJECT_ROOT/lib/manage/whitelist.sh'; printf '%s\n' \"\${SAFETY_WHITELIST_PATTERNS[@]}\"")
+    for expected in "${safety[@]}"; do
+        printf '%s\n' "${current[@]}" | grep -qxF "$expected" || {
+            echo "missing safety entry: $expected"
+            return 1
+        }
+    done
 }
 
 @test "is_whitelisted matches saved patterns exactly" {
@@ -106,35 +128,98 @@ setup() {
 @test "optimize whitelist ignores and does not resave removed task ids" {
     local optimize_path="$HOME/.config/mole/whitelist_optimize"
     mkdir -p "$(dirname "$optimize_path")"
-    printf 'dock_refresh\ncache_refresh\n' > "$optimize_path"
+    printf 'dock_refresh\nmemory_pressure_relief\ncache_refresh\n' > "$optimize_path"
 
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/manage/whitelist.sh"
 load_whitelist optimize
 printf 'loaded:%s\n' "${CURRENT_WHITELIST_PATTERNS[@]}"
-save_whitelist_patterns optimize dock_refresh cache_refresh
+save_whitelist_patterns optimize dock_refresh memory_pressure_relief cache_refresh
 EOF
 
     [ "$status" -eq 0 ] || { echo "$output"; return 1; }
     [[ "$output" == *"loaded:cache_refresh"* ]] || return 1
     [[ "$output" != *"loaded:dock_refresh"* ]] || return 1
+    [[ "$output" != *"loaded:memory_pressure_relief"* ]] || return 1
     grep -qFx 'cache_refresh' "$optimize_path"
     run grep -qFx 'dock_refresh' "$optimize_path"
     [ "$status" -eq 1 ]
+    run grep -qFx 'memory_pressure_relief' "$optimize_path"
+    [ "$status" -eq 1 ]
+}
+
+@test "load_whitelist merges FINDER_METADATA into an existing custom file (#1396)" {
+    mkdir -p "$(dirname "$WHITELIST_PATH")"
+    printf '%s\n' "$HOME/.cache/custom-keep/*" > "$WHITELIST_PATH"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/manage/whitelist.sh"
+load_whitelist
+has_sentinel=false
+has_custom=false
+for p in "${CURRENT_WHITELIST_PATTERNS[@]}"; do
+    [[ "$p" == "$FINDER_METADATA_SENTINEL" ]] && has_sentinel=true
+    [[ "$p" == "$HOME/.cache/custom-keep/*" ]] && has_custom=true
+done
+printf 'sentinel=%s custom=%s count=%s\n' "$has_sentinel" "$has_custom" "${#CURRENT_WHITELIST_PATTERNS[@]}"
+EOF
+
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [[ "$output" == *"sentinel=true"* ]] || { echo "$output"; return 1; }
+    [[ "$output" == *"custom=true"* ]] || { echo "$output"; return 1; }
+}
+
+@test "ensure_safety_whitelist_patterns is idempotent and preserves custom entries" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+declare -a WHITELIST_PATTERNS=("$HOME/.cache/custom-keep/*" "$FINDER_METADATA_SENTINEL")
+declare -a CURRENT_WHITELIST_PATTERNS=("${WHITELIST_PATTERNS[@]}")
+ensure_safety_whitelist_patterns
+ensure_safety_whitelist_patterns
+sentinel_count=0
+custom_count=0
+for p in "${WHITELIST_PATTERNS[@]}"; do
+    [[ "$p" == "$FINDER_METADATA_SENTINEL" ]] && sentinel_count=$((sentinel_count + 1))
+    [[ "$p" == "$HOME/.cache/custom-keep/*" ]] && custom_count=$((custom_count + 1))
+done
+# Every safety entry must appear exactly once after two calls, and the total
+# is derived from the array rather than pinned, so growing hard safety does
+# not turn an idempotency test into a counting test.
+duplicated=0
+for safety in "${SAFETY_WHITELIST_PATTERNS[@]}"; do
+    seen=0
+    for p in "${WHITELIST_PATTERNS[@]}"; do
+        [[ "$p" == "$safety" ]] && seen=$((seen + 1))
+    done
+    [[ $seen -eq 1 ]] || duplicated=$((duplicated + 1))
+done
+expected_total=$((1 + ${#SAFETY_WHITELIST_PATTERNS[@]}))
+printf 'sentinel=%s custom=%s duplicated=%s total_matches_expected=%s\n' \
+    "$sentinel_count" "$custom_count" "$duplicated" \
+    "$([[ ${#WHITELIST_PATTERNS[@]} -eq $expected_total ]] && echo yes || echo no)"
+EOF
+
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [[ "$output" == *"sentinel=1"* ]] || { echo "$output"; return 1; }
+    [[ "$output" == *"custom=1"* ]] || { echo "$output"; return 1; }
+    [[ "$output" == *"duplicated=0"* ]] || { echo "$output"; return 1; }
+    [[ "$output" == *"total_matches_expected=yes"* ]] || { echo "$output"; return 1; }
 }
 
 @test "legacy optimize whitelist with only removed task ids migrates safely on Bash 3.2" {
     local legacy_path="$HOME/.config/mole/whitelist_checks"
     local optimize_path="$HOME/.config/mole/whitelist_optimize"
     mkdir -p "$(dirname "$legacy_path")"
-    printf 'dock_refresh\n' > "$legacy_path"
+    printf 'dock_refresh\nmemory_pressure_relief\n' > "$legacy_path"
 
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/manage/whitelist.sh"
 load_whitelist optimize
-[[ ${#CURRENT_WHITELIST_PATTERNS[@]} -eq 0 ]]
+[[ ${#CURRENT_WHITELIST_PATTERNS[@]} -eq 0 ]] || exit 1
 printf 'survived\n'
 EOF
 
@@ -169,6 +254,128 @@ EOF
     [[ "$output" == *"Tart OCI/IPSW cache|\$HOME/.tart/cache|container_cache"* ]] || return 1
 }
 
+@test "whitelist inventory offers no protection for paths Mole never deletes" {
+    # Every inventory row is a protection the user can switch on. Offering one
+    # for a path no cleanup path touches invites the reader to conclude Mole
+    # would otherwise delete it. registry/src is kept by clean_dev_rust, so it
+    # must not reappear here.
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/manage/whitelist.sh"
+get_all_cache_items
+EOF
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"Rust Cargo registry cache|\$HOME/.cargo/registry/cache/*|compiler_cache"* ]] || return 1
+    [[ "$output" != *"registry/src"* ]] || return 1
+    [[ "$output" != *"Cargo git"* ]] || return 1
+    [[ "$output" != *"Deno cache"* ]] || return 1
+    [[ "$output" != *"SBT Scala"* ]] || return 1
+    [[ "$output" != *"Ivy dependency"* ]] || return 1
+    [[ "$output" != *"PyTorch model"* ]] || return 1
+    [[ "$output" != *"TensorFlow model"* ]] || return 1
+    [[ "$output" != *"HuggingFace models"* ]] || return 1
+    [[ "$output" != *"Weights & Biases"* ]]
+}
+
+@test "whitelist inventory follows relocated Go cache roots" {
+    local build_root="$HOME/custom-go-build"
+    local module_root="$HOME/custom-go-mod"
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" \
+        BUILD_ROOT="$build_root" MODULE_ROOT="$module_root" \
+        /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/manage/whitelist.sh"
+mole_go_cache_root() {
+    if [[ "$1" == "GOCACHE" ]]; then
+        printf '%s\n' "$BUILD_ROOT"
+    else
+        printf '%s\n' "$MODULE_ROOT"
+    fi
+}
+get_all_cache_items
+EOF
+
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [[ "$output" == *"Go build cache|$build_root/*|compiler_cache"* ]] || return 1
+    [[ "$output" == *"Go module cache|$module_root/*|compiler_cache"* ]] || return 1
+    [[ "$output" != *"\$HOME/go/pkg/mod"* ]]
+}
+
+@test "whitelist inventory exposes guarded PyInstaller and Clang caches" {
+    local darwin_cache="$HOME/darwin-cache"
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DARWIN_CACHE="$darwin_cache" \
+        /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/manage/whitelist.sh"
+mole_darwin_user_cache_root() { printf '%s\n' "$DARWIN_CACHE"; }
+get_all_cache_items
+EOF
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"PyInstaller binary cache|\$HOME/Library/Application Support/pyinstaller/bincache*|compiler_cache"* ]] || return 1
+    [[ "$output" == *"Clang module cache|$darwin_cache/clang/*|compiler_cache"* ]]
+}
+
+@test "whitelist inventory resolves the GitHub CLI cache location" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/manage/whitelist.sh"
+get_all_cache_items
+EOF
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"GitHub CLI cache|$HOME/.cache/gh|network_tools"* ]] || return 1
+
+    local xdg_cache="$HOME/custom-cache"
+    run env HOME="$HOME" XDG_CACHE_HOME="$xdg_cache" PROJECT_ROOT="$PROJECT_ROOT" \
+        /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/manage/whitelist.sh"
+get_all_cache_items
+EOF
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"GitHub CLI cache|$xdg_cache/gh|network_tools"* ]] || return 1
+    [[ "$output" != *"GitHub CLI cache|$HOME/.cache/gh|network_tools"* ]] || return 1
+}
+
+@test "saved custom XDG GitHub CLI cache whitelist blocks the owner command" {
+    local xdg_cache="$HOME/custom-cache"
+    local trace="$HOME/gh-xdg-manager.trace"
+    mkdir -p "$xdg_cache/gh" "$HOME/bin"
+    cat > "$HOME/bin/gh" <<'SCRIPT'
+#!/bin/bash
+printf '%s\n' "$*" >> "$GH_TRACE"
+exit 0
+SCRIPT
+    chmod +x "$HOME/bin/gh"
+
+    run env HOME="$HOME" XDG_CACHE_HOME="$xdg_cache" PATH="$HOME/bin:/usr/bin:/bin" \
+        PROJECT_ROOT="$PROJECT_ROOT" GH_TRACE="$trace" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/manage/whitelist.sh"
+github_cache_pattern=""
+while IFS='|' read -r name pattern _; do
+    if [[ "$name" == "GitHub CLI cache" ]]; then
+        github_cache_pattern="$pattern"
+        break
+    fi
+done < <(get_all_cache_items)
+[[ "$github_cache_pattern" == "$XDG_CACHE_HOME/gh" ]] || exit 1
+save_whitelist_patterns "$github_cache_pattern"
+load_mole_whitelist "$HOME"
+
+source "$PROJECT_ROOT/lib/clean/dev.sh"
+DRY_RUN=false
+clean_github_cli_cache
+EOF
+
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [[ "$output" == *"GitHub CLI cache · skipped (whitelist)"* ]] || return 1
+    [ ! -e "$trace" ] || return 1
+}
+
 @test "whitelist inventory exposes Chrome AI model stores" {
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
@@ -180,6 +387,17 @@ EOF
     [[ "$output" == *"Chrome on-device AI models|\$HOME/Library/Application Support/Google/Chrome/OptGuideOnDevice*/*|ai_ml_cache"* ]] || return 1
     [[ "$output" == *"Chrome optimization guide models|\$HOME/Library/Application Support/Google/Chrome/optimization_guide_model_store/*|ai_ml_cache"* ]] || return 1
     [[ "$output" == *"Chrome browser cache|\$HOME/Library/Caches/Google/Chrome/*|browser_cache"* ]] || return 1
+}
+
+@test "whitelist inventory exposes Final Cut Pro proxy media (#1499)" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/manage/whitelist.sh"
+get_all_cache_items
+EOF
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"Final Cut Pro proxy media (render files still cleaned)|\$HOME/Movies/*.fcpbundle/*/Transcoded Media/Proxy Media|app_cache"* ]] || return 1
 }
 
 @test "mo clean --whitelist persists selections" {

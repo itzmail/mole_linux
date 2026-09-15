@@ -92,7 +92,7 @@ setup() {
 	[[ "$output" == *"--dry-run -n --external --whitelist --debug --help -h"* ]] || return 1
 	[[ "$output" == *"--json --help -h"* ]] || return 1
 	[[ "$output" == *"--json --limit --help -h"* ]] || return 1
-	[[ "$output" == *"--paths --dry-run -n --include-empty --debug --help -h"* ]] || return 1
+	[[ "$output" == *"--paths --dry-run -n --yes --include-empty --debug --help -h"* ]] || return 1
 	[[ "$output" != *"--select"* ]] || return 1
 	[[ "$output" != *"--categories"* ]] || return 1
 	[[ "$output" != *"--exclude-paths"* ]]
@@ -128,6 +128,7 @@ setup() {
 	[[ "$output" == *"--json"* ]] || return 1
 	[[ "$output" == *"--limit"* ]] || return 1
 	[[ "$output" == *"--include-empty"* ]] || return 1
+	[[ "$output" == *"--yes[Confirm unattended cleanup of eligible artifacts]"* ]] || return 1
 	[[ "$output" != *"--select"* ]] || return 1
 	[[ "$output" != *"--categories"* ]] || return 1
 	[[ "$output" != *"--exclude-paths"* ]]
@@ -211,4 +212,10 @@ setup() {
 
 	run "$PROJECT_ROOT/bin/completion.sh" fish
 	[ "$status" -eq 0 ]
+}
+
+@test "completion fish includes explicit unattended purge consent" {
+    run "$PROJECT_ROOT/bin/completion.sh" fish
+    [ "$status" -eq 0 ]
+    [[ "$output" == *'__fish_seen_subcommand_from purge" -l yes -d "Confirm unattended cleanup of eligible artifacts"'* ]]
 }

@@ -4,8 +4,10 @@ package main
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"unicode"
 )
 
 // View renders the TUI.
@@ -26,6 +28,18 @@ func (m model) View() string {
 			freeLabel = fmt.Sprintf("  %s(%s free)%s", colorGray, humanizeBytes(m.diskFree), colorReset)
 		}
 		fmt.Fprintf(&b, "%sAnalyze Disk%s%s\n", colorPurpleBold, colorReset, freeLabel)
+		if m.localSnapshotCount > 0 {
+			snapshotLabel := "snapshot"
+			if m.localSnapshotCount != 1 {
+				snapshotLabel = "snapshots"
+			}
+			freshnessLabel := ""
+			if !m.localSnapshotFresh {
+				freshnessLabel = " · last successful check"
+			}
+			fmt.Fprintf(&b, "%s%d Time Machine local %s · snapshot-only space is not listed below%s%s\n",
+				colorGray, m.localSnapshotCount, snapshotLabel, freshnessLabel, colorReset)
+		}
 		if m.overviewScanning {
 			if allOverviewEntriesPending(m.entries) {
 				fmt.Fprintf(&b, "%sSelect a location to explore:%s  ", colorGray, colorReset)
@@ -94,7 +108,7 @@ func (m model) View() string {
 			progressPrefix = fmt.Sprintf(" %s%.0f%%%s", colorCyan, percent, colorReset)
 		}
 
-		fmt.Fprintf(&b, "%s%s%s%s Scanning%s: %s%s files%s, %s%s dirs%s, %s%s%s\n",
+		statusLine := fmt.Sprintf("%s%s%s%s Scanning%s: %s%s files%s, %s%s dirs%s, %s%s%s",
 			colorCyan, colorBold,
 			spinnerFrames[m.spinner],
 			colorReset,
@@ -103,12 +117,29 @@ func (m model) View() string {
 			colorYellow, formatNumber(dirsScanned), colorReset,
 			colorGreen, humanizeBytes(bytesScanned), colorReset)
 
+		currentPath := ""
 		if m.currentPath != nil {
-			currentPath, _ := m.currentPath.Load().(string)
-			if currentPath != "" {
-				shortPath := displayPath(currentPath)
-				shortPath = truncateMiddle(shortPath, 50)
-				fmt.Fprintf(&b, "%s%s%s\n", colorGray, shortPath, colorReset)
+			currentPath, _ = m.currentPath.Load().(string)
+		}
+
+		if currentPath == "" {
+			fmt.Fprintf(&b, "%s\n", statusLine)
+		} else {
+			// Keep the path on the status line whenever the terminal is wide
+			// enough to show a useful piece of it, instead of always spending a
+			// second row on it. The old code also truncated to a fixed 50
+			// columns, which cut paths short on wide terminals and could still
+			// overflow narrow ones.
+			shortPath := displayPath(currentPath)
+			const pathSeparator = "  "
+			remaining := m.width - displayWidth(statusLine) - len(pathSeparator)
+			if remaining >= scanPathInlineMinWidth {
+				fmt.Fprintf(&b, "%s%s%s%s%s\n", statusLine, pathSeparator,
+					colorGray, truncateMiddle(shortPath, remaining), colorReset)
+			} else {
+				pathWidth := max(m.width, scanPathInlineMinWidth)
+				fmt.Fprintf(&b, "%s\n%s%s%s\n", statusLine,
+					colorGray, truncateMiddle(shortPath, pathWidth), colorReset)
 			}
 		}
 
@@ -385,6 +416,7 @@ func (m model) View() string {
 		fmt.Fprintln(&b)
 		var deleteCount int
 		var totalDeleteSize int64
+		hasAppBundle := false
 		if m.showLargeFiles && len(m.largeMultiSelected) > 0 {
 			deleteCount = len(m.largeMultiSelected)
 			for path := range m.largeMultiSelected {
@@ -401,6 +433,9 @@ func (m model) View() string {
 				for _, entry := range m.entries {
 					if entry.Path == path {
 						totalDeleteSize += entry.Size
+						if isAppBundleEntry(entry) {
+							hasAppBundle = true
+						}
 						break
 					}
 				}
@@ -418,8 +453,58 @@ func (m model) View() string {
 				m.deleteTarget.Name, humanizeBytes(m.deleteTarget.Size),
 				colorGray, colorReset)
 		}
+		if deleteCount > 1 && hasAppBundle {
+			fmt.Fprintf(&b, "%sApp bundles delete the bundle only. Use mo uninstall <App> to also remove support files.%s\n",
+				colorYellow, colorReset)
+		} else if deleteCount <= 1 && isAppBundleEntry(*m.deleteTarget) {
+			fmt.Fprintf(&b, "%sApp bundle: this deletes the bundle only. Use %s to also remove its support files.%s\n",
+				colorYellow, uninstallCommandForApp(m.deleteTarget.Name), colorReset)
+		}
 	}
 	return b.String()
+}
+
+// isAppBundleEntry reports whether a scanned entry is a macOS application
+// bundle: a directory whose name ends in ".app". Contents are not inspected;
+// the hint this powers is informational, so a false positive on a plain
+// folder named like a bundle is harmless.
+func isAppBundleEntry(entry dirEntry) bool {
+	return entry.IsDir && strings.EqualFold(filepath.Ext(entry.Name), ".app")
+}
+
+// uninstallCommandForApp renders a shell-safe mo uninstall invocation for an
+// app bundle name. Simple names stay unquoted; other printable names use POSIX
+// single-quote escaping. Names that look like flags or contain control
+// characters fall back to the generic placeholder.
+func uninstallCommandForApp(name string) string {
+	appName := strings.TrimSuffix(name, filepath.Ext(name))
+	if appName == "" {
+		appName = name
+	}
+	if appName == "" || strings.HasPrefix(appName, "-") || strings.IndexFunc(appName, unicode.IsControl) >= 0 {
+		return "mo uninstall <App>"
+	}
+	if isShellSafeUnquotedAppName(appName) {
+		return "mo uninstall " + appName
+	}
+	return "mo uninstall '" + strings.ReplaceAll(appName, "'", `'\''`) + "'"
+}
+
+func isShellSafeUnquotedAppName(name string) bool {
+	for _, r := range name {
+		if r >= 'a' && r <= 'z' ||
+			r >= 'A' && r <= 'Z' ||
+			r >= '0' && r <= '9' {
+			continue
+		}
+		switch r {
+		case '_', '-', '.', '+':
+			continue
+		default:
+			return false
+		}
+	}
+	return name != ""
 }
 
 func allOverviewEntriesPending(entries []dirEntry) bool {

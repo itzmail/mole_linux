@@ -34,7 +34,7 @@ setup() {
 
 @test "mo_spinner_chars returns default sequence" {
     result="$(HOME="$HOME" /bin/bash --noprofile --norc -c "source '$PROJECT_ROOT/lib/core/common.sh'; mo_spinner_chars")"
-    [ "$result" = "|/-\\" ]
+    [ "$result" = $'⠋\n⠙\n⠹\n⠸\n⠼\n⠴\n⠦\n⠧\n⠇\n⠏' ]
 }
 
 @test "detect_architecture maps current CPU to friendly label" {
@@ -246,6 +246,19 @@ EOF
     [ "$result" = "unprotected" ]
 }
 
+@test "should_protect_path protects Calendar data and cache paths (#1508)" {
+    local path result
+    for path in \
+        "$HOME/Library/Calendars" \
+        "$HOME/Library/Calendars/Calendar Cache" \
+        "$HOME/Library/Calendars/Calendar Cache-shm" \
+        "$HOME/Library/Calendars/Calendar Cache-wal" \
+        "$HOME/Library/Calendars/01234567-89AB-CDEF-0123-456789ABCDEF"; do
+        result=$(HOME="$HOME" TARGET_PATH="$path" /bin/bash --noprofile --norc -c 'source "$PROJECT_ROOT/lib/core/common.sh"; should_protect_path "$TARGET_PATH" && echo protected || echo unprotected')
+        [ "$result" = "protected" ] || return 1
+    done
+}
+
 @test "xcode_build_tooling_process_state recognizes command-line build owners" {
     run env PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
@@ -408,7 +421,7 @@ EOF
 }
 
 @test "muted text avoids theme-defined ANSI bright black" {
-    run grep -R -nF '0;90m' \
+	run grep -R -I -nF '0;90m' \
         "$PROJECT_ROOT/lib" \
         "$PROJECT_ROOT/bin" \
         "$PROJECT_ROOT/mole" \
@@ -444,6 +457,110 @@ EOF
 
     [ "$status" -eq 0 ] || { echo "$output"; return 1; }
     [[ "$output" == *"inactive=1 unknown=2"* ]]
+}
+
+@test "mole_darwin_user_cache_root validates trusted getconf output" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+
+resolver_mode=valid
+run_with_timeout() {
+    [[ "$2" == "/usr/bin/getconf" && "$3" == "DARWIN_USER_CACHE_DIR" ]] || return 3
+    case "$resolver_mode" in
+        valid) printf '/var/folders/example/C/\n' ;;
+        relative) printf 'tmp/cache\n' ;;
+        traversal) printf '/var/folders/../private\n' ;;
+        root) printf '/\n' ;;
+        timeout) return 124 ;;
+    esac
+}
+
+valid=$(mole_darwin_user_cache_root)
+relative_rc=0
+traversal_rc=0
+root_rc=0
+timeout_rc=0
+resolver_mode=relative
+mole_darwin_user_cache_root > /dev/null 2>&1 || relative_rc=$?
+resolver_mode=traversal
+mole_darwin_user_cache_root > /dev/null 2>&1 || traversal_rc=$?
+resolver_mode=root
+mole_darwin_user_cache_root > /dev/null 2>&1 || root_rc=$?
+resolver_mode=timeout
+mole_darwin_user_cache_root > /dev/null 2>&1 || timeout_rc=$?
+printf 'valid=%s relative=%s traversal=%s root=%s timeout=%s\n' \
+    "$valid" "$relative_rc" "$traversal_rc" "$root_rc" "$timeout_rc"
+EOF
+
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [[ "$output" == *"valid=/var/folders/example/C relative=1 traversal=1 root=1 timeout=124"* ]]
+}
+
+@test "mole_go_cache_root validates owner output and propagates timeout" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+
+go() { :; }
+resolver_mode=valid
+run_with_timeout() {
+    [[ "$2" == "go" && "$3" == "env" ]] || return 3
+    case "$resolver_mode:$4" in
+        valid:GOCACHE) printf '%s/custom-go-build/\n' "$HOME" ;;
+        valid:GOMODCACHE) printf '%s/custom-go-mod/\n' "$HOME" ;;
+        relative:*) printf 'tmp/go-cache\n' ;;
+        traversal:*) printf '%s/cache/../private\n' "$HOME" ;;
+        broad:*) printf '%s/go\n' "$HOME" ;;
+        timeout:*) return 124 ;;
+    esac
+}
+
+build=$(mole_go_cache_root GOCACHE)
+module=$(mole_go_cache_root GOMODCACHE)
+relative_rc=0
+traversal_rc=0
+broad_rc=0
+timeout_rc=0
+resolver_mode=relative
+mole_go_cache_root GOCACHE > /dev/null 2>&1 || relative_rc=$?
+resolver_mode=traversal
+mole_go_cache_root GOCACHE > /dev/null 2>&1 || traversal_rc=$?
+resolver_mode=broad
+mole_go_cache_root GOMODCACHE > /dev/null 2>&1 || broad_rc=$?
+resolver_mode=timeout
+mole_go_cache_root GOCACHE > /dev/null 2>&1 || timeout_rc=$?
+printf 'build=%s module=%s relative=%s traversal=%s broad=%s timeout=%s\n' \
+    "$build" "$module" "$relative_rc" "$traversal_rc" "$broad_rc" "$timeout_rc"
+EOF
+
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [[ "$output" == *"build=$HOME/custom-go-build module=$HOME/custom-go-mod relative=1 traversal=1 broad=1 timeout=124"* ]]
+}
+
+@test "mole_deno_cache_root accepts narrow absolute roots and rejects unsafe ones" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+
+default=$(mole_deno_cache_root)
+DENO_DIR="$HOME/custom-deno/"
+custom=$(mole_deno_cache_root)
+relative_rc=0
+traversal_rc=0
+broad_rc=0
+DENO_DIR="tmp/deno"
+mole_deno_cache_root > /dev/null 2>&1 || relative_rc=$?
+DENO_DIR="$HOME/cache/../deno"
+mole_deno_cache_root > /dev/null 2>&1 || traversal_rc=$?
+DENO_DIR="$HOME/Library/Caches"
+mole_deno_cache_root > /dev/null 2>&1 || broad_rc=$?
+printf 'default=%s custom=%s relative=%s traversal=%s broad=%s\n' \
+    "$default" "$custom" "$relative_rc" "$traversal_rc" "$broad_rc"
+EOF
+
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [[ "$output" == *"default=$HOME/Library/Caches/deno custom=$HOME/custom-deno relative=1 traversal=1 broad=1"* ]]
 }
 
 @test "create_temp_file and create_temp_dir are tracked and cleaned" {
@@ -617,7 +734,7 @@ EOF
 }
 
 @test "start_inline_spinner ignores PATH-provided sleep in TTY mode" {
-    if ! /usr/bin/script -q /dev/null /bin/true > /dev/null 2>&1; then
+    if ! /usr/bin/script -q /dev/null /usr/bin/true < /dev/null > /dev/null 2>&1; then
         skip "script cannot allocate a TTY in this environment"
     fi
 
@@ -640,6 +757,26 @@ EOF
     [ ! -f "$marker" ]
 }
 
+@test "start_inline_spinner emits complete UTF-8 frames in C locale" {
+    if ! /usr/bin/script -q /dev/null /usr/bin/true < /dev/null > /dev/null 2>&1; then
+        skip "script cannot allocate a TTY in this environment"
+    fi
+
+    local raw="$HOME/spinner-c-locale.raw"
+    # shellcheck disable=SC2016  # inner bash expands these from its environment
+    PROJECT_ROOT="$PROJECT_ROOT" HOME="$HOME" TERM=xterm-256color LC_ALL=C \
+        /usr/bin/script -q "$raw" /bin/bash --noprofile --norc -c \
+        'source "$PROJECT_ROOT/lib/core/common.sh"; start_inline_spinner "Testing..."; /bin/sleep 0.95; stop_inline_spinner' \
+        < /dev/null > /dev/null 2>&1
+
+    /usr/bin/iconv -f UTF-8 -t UTF-8 "$raw" > /dev/null || return 1
+    raw_content="$(cat "$raw")"
+    # The old byte-slicing implementation emitted invalid UTF-8 here. Do not
+    # require a full animation cycle: CI startup time can consume part of this
+    # bounded capture even though the spinner itself is healthy.
+    [[ "$raw_content" == *"⠋"* ]]
+}
+
 @test "update_inline_spinner_message returns 1 without an active spinner" {
     run /bin/bash --noprofile --norc -c \
         "source '$PROJECT_ROOT/lib/core/common.sh'; update_inline_spinner_message 'New text'"
@@ -647,7 +784,7 @@ EOF
 }
 
 @test "update_inline_spinner_message swaps a live TTY spinner's text in place" {
-    if ! /usr/bin/script -q /dev/null /bin/true > /dev/null 2>&1; then
+    if ! /usr/bin/script -q /dev/null /usr/bin/true < /dev/null > /dev/null 2>&1; then
         skip "script cannot allocate a TTY in this environment"
     fi
 
@@ -678,7 +815,7 @@ EOF
 }
 
 @test "update_progress_if_needed updates spinner text without restarting it" {
-    if ! /usr/bin/script -q /dev/null /bin/true > /dev/null 2>&1; then
+    if ! /usr/bin/script -q /dev/null /usr/bin/true < /dev/null > /dev/null 2>&1; then
         skip "script cannot allocate a TTY in this environment"
     fi
 
@@ -753,6 +890,23 @@ EOF
 
     run /bin/bash -c "export MOLE_BASE_LOADED=1; source '$PROJECT_ROOT/lib/core/ui.sh'; printf 'gg' | read_key"
     [ "$output" = "TOP" ]
+}
+
+@test "read_key decodes physical paging and home keys in navigation and text modes" {
+    run env PROJECT_ROOT="$PROJECT_ROOT" /bin/bash <<'EOF'
+export MOLE_BASE_LOADED=1
+source "$PROJECT_ROOT/lib/core/ui.sh"
+for mode in 0 1; do
+    export MOLE_READ_KEY_FORCE_CHAR=$mode
+    for pair in '5~ LEFT' '6~ RIGHT' 'H TOP' 'F BOTTOM' '1~ TOP' '4~ BOTTOM' '7~ TOP' '8~ BOTTOM'; do
+        sequence=${pair%% *}
+        expected=${pair#* }
+        actual=$(printf '\033[%s' "$sequence" | read_key)
+        [[ "$actual" == "$expected" ]] || exit 1
+    done
+done
+EOF
+    [ "$status" -eq 0 ]
 }
 
 @test "read_key respects MOLE_READ_KEY_FORCE_CHAR" {

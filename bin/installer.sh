@@ -4,6 +4,13 @@
 
 set -euo pipefail
 
+# User state and installed tools must never run with inherited root privileges.
+# Individual maintenance operations request administrator access themselves.
+if [[ "$EUID" -eq 0 ]]; then
+    printf '%s\n' 'Run Mole without sudo; it requests administrator access when needed.' >&2
+    exit 1
+fi
+
 # shellcheck disable=SC2154
 # External variables set by menu_paginated.sh and environment
 declare MOLE_SELECTION_RESULT
@@ -828,7 +835,7 @@ main() {
                 export MOLE_DRY_RUN=1
                 ;;
             *)
-                echo "Unknown option: $arg"
+                echo "Unknown option: $arg" >&2
                 exit 1
                 ;;
         esac

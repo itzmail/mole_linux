@@ -43,13 +43,13 @@ setup() {
 	run grep -nF "scan_purge_targets \"\$path\" \"\$scan_output\" < /dev/null &" "$PROJECT_ROOT/lib/clean/project.sh"
 	[ "$status" -eq 0 ] || return 1
 
-	run grep -nF "(get_dir_size_kb \"\$_sz_item\" > \"\$_stmp\" 2> /dev/null) < /dev/null &" "$PROJECT_ROOT/lib/clean/project.sh"
+	run grep -nF "(get_dir_size_kb \"\$_sz_item\" \"\$_size_deadline\" > \"\$_stmp\" 2> /dev/null) < /dev/null &" "$PROJECT_ROOT/lib/clean/project.sh"
 	[ "$status" -eq 0 ] || return 1
 }
 
 @test "clean: indirect background timeout workers detach stdin from the terminal" {
 	run awk '
-		/get_cleanup_path_size_kb "\$path"/ { in_worker = 1; remaining = 12 }
+		/get_cleanup_path_size_kb "\$path"/ { in_worker = 1; remaining = 24 }
 		in_worker && /\)[[:space:]]*< \/dev\/null &/ { found = 1; exit }
 		in_worker && --remaining <= 0 { exit }
 		END { exit(found ? 0 : 1) }

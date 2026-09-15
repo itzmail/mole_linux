@@ -27,7 +27,7 @@ teardown_file() {
 }
 
 @test "clean_cloud_storage calls expected caches" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/user.sh"
@@ -42,7 +42,7 @@ EOF
 }
 
 @test "clean_virtualization_tools hits cache paths" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/user.sh"
@@ -61,7 +61,7 @@ EOF
 }
 
 @test "clean_virtualization_tools skips UTM caches while UTM is running" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/user.sh"
@@ -82,7 +82,7 @@ EOF
 }
 
 @test "clean_email_clients calls expected caches" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/clean/app_caches.sh"
 safe_clean() { echo "$2"; }
@@ -95,7 +95,7 @@ EOF
 }
 
 @test "clean_virtualization_tools includes Lima download cache" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/user.sh"
@@ -113,7 +113,7 @@ EOF
     mkdir -p "$HOME/.tart/cache/OCIs"
     : > "$HOME/tart-payload"
 
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=false /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=false /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/user.sh"
@@ -134,7 +134,7 @@ clean_tart_caches
 EOF
 
     [ "$status" -eq 0 ]
-    [ "$(<"$HOME/tart-args")" = "prune --entries caches --older-than 30" ] || return 1
+    [ "$(< "$HOME/tart-args")" = "prune --entries caches --older-than 30" ] || return 1
     [[ "$output" == *"Tart caches · pruned"* ]] || return 1
     [[ "$output" != *"--entries vms"* ]] || return 1
 }
@@ -143,7 +143,7 @@ EOF
     rm -rf "$HOME/.tart" "$HOME/tart-called"
     mkdir -p "$HOME/.tart/cache/IPSWs"
 
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=true /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=true /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/user.sh"
@@ -166,7 +166,7 @@ EOF
     rm -rf "$HOME/.tart"
     mkdir -p "$HOME/.tart/cache/OCIs"
 
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=false /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=false /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/user.sh"
@@ -180,10 +180,10 @@ clean_tart_caches
 EOF
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *"skipped (Tart running)"* ]] || return 1
+    [[ "$output" != *"skipped (Tart running)"* ]] || return 1
     [[ "$output" != *"TART_CALLED"* ]] || return 1
 
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=true /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=true /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/user.sh"
@@ -199,11 +199,65 @@ EOF
     [[ "$output" != *"TART_CALLED"* ]] || return 1
 }
 
+@test "clean_tart_caches fails closed when its process probe errors" {
+    rm -rf "$HOME/.tart" "$HOME/tart-called"
+    mkdir -p "$HOME/.tart/cache/OCIs"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=false /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/user.sh"
+pgrep() { return 2; }
+is_path_whitelisted() { return 1; }
+get_path_size_kb() { echo 1024; }
+note_activity() { :; }
+tart() { : > "$HOME/tart-called"; }
+clean_tart_caches
+EOF
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+    [[ "$output" == *"Tart caches · skipped (process state unknown)"* ]] || return 1
+    [ ! -e "$HOME/tart-called" ]
+}
+
+@test "clean_tart_caches rechecks activity before native prune" {
+    rm -rf "$HOME/.tart" "$HOME/tart-called" "$HOME/tart-probes"
+    mkdir -p "$HOME/.tart/cache/OCIs"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=false /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/user.sh"
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+pgrep() {
+    printf 'probe\n' >> "$HOME/tart-probes"
+    [[ $(wc -l < "$HOME/tart-probes" | tr -d ' ') -ge 2 ]]
+}
+is_path_whitelisted() { return 1; }
+get_path_size_kb() { echo 1024; }
+note_activity() { :; }
+defer_cleanup_family() { echo "DEFER:$1"; }
+tart() { : > "$HOME/tart-called"; }
+clean_tart_caches
+EOF
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+    [[ "$output" == *"DEFER:Tart"* ]] || return 1
+    [ ! -e "$HOME/tart-called" ]
+}
+
 @test "clean_tart_caches reports native prune failure without claiming success" {
     rm -rf "$HOME/.tart"
     mkdir -p "$HOME/.tart/cache/OCIs"
 
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=false /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=false /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/user.sh"
@@ -228,7 +282,7 @@ EOF
 @test "clean_tart_caches is silent without Tart or a cache" {
     rm -rf "$HOME/.tart"
 
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=false PATH="/usr/bin:/bin" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=false PATH="/usr/bin:/bin" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/user.sh"
@@ -242,7 +296,7 @@ EOF
 }
 
 @test "clean_note_apps calls expected caches" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/clean/app_caches.sh"
 safe_clean() { echo "$2"; }
@@ -255,7 +309,7 @@ EOF
 }
 
 @test "clean_task_apps calls expected caches" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/clean/app_caches.sh"
 safe_clean() { echo "$2"; }
@@ -268,7 +322,7 @@ EOF
 }
 
 @test "clean_video_tools calls expected caches" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/clean/app_caches.sh"
 safe_clean() { echo "$2"; }
@@ -281,7 +335,7 @@ EOF
 }
 
 @test "clean_video_players calls expected caches" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/clean/app_caches.sh"
 safe_clean() { echo "$2"; }
@@ -294,20 +348,41 @@ EOF
 }
 
 @test "clean_3d_tools calls expected caches" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    # Autodesk is only swept when a cache tree exists (#1390 made the row
+    # conditional on real targets), so the fixture has to provide one or the
+    # assertion below passes on an empty glob and proves nothing.
+    mkdir -p "$HOME/Library/Caches/com.autodesk.AcCoreConsole"
+    touch "$HOME/Library/Caches/com.autodesk.AcCoreConsole/Cache.db"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+# Autodesk moved behind the live-owner guard in #1390, so a case that only
+# stubs safe_clean would silently stop seeing its row. Supply the guarded
+# path too, and an empty process table so the verdict does not depend on
+# whether Fusion happens to be running here.
+pgrep() { return 1; }
+ps() { printf '  PID  PPID COMM ARGS\n'; }
 safe_clean() { echo "$2"; }
+safe_clean_guarded() {
+    local guard="$1"
+    shift
+    "$guard" || return 75
+    local count=$#
+    echo "${!count}"
+}
 clean_3d_tools
 EOF
 
     [ "$status" -eq 0 ]
     [[ "$output" == *"Blender cache"* ]] || return 1
     [[ "$output" == *"Cinema 4D cache"* ]]
+    [[ "$output" == *"Autodesk cache"* ]] || return 1
 }
 
 @test "clean_gaming_platforms calls expected caches" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/clean/app_caches.sh"
 safe_clean() { echo "$2"; }
@@ -320,7 +395,7 @@ EOF
 }
 
 @test "clean_translation_apps calls expected caches" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/clean/app_caches.sh"
 safe_clean() { echo "$2"; }
@@ -333,7 +408,7 @@ EOF
 }
 
 @test "clean_launcher_apps calls expected caches" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/clean/app_caches.sh"
 safe_clean() { echo "$2"; }
@@ -346,7 +421,7 @@ EOF
 }
 
 @test "clean_remote_desktop calls expected caches" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/clean/app_caches.sh"
 safe_clean() { echo "$2"; }
@@ -359,7 +434,7 @@ EOF
 }
 
 @test "clean_system_utils calls expected caches" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/clean/app_caches.sh"
 safe_clean() { echo "$2"; }
@@ -372,7 +447,7 @@ EOF
 }
 
 @test "clean_shell_utils calls expected caches" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/clean/app_caches.sh"
 safe_clean() { echo "$2"; }

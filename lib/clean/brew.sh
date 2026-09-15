@@ -243,8 +243,7 @@ clean_homebrew() {
             should_skip=true
             local cleaned_when="cleaned ${days_diff}d ago"
             [[ $days_diff -eq 0 ]] && cleaned_when="cleaned today"
-            echo -e "  ${GRAY}${ICON_WARNING}${NC} Homebrew · skipped (${cleaned_when})"
-            note_activity
+            debug_log "Homebrew cleanup skipped: ${cleaned_when}"
         fi
     fi
     [[ "$should_skip" == "true" ]] && return 0
@@ -278,10 +277,7 @@ clean_homebrew() {
     # Process cleanup output and extract metrics
     # Summarize cleanup results.
     if [[ "$skip_cleanup" == "true" ]]; then
-        # Cleanup was skipped due to small cache size
-        local size_mb=$((brew_cache_size / 1024))
-        echo -e "  ${GREEN}${ICON_SUCCESS}${NC} Homebrew cleanup · cache ${size_mb}MB, skipped"
-        note_activity
+        debug_log "Homebrew cleanup skipped: cache below threshold (${brew_cache_size}KB)"
     elif [[ "$brew_success" == "true" && -f "$brew_tmp_file" ]]; then
         local brew_output
         brew_output=$(cat "$brew_tmp_file" 2> /dev/null || echo "")

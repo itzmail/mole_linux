@@ -3,12 +3,21 @@
 package main
 
 import (
+	"math"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
 )
+
+func TestSpinnerFramesHaveSingleColumnWidth(t *testing.T) {
+	for _, frame := range spinnerFrames {
+		if got := displayWidth(frame); got != 1 {
+			t.Errorf("spinner frame %q width = %d, want 1", frame, got)
+		}
+	}
+}
 
 func TestRuneWidth(t *testing.T) {
 	tests := []struct {
@@ -121,18 +130,23 @@ func TestFormatPercentKeepsFixedWidth(t *testing.T) {
 	}
 }
 
-func TestColoredProgressBarKeepsFixedWidthWithoutGrayTrack(t *testing.T) {
+// The bar measures length in eighths of a cell across the whole range, so one
+// glyph family encodes magnitude everywhere. Three outcomes matter: no value
+// draws nothing, a value too small to scale keeps its place with a gray tick
+// rather than an empty column, and anything larger draws to scale in color.
+func TestColoredProgressBarKeepsFixedWidth(t *testing.T) {
 	tests := []struct {
-		name      string
-		value     int64
-		maxValue  int64
-		percent   float64
-		wantSmall bool
+		name     string
+		value    int64
+		maxValue int64
+		percent  float64
+		want     string // "blank", "grayTick", or "scaled"
 	}{
-		{"empty", 0, 100, 0, false},
-		{"tiny nonzero", 1, 1000, 0.01, true},
-		{"partial", 25, 100, 25, false},
-		{"full", 100, 100, 100, false},
+		{"empty", 0, 100, 0, "blank"},
+		{"below one eighth of a cell", 1, 1000, 0.01, "grayTick"},
+		{"sub-cell but scalable", 1, 40, 2.5, "scaled"},
+		{"partial", 25, 100, 25, "scaled"},
+		{"full", 100, 100, 100, "scaled"},
 	}
 
 	for _, tt := range tests {
@@ -141,13 +155,52 @@ func TestColoredProgressBarKeepsFixedWidthWithoutGrayTrack(t *testing.T) {
 			if width := lipgloss.Width(got); width != barWidth {
 				t.Fatalf("progress bar width = %d, want %d for %q", width, barWidth, got)
 			}
-			if strings.Contains(got, "░") {
-				t.Fatalf("progress bar should not render a gray track: %q", got)
+			if strings.Contains(got, "░") || strings.Contains(got, "▓") || strings.Contains(got, "▒") {
+				t.Fatalf("progress bar should encode length by width, not shading: %q", got)
 			}
-			if tt.wantSmall && !strings.Contains(got, "▏") {
-				t.Fatalf("tiny nonzero progress should render a thin marker: %q", got)
+			switch tt.want {
+			case "blank":
+				if got != strings.Repeat(" ", barWidth) {
+					t.Fatalf("no value should render blank, got %q", got)
+				}
+			case "grayTick":
+				if !strings.HasPrefix(got, colorGray) {
+					t.Fatalf("an unscalable value should keep its place in gray, got %q", got)
+				}
+				if !strings.Contains(got, subCellBlocks[1]) {
+					t.Fatalf("gray tick should use the smallest block, got %q", got)
+				}
+			case "scaled":
+				if strings.HasPrefix(got, colorGray) {
+					t.Fatalf("a scalable value should draw in its own color, got %q", got)
+				}
+				if lipgloss.Width(strings.TrimSpace(got)) == 0 {
+					t.Fatalf("a scalable value should draw glyphs, got %q", got)
+				}
 			}
 		})
+	}
+}
+
+// Scaling the byte count before dividing overflowed int64 at 42.7 PB, wrapped
+// negative, and reached strings.Repeat with a negative count, which panics.
+// Sizes that large are not realistic, but a rendering helper must not be able
+// to take the whole TUI down on unexpected input.
+func TestColoredProgressBarSurvivesExtremeSizes(t *testing.T) {
+	sizes := []int64{
+		1 << 50,           // 1 PB
+		48038396025285290, // the old overflow threshold
+		48038396025285291, // just past it
+		math.MaxInt64 / 2,
+		math.MaxInt64,
+	}
+	for _, size := range sizes {
+		for _, pair := range [][2]int64{{size, size}, {1, size}, {size, 1}} {
+			got := coloredProgressBar(pair[0], pair[1], 50)
+			if width := lipgloss.Width(got); width != barWidth {
+				t.Fatalf("value=%d max=%d width=%d, want %d", pair[0], pair[1], width, barWidth)
+			}
+		}
 	}
 }
 

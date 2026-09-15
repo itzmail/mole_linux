@@ -1,4 +1,10 @@
 #!/bin/bash
+# User state and installed tools must never run with inherited root privileges.
+# Individual maintenance operations request administrator access themselves.
+if [[ "$EUID" -eq 0 ]]; then
+    printf '%s\n' 'Run Mole without sudo; it requests administrator access when needed.' >&2
+    exit 1
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -14,7 +20,7 @@ command_words="${command_names[*]}"
 clean_option_words="--dry-run -n --external --whitelist --debug --help -h"
 analyze_option_words="--json --help -h"
 history_option_words="--json --limit --help -h"
-purge_option_words="--paths --dry-run -n --include-empty --debug --help -h"
+purge_option_words="--paths --dry-run -n --yes --include-empty --debug --help -h"
 
 emit_zsh_subcommands() {
     for entry in "${MOLE_COMMANDS[@]}"; do
@@ -45,6 +51,7 @@ emit_fish_completions() {
     printf 'complete -f -c %s -n "__fish_seen_subcommand_from purge" -l paths -d "Edit custom scan directories"\n' "$cmd"
     printf 'complete -f -c %s -n "__fish_seen_subcommand_from purge" -l dry-run -s n -d "Preview purge actions without making changes"\n' "$cmd"
     printf 'complete -f -c %s -n "__fish_seen_subcommand_from purge" -l include-empty -d "Show zero-size project artifact directories"\n' "$cmd"
+    printf 'complete -f -c %s -n "__fish_seen_subcommand_from purge" -l yes -d "Confirm unattended cleanup of eligible artifacts"\n' "$cmd"
     printf 'complete -f -c %s -n "__fish_seen_subcommand_from purge" -l debug -d "Show detailed logs"\n' "$cmd"
     printf 'complete -f -c %s -n "__fish_seen_subcommand_from purge" -l help -s h -d "Show help"\n' "$cmd"
     printf '\n'
@@ -397,6 +404,7 @@ EOF
         printf "                '--dry-run[Preview purge actions without making changes]' \\\\\n"
         printf "                '-n[Preview purge actions without making changes]' \\\\\n"
         printf "                '--include-empty[Show zero-size project artifact directories]' \\\\\n"
+        printf "                '--yes[Confirm unattended cleanup of eligible artifacts]' \\\\\n"
         printf "                '--debug[Show detailed logs]' \\\\\n"
         printf "                '(-h --help)'{-h,--help}'[Show help]'\n"
         printf '            ;;\n'

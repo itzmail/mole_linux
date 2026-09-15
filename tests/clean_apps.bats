@@ -110,14 +110,14 @@ EOF
     [ "$status" -eq 0 ] || { echo "$output"; return 1; }
 }
 
-@test "scan_installed_apps rejects an unmarked cache and finds the installed app" {
+@test "scan_installed_apps rejects the previous complete-cache schema and finds the installed app" {
     run env HOME="$HOME/unmarked-cache" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_MODE=1 /bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/apps.sh"
 
 mkdir -p "$HOME/.cache/mole" "$HOME/Applications/Present.app/Contents"
-printf '%s\n' "com.example.Missing" > "$HOME/.cache/mole/installed_apps_cache"
+printf '%s\n%s\n' "com.example.Missing" "# mole-installed-apps-cache:v2:complete" > "$HOME/.cache/mole/installed_apps_cache"
 cat > "$HOME/Applications/Present.app/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -132,6 +132,7 @@ grep -Fx "com.example.Present" "$HOME/installed.txt"
 if grep -Fx "com.example.Missing" "$HOME/installed.txt"; then
     exit 1
 fi
+printf 'CACHE_SCHEMA_REBUILT:com.example.Present\n'
 EOF
 
     [ "$status" -eq 0 ] || { echo "$output"; return 1; }
@@ -161,6 +162,7 @@ grep -Fx "com.example.FuturePresent" "$HOME/installed.txt"
 if grep -Fx "com.example.FutureStale" "$HOME/installed.txt"; then
     exit 1
 fi
+printf 'FUTURE_CACHE_REBUILT:com.example.FuturePresent\n'
 EOF
 
     [ "$status" -eq 0 ] || { echo "$output"; return 1; }
@@ -189,6 +191,7 @@ grep -Fx "com.example.StagePresent" "$HOME/installed.txt"
 if grep -Fx "com.example.PartialStage" "$HOME/installed.txt"; then
     exit 1
 fi
+printf 'STAGED_CACHE_IGNORED:com.example.StagePresent\n'
 EOF
 
     [ "$status" -eq 0 ] || { echo "$output"; return 1; }
@@ -219,10 +222,12 @@ mv() { return 73; }
 scan_installed_apps "$HOME/installed.txt"
 grep -Fx "com.example.CurrentScan" "$HOME/installed.txt"
 grep -Fx "com.example.Previous" "$cache_file"
-[[ "$(tail -n 1 "$cache_file")" == "$INSTALLED_APPS_CACHE_COMPLETE_MARKER" ]]
+[[ "$(tail -n 1 "$cache_file")" == "$INSTALLED_APPS_CACHE_COMPLETE_MARKER" ]] || exit 1
 if find "$(dirname "$cache_file")" -maxdepth 1 -name 'installed_apps_cache.tmp.*' -print -quit | grep -q .; then
     exit 1
 fi
+printf 'PUBLISH_FAILURE_CURRENT:com.example.CurrentScan\n'
+printf 'PUBLISH_FAILURE_PREVIOUS:com.example.Previous\n'
 EOF
 
     [ "$status" -eq 0 ] || { echo "$output"; return 1; }
@@ -230,7 +235,7 @@ EOF
     [[ "$output" == *"com.example.Previous"* ]]
 }
 
-@test "scan_installed_apps filters missing value from osascript output" {
+@test "scan_installed_apps fails closed when a discovered app has no readable bundle id" {
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_MODE=1 /bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
@@ -240,18 +245,14 @@ source "$PROJECT_ROOT/lib/clean/apps.sh"
 # so this one exercises a real scan rather than reading a stale cache.
 rm -f "$HOME/.cache/mole/installed_apps_cache"
 
-# Create a fake .app with a plist that has no CFBundleIdentifier
+# A plist that cannot be parsed at all. This is the case that has to fail
+# closed: the app may well have a CFBundleIdentifier that simply could not be
+# read, and leaving that id out of the installed list is what turns a live
+# app's data into an apparent orphan. A plist that parses and merely lacks the
+# key is a different thing and is covered by its own test, since a bundle with
+# no id owns no bundle-id-named leftovers and cannot be mistaken for one.
 mkdir -p "$HOME/Applications/FakeApp.app/Contents"
-cat > "$HOME/Applications/FakeApp.app/Contents/Info.plist" <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleName</key>
-    <string>FakeApp</string>
-</dict>
-</plist>
-PLIST
+printf 'not a property list at all' > "$HOME/Applications/FakeApp.app/Contents/Info.plist"
 
 # Create a valid .app alongside it
 mkdir -p "$HOME/Applications/GoodApp.app/Contents"
@@ -267,13 +268,63 @@ cat > "$HOME/Applications/GoodApp.app/Contents/Info.plist" <<'PLIST'
 PLIST
 
 debug_log() { :; }
-scan_installed_apps "$HOME/installed.txt"
-cat "$HOME/installed.txt"
+scan_status=0
+scan_installed_apps "$HOME/installed.txt" || scan_status=$?
+[[ $scan_status -ne 0 ]] || exit 1
+[[ ! -e "$HOME/.cache/mole/installed_apps_cache" ]] || exit 1
+printf 'APP_METADATA_FAILURE_CLOSED\n'
 EOF
 
-    [ "$status" -eq 0 ] || return 1
-    [[ "$output" == *"com.example.GoodApp"* ]] || return 1
-    [[ "$output" != *"missing value"* ]] || return 1
+	[ "$status" -eq 0 ] || { echo "$output"; return 1; }
+	[[ "$output" == *"APP_METADATA_FAILURE_CLOSED"* ]] || return 1
+}
+
+@test "scan_installed_apps fails closed when every running-app probe fails" {
+    local scan_home="$HOME/running-probe-failure"
+    rm -rf "$scan_home"
+    mkdir -p "$scan_home"
+
+    run env HOME="$scan_home" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_MODE=0 MOLE_TEST_NO_AUTH=0 /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/apps.sh"
+
+app_path="$HOME/Applications/ProbeApp.app"
+mkdir -p "$app_path/Contents" "$HOME/stub-bin"
+cat > "$app_path/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>com.example.ProbeApp</string>
+</dict></plist>
+PLIST
+
+cat > "$HOME/stub-bin/find" <<'SH'
+#!/bin/sh
+if [ "${1:-}" = "$HOME/Applications" ]; then
+    printf '%s\n' "$HOME/Applications/ProbeApp.app"
+fi
+exit 0
+SH
+for command_name in osascript lsappinfo; do
+    cat > "$HOME/stub-bin/$command_name" <<'SH'
+#!/bin/sh
+exit 64
+SH
+done
+chmod +x "$HOME/stub-bin/find" "$HOME/stub-bin/osascript" "$HOME/stub-bin/lsappinfo"
+export PATH="$HOME/stub-bin:/usr/bin:/bin"
+
+debug_log() { :; }
+scan_status=0
+scan_installed_apps "$HOME/installed.txt" || scan_status=$?
+[[ $scan_status -ne 0 ]] || exit 1
+[[ ! -e "$HOME/.cache/mole/installed_apps_cache" ]] || exit 1
+printf 'AUXILIARY_PROBE_FAILURE_CLOSED\n'
+EOF
+
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [[ "$output" == *"AUXILIARY_PROBE_FAILURE_CLOSED"* ]] || return 1
 }
 
 @test "scan_installed_apps keeps find traversal options before predicates" {
@@ -289,11 +340,14 @@ cat > "$stub_dir/find" <<'SH'
 #!/bin/sh
 root="$1"
 shift
+case "$root" in
+    "$HOME/Library/LaunchAgents" | "/Library/LaunchAgents") exit 0 ;;
+esac
 if [ "${1:-}" != "-maxdepth" ] ||
     [ "${2:-}" != "3" ] ||
     [ "${3:-}" != "-type" ] ||
     [ "${4:-}" != "d" ] ||
-    [ "${5:-}" != "-name" ] ||
+    [ "${5:-}" != "-iname" ] ||
     [ "${6:-}" != "*.app" ]; then
     exit 64
 fi
@@ -323,6 +377,34 @@ EOF
 
     [ "$status" -eq 0 ]
     [[ "$output" == *"com.example.Ordered"* ]]
+}
+
+@test "scan_installed_apps aggregates LaunchAgent bundle names without scratch paths" {
+    run env HOME="$HOME/agent-scan" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_MODE=1 /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/apps.sh"
+
+mkdir -p "$HOME/Applications/AgentOwner.app/Contents" "$HOME/Library/LaunchAgents"
+cat > "$HOME/Applications/AgentOwner.app/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>com.example.AgentOwner</string>
+</dict></plist>
+PLIST
+touch "$HOME/Library/LaunchAgents/com.example.Agent.plist"
+debug_log() { :; }
+
+scan_installed_apps "$HOME/installed.txt"
+grep -qFx 'com.example.AgentOwner' "$HOME/installed.txt"
+grep -qFx 'com.example.Agent' "$HOME/installed.txt"
+if grep -qF '/Library/LaunchAgents/com.example.Agent.plist' "$HOME/installed.txt"; then
+    exit 1
+fi
+EOF
+
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
 }
 
 @test "scan_installed_apps fails closed when scan result aggregation fails" {
@@ -541,6 +623,110 @@ EOF
     [[ "$output" == *"APP_DIRECTORY_SCAN_FAILURE_CLOSED"* ]]
 }
 
+@test "clean_orphaned_app_data skips gracefully under errexit and names the unreadable bundle" {
+    local scan_home="$HOME/errexit-scan"
+    rm -rf "$scan_home"
+    mkdir -p "$scan_home"
+
+    run env HOME="$scan_home" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_MODE=1 /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/apps.sh"
+
+mkdir -p "$HOME/Applications/Broken.app/Contents" \
+    "$HOME/Library/Caches/com.example.LiveApp"
+touch -t "$(date -v-31d +%Y%m%d%H%M.%S)" "$HOME/Library/Caches/com.example.LiveApp"
+rm -f "$HOME/.cache/mole/installed_apps_cache"
+
+stub_dir="$HOME/stub-bin-errexit-scan"
+mkdir -p "$stub_dir"
+cat > "$stub_dir/find" <<'SH'
+#!/bin/sh
+if [ "${1:-}" = "$HOME/Applications" ]; then
+    printf '%s\n' "$HOME/Applications/Broken.app"
+fi
+exit 0
+SH
+cat > "$stub_dir/lsappinfo" <<'SH'
+#!/bin/sh
+exit 0
+SH
+chmod +x "$stub_dir/find" "$stub_dir/lsappinfo"
+export PATH="$stub_dir:$PATH"
+
+mdfind() { return 0; }
+run_with_timeout() { shift; "$@"; }
+get_path_size_kb() { printf '1\n'; }
+safe_clean() {
+    : > "$HOME/safe-clean-called"
+    return 0
+}
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+
+# No set +e wrapper: the production section window is the only reason a bare
+# scan failure did not abort before this change, and a future caller outside
+# that window must still reach the graceful skip.
+clean_orphaned_app_data
+
+[[ ! -e "$HOME/safe-clean-called" ]] || exit 1
+printf 'ERREXIT_SCAN_FAILURE_CLOSED\n'
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Skipped: Unable to scan installed applications (Broken.app)"* ]] || return 1
+    [[ "$output" == *"ERREXIT_SCAN_FAILURE_CLOSED"* ]]
+}
+
+@test "clean_orphaned_app_data renders hostile unreadable bundle names as inert text" {
+    local scan_home="$HOME/control-name-scan"
+    rm -rf "$scan_home"
+    mkdir -p "$scan_home"
+
+    run env HOME="$scan_home" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_MODE=1 NO_COLOR=1 /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/apps.sh"
+
+bad_name=$'Bad\\033[2J-\033[2J.app'
+mkdir -p "$HOME/Applications/$bad_name/Contents" \
+    "$HOME/Library/Caches/com.example.LiveApp"
+touch -t "$(date -v-31d +%Y%m%d%H%M.%S)" "$HOME/Library/Caches/com.example.LiveApp"
+
+stub_dir="$HOME/stub-bin-control-name"
+mkdir -p "$stub_dir"
+cat > "$stub_dir/find" <<'SH'
+#!/bin/sh
+if [ "${1:-}" = "$HOME/Applications" ]; then
+    printf '%s\n' "$HOME/Applications/$BAD_APP_NAME"
+fi
+exit 0
+SH
+cat > "$stub_dir/lsappinfo" <<'SH'
+#!/bin/sh
+exit 0
+SH
+chmod +x "$stub_dir/find" "$stub_dir/lsappinfo"
+export BAD_APP_NAME="$bad_name"
+export PATH="$stub_dir:$PATH"
+
+mdfind() { return 0; }
+run_with_timeout() { shift; "$@"; }
+get_path_size_kb() { printf '1\n'; }
+safe_clean() { echo "UNEXPECTED_CLEAN"; }
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+debug_log() { printf 'DEBUG:%s\n' "$*"; }
+
+clean_orphaned_app_data
+EOF
+
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [[ "$output" == *'Bad\033[2J-'* ]] || return 1
+    [[ "$output" != *$'\033[2J'* ]] || return 1
+    [[ "$output" != *"UNEXPECTED_CLEAN"* ]]
+}
+
 @test "is_bundle_orphaned returns true for old uninstalled bundle" {
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" ORPHAN_AGE_THRESHOLD=30 /bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
@@ -593,6 +779,13 @@ run_with_timeout() { shift; "$@"; }
 safe_clean() {
     rm -rf "$1"
     return 0
+}
+bundle_has_installed_app() { return 1; }
+safe_clean_guarded() {
+    local guard="$1"
+    shift
+    "$guard" "$1" || return $?
+    safe_clean "$@"
 }
 
 # Create required Library structure for permission check
@@ -666,6 +859,13 @@ safe_clean() {
         return 0  # Succeed
     fi
 }
+bundle_has_installed_app() { return 1; }
+safe_clean_guarded() {
+    local guard="$1"
+    shift
+    "$guard" "$1" || return $?
+    safe_clean "$@"
+}
 
 # Disable spinner
 start_section_spinner() { :; }
@@ -721,6 +921,13 @@ safe_clean() {
     rm -rf "$1"
     return 0
 }
+bundle_has_installed_app() { return 1; }
+safe_clean_guarded() {
+    local guard="$1"
+    shift
+    "$guard" "$1" || return $?
+    safe_clean "$@"
+}
 
 get_path_size_kb() {
     echo 2048
@@ -768,6 +975,13 @@ safe_clean() {
     echo "$2"
     rm -rf "$1"
 }
+bundle_has_installed_app() { return 1; }
+safe_clean_guarded() {
+    local guard="$1"
+    shift
+    "$guard" "$1" || return $?
+    safe_clean "$@"
+}
 
 start_section_spinner() { :; }
 stop_section_spinner() { :; }
@@ -786,6 +1000,100 @@ EOF
     [ "$status" -eq 0 ]
     [[ "$output" == *"Orphaned Claude workspace VM"* ]] || return 1
     [[ "$output" == *"PASS: Claude VM removed"* ]]
+}
+
+@test "orphan cleanup guard rejects replacement objects and newly installed apps" {
+    local candidate="$HOME/Library/Caches/com.test.raced-orphan"
+    mkdir -p "$candidate"
+    printf 'original\n' > "$candidate/data"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/apps.sh"
+
+candidate="$HOME/Library/Caches/com.test.raced-orphan"
+orphan_cleanup_candidate_snapshot "$candidate"
+_ORPHAN_CLEANUP_EXPECTED_IDENTITY="$_ORPHAN_CANDIDATE_IDENTITY"
+_ORPHAN_CLEANUP_EXPECTED_PARENT="$_ORPHAN_CANDIDATE_PARENT"
+_ORPHAN_CLEANUP_EXPECTED_PARENT_ID="$_ORPHAN_CANDIDATE_PARENT_ID"
+_ORPHAN_CLEANUP_EXPECTED_TARGET_ID="$_ORPHAN_CANDIDATE_TARGET_ID"
+_ORPHAN_CLEANUP_BUNDLE_ID="com.test.raced-orphan"
+_ORPHAN_CLEANUP_KIND="bundle"
+
+mv "$candidate" "$candidate.original"
+mkdir -p "$candidate"
+printf 'replacement\n' > "$candidate/data"
+bundle_has_installed_app() { return 1; }
+rc=0
+orphan_cleanup_candidate_still_eligible "$candidate" || rc=$?
+[[ $rc -eq 1 ]] || exit 1
+[[ -f "$candidate/data" && -f "$candidate.original/data" ]] || exit 1
+
+orphan_cleanup_candidate_snapshot "$candidate"
+_ORPHAN_CLEANUP_EXPECTED_IDENTITY="$_ORPHAN_CANDIDATE_IDENTITY"
+_ORPHAN_CLEANUP_EXPECTED_PARENT="$_ORPHAN_CANDIDATE_PARENT"
+_ORPHAN_CLEANUP_EXPECTED_PARENT_ID="$_ORPHAN_CANDIDATE_PARENT_ID"
+_ORPHAN_CLEANUP_EXPECTED_TARGET_ID="$_ORPHAN_CANDIDATE_TARGET_ID"
+bundle_has_installed_app() { return 0; }
+rc=0
+orphan_cleanup_candidate_still_eligible "$candidate" || rc=$?
+[[ $rc -eq 1 ]] || exit 1
+[[ -f "$candidate/data" ]]
+EOF
+
+    [ "$status" -eq 0 ]
+}
+
+@test "orphan cleanup binds its approved object to the final safe_remove sink" {
+    local candidate="$HOME/Library/Caches/com.test.bound-orphan"
+    mkdir -p "$candidate"
+    printf 'cache\n' > "$candidate/data"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/bin/clean.sh"
+
+candidate="$HOME/Library/Caches/com.test.bound-orphan"
+orphan_cleanup_candidate_snapshot "$candidate"
+_ORPHAN_CLEANUP_EXPECTED_IDENTITY="$_ORPHAN_CANDIDATE_IDENTITY"
+_ORPHAN_CLEANUP_EXPECTED_PARENT="$_ORPHAN_CANDIDATE_PARENT"
+_ORPHAN_CLEANUP_EXPECTED_PARENT_ID="$_ORPHAN_CANDIDATE_PARENT_ID"
+_ORPHAN_CLEANUP_EXPECTED_TARGET_ID="$_ORPHAN_CANDIDATE_TARGET_ID"
+_ORPHAN_CLEANUP_BUNDLE_ID="com.test.bound-orphan"
+_ORPHAN_CLEANUP_KIND="bundle"
+DRY_RUN=false
+MOLE_CURRENT_COMMAND=clean
+MOLE_CLEAN_CANCEL_STATUS=0
+files_cleaned=0
+total_size_cleaned=0
+total_items=0
+bundle_has_installed_app() { return 1; }
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+start_inline_spinner() { :; }
+stop_inline_spinner() { :; }
+note_activity() { :; }
+get_cleanup_path_size_kb() { printf '1\n'; }
+safe_remove() {
+    [[ "$1" == "$candidate" ]] || exit 1
+    [[ "$5" == "$_ORPHAN_CLEANUP_EXPECTED_PARENT" ]] || exit 1
+    [[ "$6" == "$_ORPHAN_CLEANUP_EXPECTED_PARENT_ID" ]] || exit 1
+    [[ "$7" == "$_ORPHAN_CLEANUP_EXPECTED_TARGET_ID" ]] || exit 1
+    printf 'BOUND_SINK\n'
+    return 0
+}
+
+safe_clean_guarded orphan_cleanup_candidate_still_eligible \
+    "$candidate" "Bound orphan"
+EOF
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+    [[ "$output" == *"BOUND_SINK"* ]]
 }
 
 @test "clean_orphaned_app_data keeps recent Claude VM bundle when Claude lookup misses" {
@@ -1032,6 +1340,46 @@ EOF
     [[ "$output" == *"Orphaned services · "*" found dry"* ]]
 }
 
+@test "clean_orphaned_system_services reports an authorization timeout" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_MODE=0 MOLE_TEST_NO_AUTH=0 \
+        DRY_RUN=false MOLE_DRY_RUN=0 /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/apps.sh"
+_mole_bounded_sudo() { return 124; }
+note_activity() { printf 'ACTIVITY\n'; }
+clean_orphaned_system_services
+EOF
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"authorization check timed out, skipped cleanup"* ]] || return 1
+    [[ "$output" == *"ACTIVITY"* ]]
+}
+
+@test "clean_orphaned_system_services reports a budget exhausted by an empty inventory" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_MODE=0 MOLE_TEST_NO_AUTH=0 \
+        DRY_RUN=false MOLE_DRY_RUN=0 /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/apps.sh"
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+note_activity() { printf 'ACTIVITY\n'; }
+debug_log() { :; }
+_mole_bounded_sudo() { return 0; }
+_mole_materialize_bounded_sudo_find() {
+    : > "$1"
+    SECONDS=$((SECONDS + 61))
+    return 0
+}
+clean_orphaned_system_services
+EOF
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"scan incomplete, skipped cleanup"* ]] || return 1
+    [[ "$output" == *"ACTIVITY"* ]]
+}
+
 @test "clean_orphaned_system_services reads unreadable plists through sudo PlistBuddy" {
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_MODE=0 MOLE_TEST_NO_AUTH=0 DRY_RUN=true MOLE_DRY_RUN=1 /bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
@@ -1090,6 +1438,454 @@ EOF
     [ "$status" -eq 0 ]
     [[ "$output" != *"Found 1 orphaned"* ]] || return 1
     [[ "$output" != *"Would remove orphaned service"* ]] || return 1
+}
+
+@test "clean_orphaned_system_services keeps earlier candidates when a later privileged inventory times out" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_MODE=0 MOLE_TEST_NO_AUTH=0 \
+        DRY_RUN=false MOLE_DRY_RUN=0 /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/apps.sh"
+
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+note_activity() { printf 'ACTIVITY\n'; }
+debug_log() { :; }
+
+tmp_dir=$(mktemp -d)
+tmp_plist="$tmp_dir/com.example.partial.plist"
+candidate_trace="$tmp_dir/candidate.trace"
+cat > "$tmp_plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>Program</key><string>$tmp_dir/missing</string></dict></plist>
+PLIST
+
+scan_calls=0
+_mole_materialize_bounded_sudo_find() {
+    scan_calls=$((scan_calls + 1))
+    printf 'SCAN:%s\n' "$3"
+    if [[ "$3" == "/Library/LaunchDaemons" ]]; then
+        printf '%s\0' "$tmp_plist" > "$1"
+        return 0
+    fi
+    if [[ "$3" == "/Library/LaunchAgents" ]]; then
+        printf '%s\0' "$tmp_dir/partial.plist" > "$1"
+        return 124
+    fi
+    : > "$1"
+}
+sudo() {
+    [[ "${1:-}" == "-n" ]] && shift
+    case "${1:-}" in
+        true) return 0 ;;
+        test) return 1 ;;
+        /usr/libexec/PlistBuddy)
+            case "${3:-}" in
+                "Print :ProgramArguments:0") return 1 ;;
+                "Print :Program")
+                    printf 'CANDIDATE_PROBED\n' >> "$candidate_trace"
+                    printf '%s\n' "$tmp_dir/missing"
+                    ;;
+            esac
+            ;;
+        */stat)
+            printf 'IDENTITY_CAPTURED\n' >> "$candidate_trace"
+            "$@"
+            ;;
+        *) return 0 ;;
+    esac
+}
+safe_sudo_remove() {
+    printf 'UNEXPECTED_REMOVE:%s\n' "$1"
+    return 99
+}
+
+clean_orphaned_system_services
+printf 'SCAN_CALLS=%s\n' "$scan_calls"
+cat "$candidate_trace"
+EOF
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"SCAN:/Library/LaunchDaemons"* ]] || return 1
+    [[ "$output" == *"CANDIDATE_PROBED"* ]] || return 1
+    [[ "$output" == *"IDENTITY_CAPTURED"* ]] || return 1
+    [[ "$output" == *"SCAN:/Library/LaunchAgents"* ]] || return 1
+    [[ "$output" == *"scan incomplete, skipped cleanup"* ]] || return 1
+    [[ "$output" == *"ACTIVITY"* ]] || return 1
+    [[ "$output" != *"UNEXPECTED_REMOVE"* ]]
+}
+
+@test "clean_orphaned_system_services propagates an interrupted plist probe before deletion" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_MODE=0 MOLE_TEST_NO_AUTH=0 \
+        DRY_RUN=false MOLE_DRY_RUN=0 /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/apps.sh"
+
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+note_activity() { :; }
+debug_log() { :; }
+
+tmp_dir=$(mktemp -d)
+tmp_plist="$tmp_dir/com.example.interrupt.plist"
+trace="$tmp_dir/probe.trace"
+touch "$tmp_plist"
+_mole_materialize_bounded_sudo_find() {
+    if [[ "$3" == "/Library/LaunchDaemons" ]]; then
+        printf '%s\0' "$tmp_plist" > "$1"
+    else
+        : > "$1"
+    fi
+}
+sudo() {
+    [[ "${1:-}" == "-n" ]] && shift
+    case "${1:-}" in
+        true) return 0 ;;
+        /usr/libexec/PlistBuddy)
+            printf 'PLIST_PROBE\n' >> "$trace"
+            return 130
+            ;;
+        *) return 0 ;;
+    esac
+}
+safe_sudo_remove() {
+    printf 'UNEXPECTED_REMOVE:%s\n' "$1"
+    return 99
+}
+
+rc=0
+clean_orphaned_system_services || rc=$?
+printf 'RC=%s\n' "$rc"
+cat "$trace"
+EOF
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"RC=130"* ]] || return 1
+    [[ "$output" == *"PLIST_PROBE"* ]] || return 1
+    [[ "$output" != *"UNEXPECTED_REMOVE"* ]]
+}
+
+@test "clean_orphaned_system_services propagates an interrupted parent-app resolver" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_MODE=0 MOLE_TEST_NO_AUTH=0 \
+        DRY_RUN=false MOLE_DRY_RUN=0 /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/apps.sh"
+
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+note_activity() { :; }
+debug_log() { :; }
+should_protect_path() { return 1; }
+_privileged_helper_bundle_id_from_binary() { printf 'com.example.helper\n'; }
+bundle_has_installed_app() { return 130; }
+
+tmp_dir=$(mktemp -d)
+tmp_plist="$tmp_dir/com.example.helper.plist"
+touch "$tmp_plist"
+_mole_materialize_bounded_sudo_find() {
+    if [[ "$3" == "/Library/LaunchDaemons" ]]; then
+        printf '%s\0' "$tmp_plist" > "$1"
+    else
+        : > "$1"
+    fi
+}
+sudo() {
+    [[ "${1:-}" == "-n" ]] && shift
+    case "${1:-}" in
+        true) return 0 ;;
+        test) return 0 ;;
+        /usr/libexec/PlistBuddy)
+            case "${3:-}" in
+                "Print :ProgramArguments:0") return 1 ;;
+                "Print :Program") printf '/Library/PrivilegedHelperTools/com.example.helper\n' ;;
+            esac
+            ;;
+        /usr/bin/stat) command "$@" ;;
+        *) return 0 ;;
+    esac
+}
+safe_sudo_remove() {
+    printf 'UNEXPECTED_REMOVE:%s\n' "$1"
+    return 99
+}
+
+rc=0
+clean_orphaned_system_services || rc=$?
+printf 'RC=%s\n' "$rc"
+EOF
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"RC=130"* ]] || return 1
+    [[ "$output" != *"UNEXPECTED_REMOVE"* ]]
+}
+
+@test "clean_orphaned_system_services propagates an interrupted protect-pattern mdfind" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_MODE=0 MOLE_TEST_NO_AUTH=0 \
+        DRY_RUN=false MOLE_DRY_RUN=0 /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/apps.sh"
+
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+note_activity() { :; }
+debug_log() { :; }
+should_protect_path() { return 1; }
+run_with_timeout() { shift; "$@"; }
+mdfind() {
+    printf 'MDFIND_INTERRUPTED\n' >> "$trace"
+    return 130
+}
+
+tmp_dir=$(mktemp -d)
+trace="$tmp_dir/mdfind.trace"
+bundle_id=""
+if [[ ! -e "/Library/Input Methods/SogouInput.app" ]]; then
+    bundle_id="com.sogou.test"
+elif [[ ! -e "/Applications/ClashMac.app" ]]; then
+    bundle_id="com.clashmac.test"
+elif [[ ! -e "/Applications/i4Tools.app" ]]; then
+    bundle_id="cn.i4tools.test"
+elif [[ ! -e "/Applications/Wireshark.app" ]]; then
+    bundle_id="org.wireshark.ChmodBPF"
+elif [[ ! -e "/Applications/zoom.us.app" ]]; then
+    bundle_id="us.zoom.test"
+elif [[ ! -e "/Applications/Docker.app" ]]; then
+    bundle_id="com.docker.test"
+else
+    printf 'No absent protected app fixture is available\n' >&2
+    exit 99
+fi
+
+tmp_plist="$tmp_dir/$bundle_id.plist"
+touch "$tmp_plist"
+_mole_materialize_bounded_sudo_find() {
+    if [[ "$3" == "/Library/LaunchDaemons" ]]; then
+        printf '%s\0' "$tmp_plist" > "$1"
+    else
+        : > "$1"
+    fi
+}
+sudo() {
+    [[ "${1:-}" == "-n" ]] && shift
+    case "${1:-}" in
+        true) return 0 ;;
+        test) return 1 ;;
+        /usr/libexec/PlistBuddy)
+            case "${3:-}" in
+                "Print :ProgramArguments:0") return 1 ;;
+                "Print :Program") printf '%s\n' "$tmp_dir/missing" ;;
+            esac
+            ;;
+        *) return 0 ;;
+    esac
+}
+safe_sudo_remove() {
+    printf 'UNEXPECTED_REMOVE:%s\n' "$1"
+    return 99
+}
+
+rc=0
+clean_orphaned_system_services || rc=$?
+printf 'RC=%s\n' "$rc"
+cat "$trace"
+EOF
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"RC=130"* ]] || return 1
+    [[ "$output" == *"MDFIND_INTERRUPTED"* ]] || return 1
+    [[ "$output" != *"UNEXPECTED_REMOVE"* ]]
+}
+
+@test "clean_orphaned_system_services never changes launchd state when removal is refused (#1447)" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_MODE=0 MOLE_TEST_NO_AUTH=0 \
+        DRY_RUN=false MOLE_DRY_RUN=0 /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/apps.sh"
+
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+note_activity() { :; }
+debug_log() { :; }
+should_protect_path() { return 1; }
+
+tmp_dir=$(mktemp -d)
+tmp_plist="$tmp_dir/com.example.refused-removal.plist"
+touch "$tmp_plist"
+_mole_materialize_bounded_sudo_find() {
+    if [[ "$3" == "/Library/LaunchDaemons" ]]; then
+        printf '%s\0' "$tmp_plist" > "$1"
+    else
+        : > "$1"
+    fi
+}
+sudo() {
+    [[ "${1:-}" == "-n" ]] && shift
+    case "${1:-}" in
+        true) return 0 ;;
+        test) return 1 ;;
+        /usr/libexec/PlistBuddy)
+            case "${3:-}" in
+                "Print :ProgramArguments:0") return 1 ;;
+                "Print :Program") printf '%s\n' "$tmp_dir/missing" ;;
+            esac
+            ;;
+        /usr/bin/stat) command "$@" ;;
+        du) printf '4\n' ;;
+        launchctl)
+            printf 'UNEXPECTED_LAUNCHCTL:%s\n' "$*"
+            return 99
+            ;;
+        *) return 0 ;;
+    esac
+}
+safe_sudo_remove() {
+    printf 'REMOVE_REFUSED:%s\n' "$1"
+    return "$MOLE_ERR_PROTECTED_PATH"
+}
+
+clean_orphaned_system_services
+EOF
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"REMOVE_REFUSED:"* ]] || return 1
+    [[ "$output" == *"Orphaned services · skipped 1 protected"* ]] || return 1
+    [[ "$output" != *"UNEXPECTED_LAUNCHCTL"* ]]
+}
+
+@test "clean_orphaned_system_services does not remove a plist replaced after classification" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_MODE=0 MOLE_TEST_NO_AUTH=0 \
+        DRY_RUN=false MOLE_DRY_RUN=0 /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/apps.sh"
+
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+note_activity() { :; }
+should_protect_path() { return 1; }
+debug_log() { printf '%s\n' "$*"; }
+
+tmp_dir=$(mktemp -d)
+tmp_plist="$tmp_dir/com.example.replaced.plist"
+replacement="$tmp_dir/replacement.plist"
+marker="$tmp_dir/identity-recorded"
+touch "$tmp_plist" "$replacement"
+_mole_materialize_bounded_sudo_find() {
+    if [[ "$3" == "/Library/LaunchDaemons" ]]; then
+        printf '%s\0' "$tmp_plist" > "$1"
+    else
+        : > "$1"
+    fi
+}
+sudo() {
+    [[ "${1:-}" == "-n" ]] && shift
+    case "${1:-}" in
+        true) return 0 ;;
+        test) return 1 ;;
+        /usr/libexec/PlistBuddy)
+            case "${3:-}" in
+                "Print :ProgramArguments:0") return 1 ;;
+                "Print :Program") printf '%s\n' "$tmp_dir/missing" ;;
+            esac
+            ;;
+        /usr/bin/stat) command "$@" ;;
+        du)
+            if [[ ! -e "$marker" ]]; then
+                touch "$marker"
+                rm -f "$tmp_plist"
+                mv "$replacement" "$tmp_plist"
+            fi
+            printf '4\n'
+            ;;
+        launchctl) printf 'UNEXPECTED_LAUNCHCTL\n'; return 99 ;;
+        *) return 0 ;;
+    esac
+}
+safe_sudo_remove() {
+    printf 'UNEXPECTED_REMOVE:%s\n' "$1"
+    return 99
+}
+
+clean_orphaned_system_services
+EOF
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"Keeping changed or no-longer-orphaned service before removal"* ]] || return 1
+    [[ "$output" != *"UNEXPECTED_LAUNCHCTL"* ]] || return 1
+    [[ "$output" != *"UNEXPECTED_REMOVE"* ]]
+}
+
+@test "clean_orphaned_system_services binds the discovered plist identity to the sudo sink" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_MODE=0 MOLE_TEST_NO_AUTH=0 \
+        DRY_RUN=false MOLE_DRY_RUN=0 /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/apps.sh"
+
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+note_activity() { :; }
+should_protect_path() { return 1; }
+debug_log() { printf '%s\n' "$*"; }
+
+tmp_dir=$(mktemp -d)
+tmp_plist="$tmp_dir/com.example.sink-race.plist"
+replacement="$tmp_dir/replacement.plist"
+touch "$tmp_plist" "$replacement"
+_mole_materialize_bounded_sudo_find() {
+    if [[ "$3" == "/Library/LaunchDaemons" ]]; then
+        printf '%s\0' "$tmp_plist" > "$1"
+    else
+        : > "$1"
+    fi
+}
+sudo() {
+    [[ "${1:-}" == "-n" ]] && shift
+    case "${1:-}" in
+        true) return 0 ;;
+        test) return 1 ;;
+        /usr/libexec/PlistBuddy)
+            case "${3:-}" in
+                "Print :ProgramArguments:0") return 1 ;;
+                "Print :Program") printf '%s\n' "$tmp_dir/missing" ;;
+            esac
+            ;;
+        /usr/bin/stat) command "$@" ;;
+        du) printf '4\n' ;;
+        launchctl) printf 'UNEXPECTED_LAUNCHCTL\n'; return 99 ;;
+        *) return 0 ;;
+    esac
+}
+safe_sudo_remove() {
+    local expected_parent="${4:-}"
+    local expected_parent_id="${5:-}"
+    local expected_target_id="${6:-}"
+    printf 'BOUND:%s:%s:%s\n' "$expected_parent" "$expected_parent_id" "$expected_target_id"
+    rm -f "$1"
+    mv "$replacement" "$1"
+    if _mole_path_matches_identity \
+        "$1" "$expected_parent" "$expected_parent_id" "$expected_target_id"; then
+        printf 'UNEXPECTED_REMOVE:%s\n' "$1"
+        rm -f "$1"
+        return 0
+    fi
+    return 1
+}
+
+clean_orphaned_system_services
+[[ -e "$tmp_plist" ]] && printf 'REPLACEMENT_SURVIVED\n'
+EOF
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"BOUND:/"*":"*":"* ]] || return 1
+    [[ "$output" == *"REPLACEMENT_SURVIVED"* ]] || return 1
+    [[ "$output" == *"Orphaned services · 1 failed"* ]] || return 1
+    [[ "$output" != *"UNEXPECTED_LAUNCHCTL"* ]] || return 1
+    [[ "$output" != *"UNEXPECTED_REMOVE"* ]]
 }
 
 @test "clean_orphaned_system_services does not count protected skips as cleaned" {
@@ -1182,7 +1978,7 @@ note_activity() { :; }
 debug_log() { :; }
 bundle_has_installed_app() { return 1; }
 safe_sudo_remove() {
-  echo "removed:$1"
+  printf 'removed:%s bound:%s:%s:%s\n' "$1" "${4:-}" "${5:-}" "${6:-}"
   return 0
 }
 
@@ -1221,10 +2017,7 @@ sudo() {
     echo "4 $tmp_helper"
     return 0
   fi
-  if [[ "$1" == "launchctl" ]]; then
-    echo "launchctl-unload:$*"
-    return 0
-  fi
+  if [[ "$1" == "launchctl" ]]; then echo "UNEXPECTED_LAUNCHCTL"; return 99; fi
   command "$@"
 }
 
@@ -1234,9 +2027,245 @@ EOF
     [ "$status" -eq 0 ]
     [[ "$output" == *"Orphaned services · cleaned 1"* ]] || return 1
     [[ "$output" == *"removed:"*"org.amnezia.awg.plist"* ]] || return 1
-    # A LaunchDaemon orphan is unloaded before removal, so this call is the
-    # expected order rather than a stray one.
-    [[ "$output" == *"launchctl-unload:"*"org.amnezia.awg.plist"* ]]
+    [[ "$output" == *"bound:/"*":"*":"* ]] || return 1
+    [[ "$output" != *"UNEXPECTED_LAUNCHCTL"* ]]
+}
+
+@test "clean_orphaned_system_services keeps a live helper app LaunchDaemon loaded (#1447)" {
+    # Chrome Remote Desktop installs its broker inside a standalone .app under
+    # PrivilegedHelperTools rather than inside a parent app in /Applications.
+    # The existing executable and enclosing helper app are exact ownership
+    # evidence: the plist must never reach launchctl unload or removal.
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_MODE=0 MOLE_TEST_NO_AUTH=0 \
+        DRY_RUN=false MOLE_DRY_RUN=0 /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/apps.sh"
+
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+note_activity() { :; }
+debug_log() { printf 'DEBUG:%s\n' "$*"; }
+should_protect_path() { return 1; }
+bundle_has_installed_app() {
+    printf 'UNEXPECTED_PARENT_RESOLVER:%s\n' "$1"
+    return 1
+}
+
+tmp_dir=$(mktemp -d)
+tmp_plist="$tmp_dir/org.chromium.chromoting.broker.plist"
+helper_binary="/Library/PrivilegedHelperTools/ChromeRemoteDesktopHost.app/Contents/MacOS/remoting_agent_process_broker"
+probe_trace="$tmp_dir/probe-trace"
+/usr/libexec/PlistBuddy -c "Add :Program string $helper_binary" "$tmp_plist" > /dev/null 2>&1 || true
+
+_mole_materialize_bounded_sudo_find() {
+    printf 'SCAN_RAN:%s\n' "$3" >&2
+    if [[ "$3" == "/Library/LaunchDaemons" ]]; then
+        printf '%s\0' "$tmp_plist" > "$1"
+    else
+        : > "$1"
+    fi
+}
+
+sudo() {
+    [[ "${1:-}" == "-n" ]] && shift
+    case "${1:-}" in
+        true) return 0 ;;
+        test)
+            [[ "${2:-}" == "-e" && "${3:-}" == "$helper_binary" ]] || return 1
+            printf 'HELPER_BINARY_EXISTS\n' >> "$probe_trace"
+            return 0
+            ;;
+        /usr/libexec/PlistBuddy)
+            printf 'PLIST_PROGRAM_READ\n' >> "$probe_trace"
+            command "$@"
+            ;;
+        /usr/bin/stat) command "$@" ;;
+        du) printf '4\n' ;;
+        launchctl)
+            printf 'UNEXPECTED_LAUNCHCTL:%s\n' "$*"
+            return 0
+            ;;
+        *) return 0 ;;
+    esac
+}
+safe_sudo_remove() {
+    printf 'UNEXPECTED_REMOVE:%s\n' "$1"
+    return 0
+}
+
+clean_orphaned_system_services
+cat "$probe_trace"
+EOF
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"SCAN_RAN:/Library/LaunchDaemons"* ]] || return 1
+    [[ "$output" == *"PLIST_PROGRAM_READ"* ]] || return 1
+    [[ "$output" != *"UNEXPECTED_PARENT_RESOLVER"* ]] || return 1
+    [[ "$output" != *"UNEXPECTED_LAUNCHCTL"* ]] || return 1
+    [[ "$output" != *"UNEXPECTED_REMOVE"* ]] || return 1
+}
+
+@test "clean_orphaned_system_services keeps a standalone helper app plist during an executable update gap" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_MODE=0 MOLE_TEST_NO_AUTH=0 \
+        DRY_RUN=false MOLE_DRY_RUN=0 /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/apps.sh"
+
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+note_activity() { :; }
+debug_log() { printf 'DEBUG:%s\n' "$*"; }
+should_protect_path() { return 1; }
+bundle_has_installed_app() {
+    printf 'UNEXPECTED_PARENT_RESOLVER:%s\n' "$1"
+    return 1
+}
+
+tmp_dir=$(mktemp -d)
+tmp_plist="$tmp_dir/org.chromium.chromoting.broker.plist"
+helper_binary="/Library/PrivilegedHelperTools/ChromeRemoteDesktopHost.app/Contents/MacOS/remoting_agent_process_broker"
+/usr/libexec/PlistBuddy -c "Add :Program string $helper_binary" "$tmp_plist" > /dev/null 2>&1
+
+_mole_materialize_bounded_sudo_find() {
+    if [[ "$3" == "/Library/LaunchDaemons" ]]; then
+        printf '%s\0' "$tmp_plist" > "$1"
+    else
+        : > "$1"
+    fi
+}
+sudo() {
+    [[ "${1:-}" == "-n" ]] && shift
+    case "${1:-}" in
+        true) return 0 ;;
+        test) return 1 ;; # The updater temporarily moved the executable away.
+        /usr/libexec/PlistBuddy | /usr/bin/stat) command "$@" ;;
+        du) printf '4\n' ;;
+        *) return 0 ;;
+    esac
+}
+safe_sudo_remove() {
+    printf 'UNEXPECTED_REMOVE:%s\n' "$1"
+    return 0
+}
+
+clean_orphaned_system_services
+EOF
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" != *"UNEXPECTED_PARENT_RESOLVER"* ]] || return 1
+    [[ "$output" != *"UNEXPECTED_REMOVE"* ]] || return 1
+    [[ "$output" != *"Orphaned services · cleaned"* ]]
+}
+
+@test "orphan helper eligibility refuses a helper still referenced by a surviving plist" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_MODE=0 MOLE_TEST_NO_AUTH=0 \
+        DRY_RUN=false MOLE_DRY_RUN=0 /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/apps.sh"
+
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+note_activity() { :; }
+debug_log() { :; }
+should_protect_path() { return 1; }
+bundle_has_installed_app() { return 1; }
+
+tmp_dir=$(mktemp -d)
+tmp_plist="$tmp_dir/com.example.helper.plist"
+helper_binary="/Library/PrivilegedHelperTools/com.example.helper"
+/usr/libexec/PlistBuddy -c "Add :Program string $helper_binary" "$tmp_plist" > /dev/null 2>&1
+
+reference_scan=false
+_mole_materialize_bounded_sudo_find() {
+    if [[ "$reference_scan" == "true" && "$3" == "/Library/LaunchDaemons" ]]; then
+        printf '%s\0' "$tmp_plist" > "$1"
+    else
+        : > "$1"
+    fi
+}
+sudo() {
+    [[ "${1:-}" == "-n" ]] && shift
+    case "${1:-}" in
+        true) return 0 ;;
+        /usr/libexec/PlistBuddy) command "$@" ;;
+        *) return 0 ;;
+    esac
+}
+
+# Define the function-local eligibility helpers without discovering candidates.
+clean_orphaned_system_services
+
+reference_scan=true
+service_cleanup_deadline=$((SECONDS + 30))
+known_protect_patterns=("never.match:/Applications/Never.app")
+_orphan_service_identity() { printf '90:902:100\n'; }
+
+eligibility_rc=0
+_orphan_service_candidate_still_eligible \
+    "$helper_binary" "90:902:100" || eligibility_rc=$?
+printf 'ELIGIBILITY_RC:%s\n' "$eligibility_rc"
+EOF
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"ELIGIBILITY_RC:1"* ]] || return 1
+    [[ "$output" != *"ELIGIBILITY_RC:0"* ]]
+}
+
+@test "orphan helper reference scan fails closed when a surviving plist is unreadable" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_MODE=0 MOLE_TEST_NO_AUTH=0 \
+        DRY_RUN=false MOLE_DRY_RUN=0 /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/apps.sh"
+
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+note_activity() { :; }
+debug_log() { :; }
+should_protect_path() { return 1; }
+bundle_has_installed_app() { return 1; }
+
+tmp_dir=$(mktemp -d)
+tmp_plist="$tmp_dir/com.example.unreadable.plist"
+: > "$tmp_plist"
+reference_scan=false
+_mole_materialize_bounded_sudo_find() {
+    if [[ "$reference_scan" == "true" && "$3" == "/Library/LaunchDaemons" ]]; then
+        printf '%s\0' "$tmp_plist" > "$1"
+    else
+        : > "$1"
+    fi
+}
+sudo() {
+    [[ "${1:-}" == "-n" ]] && shift
+    case "${1:-}" in
+        true) return 0 ;;
+        /usr/libexec/PlistBuddy)
+            [[ "$reference_scan" == "true" ]] && return 73
+            command "$@"
+            ;;
+        *) return 0 ;;
+    esac
+}
+
+# Define the function-local reference helper without discovering candidates.
+clean_orphaned_system_services
+
+reference_scan=true
+service_cleanup_deadline=$((SECONDS + 30))
+reference_rc=0
+_orphan_service_helper_is_unreferenced \
+    "/Library/PrivilegedHelperTools/com.example.helper" \
+    "$service_cleanup_deadline" || reference_rc=$?
+printf 'REFERENCE_RC:%s\n' "$reference_rc"
+EOF
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"REFERENCE_RC:2"* ]] || return 1
+    [[ "$output" != *"REFERENCE_RC:0"* ]]
 }
 
 @test "_privileged_helper_bundle_id_from_binary prefers Info.plist bundle ID over directory and executable names" {
@@ -1600,6 +2629,10 @@ set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/apps.sh"
 
+# Pin the app-existence probe: the hardcoded example bundle id may match an
+# app that is actually installed on the developer's machine.
+_container_stub_app_exists() { return 1; }
+
 # Stub container: only the metadata plist, no Data/ subdir
 stub="$HOME/Library/Containers/com.macpaw.CleanMyMac-mas"
 mkdir -p "$stub"
@@ -1637,6 +2670,10 @@ EOF
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/apps.sh"
+
+# Pin the app-existence probe: the hardcoded example bundle id may match an
+# app that is actually installed on the developer's machine.
+_container_stub_app_exists() { return 1; }
 
 stub="$HOME/Library/Containers/com.macpaw.CleanMyMac-mas"
 mkdir -p "$stub"
@@ -1877,4 +2914,128 @@ EOF
     [[ "$output" != *"unbound variable"* ]] || return 1
     # Whitelisted orphan must be filtered out, so nothing is reported for removal.
     [[ "$output" != *"Would remove orphaned service"* ]] || return 1
+}
+
+@test "installed-app scan reads wrapped bundles and tolerates a missing bundle id" {
+	# Same two shapes that broke the uninstall scan: an iOS app on Apple
+	# Silicon keeps its plist under Wrapper/<name>.app, and vendor launchers
+	# ship one with no CFBundleIdentifier. Both used to fail the scan closed,
+	# which skipped App leftovers entirely. A plist that will not parse still
+	# must fail closed, because there the id may exist and be unreadable.
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_MODE=1 /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/apps.sh"
+rm -f "$HOME/.cache/mole/installed_apps_cache"
+
+apps="$HOME/Applications"
+rm -rf "$apps"; mkdir -p "$apps/Good.app/Contents" "$apps/Wrapped.app/Wrapper/Inner.app" "$apps/NoId.app/Contents"
+plist() {
+	cat > "$1" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>$2</dict></plist>
+PLIST
+}
+plist "$apps/Good.app/Contents/Info.plist" '<key>CFBundleIdentifier</key><string>com.example.good</string>'
+plist "$apps/Wrapped.app/Wrapper/Inner.app/Info.plist" '<key>CFBundleIdentifier</key><string>com.example.wrapped</string>'
+plist "$apps/NoId.app/Contents/Info.plist" '<key>CFBundleExecutable</key><string>run.sh</string>'
+
+debug_log() { :; }
+scan_installed_apps "$HOME/installed.txt" || { echo "SCAN_FAILED"; exit 1; }
+grep -Fxq "com.example.good" "$HOME/installed.txt" || { echo "MISSING_GOOD"; exit 1; }
+grep -Fxq "com.example.wrapped" "$HOME/installed.txt" || { echo "MISSING_WRAPPED"; exit 1; }
+
+# A plist that cannot be parsed still fails the scan closed.
+printf 'not a plist' > "$apps/NoId.app/Contents/Info.plist"
+rm -f "$HOME/.cache/mole/installed_apps_cache"
+if scan_installed_apps "$HOME/installed2.txt"; then
+	echo "CORRUPT_NOT_FAILED"; exit 1
+fi
+EOF
+	[ "$status" -eq 0 ] || {
+		echo "$output"
+		return 1
+	}
+}
+
+@test "installed-app scan reads mixed-case outer and wrapped app bundles" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_MODE=1 /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/apps.sh"
+rm -f "$HOME/.cache/mole/installed_apps_cache"
+
+apps="$HOME/Applications"
+rm -rf "$apps"
+mkdir -p "$apps/Upper.APP/Contents" "$apps/Wrapped.APP/Wrapper/Inner.APP"
+plist() {
+	cat > "$1" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>$2</dict></plist>
+PLIST
+}
+plist "$apps/Upper.APP/Contents/Info.plist" '<key>CFBundleIdentifier</key><string>com.example.upper</string>'
+plist "$apps/Wrapped.APP/Wrapper/Inner.APP/Info.plist" '<key>CFBundleIdentifier</key><string>com.example.wrapped-upper</string>'
+
+debug_log() { :; }
+scan_installed_apps "$HOME/installed.txt" || { echo "SCAN_FAILED"; exit 1; }
+grep -Fxq "com.example.upper" "$HOME/installed.txt" || { echo "MISSING_UPPER"; exit 1; }
+grep -Fxq "com.example.wrapped-upper" "$HOME/installed.txt" || { echo "MISSING_WRAPPED_UPPER"; exit 1; }
+EOF
+
+	[ "$status" -eq 0 ] || {
+		echo "$output"
+		return 1
+	}
+}
+
+@test "installed-app scan skips an iOS app with a dangling WrappedBundle symlink" {
+	# AudioCopy.app has no Contents/, a WrappedBundle symlink into a Wrapper/
+	# that does not exist, so no readable plist anywhere. It owns no
+	# bundle-id-named data, so skipping it invents no orphan; before this it
+	# failed the whole App-leftovers scan closed on that machine.
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_MODE=1 /bin/bash --noprofile --norc << 'EOF'
+set -uo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/apps.sh"
+rm -f "$HOME/.cache/mole/installed_apps_cache"
+apps="$HOME/Applications"
+rm -rf "$apps"
+mkdir -p "$apps/Good.app/Contents" "$apps/AudioCopy.app"
+ln -s "Wrapper/AudioCopy.app" "$apps/AudioCopy.app/WrappedBundle"
+printf '%s' '<?xml version="1.0"?><!DOCTYPE plist><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.example.good</string></dict></plist>' > "$apps/Good.app/Contents/Info.plist"
+debug_log() { :; }
+scan_installed_apps "$HOME/installed.txt" || { echo "SCAN_FAILED"; exit 1; }
+grep -Fxq "com.example.good" "$HOME/installed.txt" || { echo "MISSING_GOOD"; exit 1; }
+EOF
+	[ "$status" -eq 0 ] || {
+		echo "$output"
+		return 1
+	}
+}
+
+@test "installed-app scan still fails closed on a plist-less app with no dangling wrapper" {
+	# The dangling-symlink skip is narrow: an app with no plist and no
+	# WrappedBundle symlink at all keeps failing the scan closed, since its
+	# identity is genuinely unknown rather than provably absent.
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_MODE=1 /bin/bash --noprofile --norc << 'EOF'
+set -uo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/apps.sh"
+rm -f "$HOME/.cache/mole/installed_apps_cache"
+apps="$HOME/Applications"
+rm -rf "$apps"
+mkdir -p "$apps/Good.app/Contents" "$apps/Mystery.app/Contents"
+printf '%s' '<?xml version="1.0"?><!DOCTYPE plist><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.example.good</string></dict></plist>' > "$apps/Good.app/Contents/Info.plist"
+debug_log() { :; }
+if scan_installed_apps "$HOME/installed.txt"; then
+  echo "SCAN_SUCCEEDED_UNEXPECTEDLY"; exit 1
+fi
+EOF
+	[ "$status" -eq 0 ] || {
+		echo "$output"
+		return 1
+	}
 }

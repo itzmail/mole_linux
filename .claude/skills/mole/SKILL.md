@@ -1,6 +1,6 @@
 ---
 name: mole
-description: "Drive the Mole CLI (`mo`) safely from an agent: which command answers which question, the machine-readable surfaces (analyze --json, history --json, the dry-run path list), and the rules that keep an automated run from deleting something the user wanted. Read before running any `mo` command on a user's Mac."
+description: "Drive the installed Mole CLI (`mo`) safely, including machine-readable status, analysis, history, and dry-run surfaces. Use before running `mo` on a user's Mac. Not for editing or reviewing Mole source code."
 ---
 
 # Using Mole from an agent
@@ -33,9 +33,9 @@ and never let a destructive command run without the user having seen the list.
 
 | The user asks | Command |
 |---|---|
-| "What is eating my disk?" | `mo analyze --json` (whole disk) or `mo analyze <path> --json` |
+| "What is eating my disk?" | `mo analyze --json` (whole disk) or `mo analyze --json <path>` |
 | "Free up space" | `mo clean --dry-run`, review, then `mo clean` |
-| "Remove this app completely" | `mo uninstall --dry-run` then `mo uninstall` |
+| "Remove this app completely" | `mo uninstall --list` to get the name, `mo uninstall <app> --dry-run`, then `mo uninstall <app>` (no app argument opens the interactive selector) |
 | "My Mac feels slow" / caches look broken | `mo optimize --dry-run` then `mo optimize` |
 | "Clean up my old projects" | `mo purge --dry-run` then `mo purge` |
 | "Get rid of downloaded installers" | `mo installer --dry-run` then `mo installer` |
@@ -45,23 +45,32 @@ and never let a destructive command run without the user having seen the list.
 
 ## Machine-readable surfaces
 
-These four surfaces are the agent-facing API. Everything else is for humans.
+These five surfaces are the agent-facing API. Everything else is for humans.
 
 **Disk usage.** `mo analyze --json` prints one JSON object: `path`, `overview`,
-and `entries[]` of `{name, path, size, is_dir, insight}`. `size` is bytes.
+`total_size`, `total_files`, `large_files[]`, and `entries[]` of `{name, path,
+size, is_dir, insight, cleanable, last_access}`. `size` is bytes.
 `insight: true` marks an entry Mole considers noteworthy (a large iOS backup, a
-runaway cache). Pass a path to scope it: `mo analyze ~/Library --json`.
+runaway cache) and is set only in overview mode. Pass a path to scope it:
+`mo analyze --json ~/Library`; the flag must come before the path because the
+Go flag parser stops at the first positional argument.
 
 **Cleanup history.** `mo history --json [--limit N]` (N is 1-200) prints
-`logs` (paths of the operations and deletions logs) plus `sessions[]` with
-`command`, `started_at`, `items`, `size`, and an `actions` breakdown of
-removed / trashed / skipped / failed. This is how you answer "did Mole delete
-my file" without guessing: the deletions log has the paths.
+`logs` (paths of the operations and deletions logs), `limit`, `sessions[]` with
+`command`, `started_at`, `ended_at`, `items`, `size`, `operation_count`,
+`failed_tasks`, and an `actions` breakdown of removed / trashed / skipped /
+failed / rebuilt / other, plus a structured `deletions[]` array of the logged
+paths. This is how you answer "did Mole delete my file" without guessing.
+
+**Installed apps.** `mo uninstall --list` piped (stdout not a TTY) prints the
+app inventory as JSON: name, bundle id, uninstall name, path, size. This is how
+you find the exact `<UNINSTALL NAME>` argument without touching the selector TUI.
 
 **The dry-run path list.** `mo clean --dry-run` prints a summary to the
 terminal and writes every candidate path to `~/.config/mole/clean-list.txt`.
-Read that file, not the terminal output, when you need to reason about or show
-the user exactly what a real run would remove. This list is clean-only: `mo
+Read that file to review the paths found by that dry-run. It is a preview
+snapshot, not an executable deletion plan: a later `mo clean` rescans and
+revalidates current candidates, so the two target sets can differ. This list is clean-only: `mo
 purge --dry-run` and `mo installer --dry-run` print their candidates to the
 terminal and write no file.
 
@@ -77,11 +86,15 @@ the user asked for; do not leave an unbounded monitor running in the background.
 - `mo clean` also sweeps leftovers from apps the user already deleted. It does
   not touch installed apps; that is `mo uninstall`.
 - `mo clean --external <path>` cleans macOS metadata off an external volume.
-- `mo purge` removes rebuildable project artifacts (`target/`, `build/`,
-  `dist/`, `.next/`). It deliberately does not touch anything that needs a
-  network to restore (`node_modules/`, `Pods/`, `venv/`), so a purge is always
-  recoverable with a local rebuild. `mo purge --paths` configures which
-  directories are scanned; `--include-empty` shows zero-size candidates.
+- `mo purge` removes rebuildable project artifacts: local build output
+  (`target/`, `build/`, `dist/`, `.next/`) and dependency directories that need
+  a network to restore (`node_modules/`, `Pods/`, `venv/`, `vendor/`). A purge
+  is therefore not always recoverable offline, so say which kind the candidates
+  are before running it. `mo purge --paths` configures which directories are
+  scanned; `--include-empty` shows zero-size candidates. A non-interactive real
+  run requires explicit `--yes`; dry-run does not. Use `--yes` only after the
+  user has authorized removal. Artifacts with authored content stay protected,
+  and an inconclusive content probe keeps the candidate and reports an incomplete run.
 - `mo optimize` refreshes caches and system services. It is the one destructive
   command whose effects are not "files disappear", so say what it will do
   before running it.
@@ -94,12 +107,13 @@ the user asked for; do not leave an unbounded monitor running in the background.
 
 **`mo clean` deletions are permanent by default.** Cache cleanup removes files
 rather than moving them to the Trash, so there is usually nothing to restore.
-That is exactly why rule 1 exists: the dry-run is the undo. `mo uninstall` is
+That is why preview matters; a dry-run provides no backup or undo. `mo uninstall` is
 the exception: it routes the app and its leftovers through the Trash, so an
 uninstalled app is recoverable until the Trash is emptied.
 
-What you do have is a record. `mo history --json` names the deletions log, and
-every deletion is one tab-separated line in it: timestamp, mode, size, status,
-path. So when a user asks "did Mole take my file", read the log and answer with
-the actual line instead of guessing. Then add the path to the whitelist (`mo
+What you do have is a record. `mo history --json` returns every logged deletion
+in its `deletions[]` array; the raw log at the path in `logs` (one tab-separated
+line per deletion: timestamp, mode, size, status, path) is the fallback for
+entries older than `--limit`. So when a user asks "did Mole take my file", answer
+from that record instead of guessing. Then add the path to the whitelist (`mo
 clean --whitelist`) so the next run leaves it alone.

@@ -141,7 +141,7 @@ remove_mole() {
             done
         fi
         [[ -d "$HOME/.cache/mole" ]] && echo -e "  ${GRAY}${ICON_LIST} Would remove: $HOME/.cache/mole${NC}"
-        [[ -d "$HOME/.config/mole" ]] && echo -e "  ${GRAY}${ICON_LIST} Would remove: $HOME/.config/mole${NC}"
+        [[ -d "$HOME/.config/mole" ]] && echo -e "  ${GRAY}${ICON_LIST} Would move to Trash: $HOME/.config/mole${NC}"
         [[ -d "$HOME/Library/Logs/mole" ]] && echo -e "  ${GRAY}${ICON_LIST} Would remove: $HOME/Library/Logs/mole${NC}"
 
         printf '\n%s\n\n' "${GREEN}${ICON_SUCCESS}${NC} Dry run complete, no changes made"
@@ -155,7 +155,7 @@ remove_mole() {
     for install in ${manual_installs[@]+"${manual_installs[@]}"} ${alias_installs[@]+"${alias_installs[@]}"}; do
         echo "  ${ICON_LIST} $install"
     done
-    echo "  ${ICON_LIST} ~/.config/mole"
+    echo "  ${ICON_LIST} ~/.config/mole (to Trash)"
     echo "  ${ICON_LIST} ~/.cache/mole"
     echo "  ${ICON_LIST} ~/Library/Logs/mole"
     echo -ne "${PURPLE}${ICON_ARROW}${NC} Press ${GREEN}Enter${NC} to confirm, ${GRAY}ESC${NC} to cancel: "
@@ -228,7 +228,22 @@ remove_mole() {
         rm -rf "$HOME/.cache/mole" 2> /dev/null || true # SAFE: hardcoded Mole-owned dir, -d guarded
     fi
     if [[ -d "$HOME/.config/mole" ]]; then
-        rm -rf "$HOME/.config/mole" 2> /dev/null || true # SAFE: hardcoded Mole-owned dir, -d guarded
+        # The config dir holds user-authored state (whitelist, purge config),
+        # which is the one thing here a reinstall cannot rebuild. Move it to
+        # Trash so it stays recoverable (#1346); cache and logs around it are
+        # rebuildable and stay permanent removals. On failure leave it in
+        # place rather than falling back to deletion.
+        local config_trash="$HOME/.Trash/mole-config"
+        local config_trash_n=1
+        while [[ -e "$config_trash" || -L "$config_trash" ]]; do
+            config_trash="$HOME/.Trash/mole-config-$config_trash_n"
+            config_trash_n=$((config_trash_n + 1))
+        done
+        if ! mkdir -p "$HOME/.Trash" 2> /dev/null ||
+            ! mv -f "$HOME/.config/mole" "$config_trash" 2> /dev/null; then
+            has_error=true
+            log_warning "Could not move ~/.config/mole to Trash; left in place"
+        fi
     fi
     if [[ -d "$HOME/Library/Logs/mole" ]]; then
         rm -rf "$HOME/Library/Logs/mole" 2> /dev/null || true # SAFE: hardcoded Mole-owned dir, -d guarded

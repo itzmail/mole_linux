@@ -5,6 +5,13 @@
 
 set -euo pipefail
 
+# User state and installed tools must never run with inherited root privileges.
+# Individual maintenance operations request administrator access themselves.
+if [[ "$EUID" -eq 0 ]]; then
+    printf '%s\n' 'Run Mole without sudo; it requests administrator access when needed.' >&2
+    exit 1
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # The path of THIS entrypoint, captured before anything is sourced. The update
@@ -54,7 +61,7 @@ source "$SCRIPT_DIR/lib/core/commands.sh"
 trap cleanup_temp_files EXIT INT TERM
 
 # Version and update helpers
-VERSION="1.48.1"
+VERSION="1.54.0"
 MOLE_TAGLINE="Deep clean and optimize your Mac."
 
 is_touchid_configured() {
@@ -275,8 +282,8 @@ main() {
                     --force | -f) force_update=true ;;
                     --nightly) nightly_update=true ;;
                     *)
-                        echo "Unknown update option: $arg"
-                        echo "Use 'mole update [--force] [--nightly]' for supported options."
+                        echo "Unknown update option: $arg" >&2
+                        echo "Use 'mole update [--force] [--nightly]' for supported options." >&2
                         exit 1
                         ;;
                 esac
@@ -290,8 +297,8 @@ main() {
                 case "$arg" in
                     "--dry-run" | "-n") dry_run_remove=true ;;
                     *)
-                        echo "Unknown remove option: $arg"
-                        echo "Use 'mole remove [--dry-run]' for supported options."
+                        echo "Unknown remove option: $arg" >&2
+                        echo "Use 'mole remove [--dry-run]' for supported options." >&2
                         exit 1
                         ;;
                 esac
@@ -311,8 +318,10 @@ main() {
             interactive_main_menu
             ;;
         *)
-            echo "Unknown command: ${args[0]}"
-            echo "Use 'mole --help' for usage information."
+            # Errors belong on stderr so `mo $cmd > out` leaves the diagnostic
+            # visible instead of burying it in the redirected file.
+            echo "Unknown command: ${args[0]}" >&2
+            echo "Use 'mole --help' for usage information." >&2
             exit 1
             ;;
     esac

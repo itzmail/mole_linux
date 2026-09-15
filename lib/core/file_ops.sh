@@ -32,6 +32,49 @@ if [[ -z "${MOLE_TIMEOUT_LOADED:-}" ]]; then
     # shellcheck source=lib/core/timeout.sh
     source "$_MOLE_CORE_DIR/timeout.sh"
 fi
+if [[ -z "${MOLE_TIMEOUTS_LOADED:-}" ]]; then
+    # shellcheck source=lib/core/timeouts.sh
+    source "$_MOLE_CORE_DIR/timeouts.sh"
+fi
+
+# Keep the removal-timeout summary actionable: record which path ran out of
+# budget so the closing note can name it instead of a bare count.
+_mole_record_removal_timeout_path() {
+    local path="$1"
+    MOLE_CLEAN_REMOVAL_TIMEOUT_PATHS="${MOLE_CLEAN_REMOVAL_TIMEOUT_PATHS:+$MOLE_CLEAN_REMOVAL_TIMEOUT_PATHS
+}$path"
+}
+
+# Bound production sudo commands while keeping shell-function mocks observable
+# in tests. Timeout behavior itself must use a PATH stub so it exercises the
+# same external-command branch that users run.
+_mole_bounded_sudo() {
+    local duration="${1:-${MOLE_TIMEOUT_DISK_VERIFY_SEC:-30}}"
+    shift || true
+    [[ $# -gt 0 ]] || return 2
+    if [[ ! "$duration" =~ ^[0-9]+(\.[0-9]+)?$ || "$duration" =~ ^0+(\.0+)?$ ]]; then
+        duration=30
+    fi
+
+    if declare -F sudo > /dev/null 2>&1; then
+        sudo "$@"
+        return $?
+    fi
+
+    local sudo_bin=""
+    sudo_bin=$(command -v sudo 2> /dev/null || true)
+    [[ -n "$sudo_bin" ]] || return 127
+    run_with_timeout "$duration" "$sudo_bin" "$@"
+}
+
+_mole_bounded_sudo_until() {
+    local deadline="$1"
+    local requested="$2"
+    shift 2
+    local duration=""
+    duration=$(_mole_timeout_with_deadline "$requested" "$deadline") || return $?
+    _mole_bounded_sudo "$duration" "$@"
+}
 
 # ============================================================================
 # Utility Functions
@@ -75,8 +118,713 @@ _mole_normalize_deletion_policy_path() {
         path="${path//$double_slash/$slash}"
     done
 
+    while [[ "$path" == *"/./"* ]]; do
+        path="${path//\/\.\//$slash}"
+    done
+    while [[ "$path" == */. ]]; do
+        path="${path%/.}"
+        [[ -n "$path" ]] || path="/"
+    done
+
     local trimmed="${path%/}"
     [[ -n "$trimmed" ]] && printf '%s\n' "$trimmed" || printf '%s\n' "$path"
+}
+
+# This is a live Apple SQLite database. The main file and its WAL companions
+# must stay together while PerfPowerServices is running; unlinking or truncating
+# any member can split the active database state. Keep the exact path in one
+# place so deletion policy and the read-only System Data hint cannot drift.
+readonly MOLE_ACTIVE_POWERLOG_DB_PATH="/private/var/db/powerlog/Library/PerfPowerTelemetry/BackgroundProcessing/CurrentBackgroundProcessingDB.BGSQL"
+
+_mole_is_active_powerlog_database_path() {
+    local restore_nocasematch=false
+    local result=1
+
+    if ! shopt -q nocasematch; then
+        shopt -s nocasematch
+        restore_nocasematch=true
+    fi
+
+    case "$1" in
+        "$MOLE_ACTIVE_POWERLOG_DB_PATH" | \
+            "$MOLE_ACTIVE_POWERLOG_DB_PATH-wal" | \
+            "$MOLE_ACTIVE_POWERLOG_DB_PATH-shm")
+            result=0
+            ;;
+    esac
+
+    [[ "$restore_nocasematch" == "true" ]] && shopt -u nocasematch
+    return "$result"
+}
+
+# Live reverse-DNS user-cache guard (#1390).
+# Unlinking an open Cache.db (or its -wal/-shm companions) while the owning
+# helper still holds the database can send that process into an unbounded write
+# loop on unlinked temp files and fill the volume (Autodesk Fusion's
+# AcCoreConsole). Size and mtime are never authority for these trees: only a
+# conclusive "no matching process" result, plus an open-file check for SQLite
+# families, may authorize deletion.
+#
+# Process-state results are memoized for the current clean process so a batch
+# under one cache directory does not fork pgrep once per leaf file. Bash 3.2
+# has no associative arrays, so the cache is a pipe-delimited string.
+
+_mole_user_cache_scope() {
+    local path="$1"
+    local normalized="${path%/}"
+    local library_root="${HOME%/}/Library"
+    local remainder=""
+    local component=""
+    local suffix=""
+    local scope_type=""
+
+    case "$normalized" in
+        "$library_root/Caches"/*)
+            remainder="${normalized#"$library_root/Caches"/}"
+            component="${remainder%%/*}"
+            scope_type="standard"
+            ;;
+        "$library_root/Containers"/*)
+            remainder="${normalized#"$library_root/Containers"/}"
+            component="${remainder%%/*}"
+            suffix="${remainder#"$component"}"
+            case "$suffix" in
+                /Data/Library/Caches | /Data/Library/Caches/*) scope_type="container" ;;
+                *) return 1 ;;
+            esac
+            ;;
+        "$library_root/Group Containers"/*)
+            remainder="${normalized#"$library_root/Group Containers"/}"
+            component="${remainder%%/*}"
+            suffix="${remainder#"$component"}"
+            case "$suffix" in
+                /Caches | /Caches/* | /Library/Caches | /Library/Caches/*) scope_type="container" ;;
+                *) return 1 ;;
+            esac
+            ;;
+        *) return 1 ;;
+    esac
+
+    # Reverse-DNS style only (com.vendor.app). Named trees such as Homebrew
+    # stay outside this gate; they have their own process probes. The separator
+    # is excluded so the caller can split this Bash-3.2-compatible record.
+    [[ "$component" == *.* && "$component" != .* && "$component" != *"|"* ]] || return 1
+    printf '%s|%s\n' "$component" "$scope_type"
+    return 0
+}
+
+_mole_user_cache_owner_component() {
+    local scope=""
+    scope=$(_mole_user_cache_scope "$1") || return 1
+    printf '%s\n' "${scope%%|*}"
+}
+
+# SQLite main file or -wal / -shm / -journal companion. Case-insensitive so a
+# cache sweep cannot delete a database through a case variant of its name
+# (contributor PR #1391 + main reverse-DNS gate).
+_mole_is_sqlite_database_path() {
+    local restore_nocasematch=false
+    local result=1
+    local path="$1"
+    local base="${path%-wal}"
+    base="${base%-shm}"
+    base="${base%-journal}"
+
+    if ! shopt -q nocasematch; then
+        shopt -s nocasematch
+        restore_nocasematch=true
+    fi
+
+    case "$base" in
+        *.db | *.sqlite | *.sqlite3)
+            result=0
+            ;;
+    esac
+
+    [[ "$restore_nocasematch" == "true" ]] && shopt -u nocasematch
+    return "$result"
+}
+
+_mole_is_user_cache_sqlite_family_path() {
+    _mole_is_sqlite_database_path "$1"
+}
+
+# Exact browser partial-download files directly under Downloads. These may be
+# actively written even when their browser process name is unavailable, so the
+# final deletion gate must recheck the file handle itself.
+_mole_is_incomplete_download_path() {
+    local downloads_root="${HOME%/}/Downloads"
+    local path="$1"
+    case "$path" in
+        "$downloads_root"/*.download | "$downloads_root"/*.crdownload | "$downloads_root"/*.part)
+            [[ "${path#"$downloads_root"/}" != */* ]]
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+_mole_user_cache_sqlite_main_path() {
+    local path="$1"
+    case "$path" in
+        *-wal) printf '%s\n' "${path%-wal}" ;;
+        *-shm) printf '%s\n' "${path%-shm}" ;;
+        *-journal) printf '%s\n' "${path%-journal}" ;;
+        *) printf '%s\n' "$path" ;;
+    esac
+}
+
+_mole_sqlite_family_base_path() {
+    _mole_user_cache_sqlite_main_path "$1"
+}
+
+# One process-table snapshot per run, mirroring the Mac app's
+# ProcessGuard.cachedProcessTable. The answer cannot change between candidates
+# inside a single sweep, and the old code forked pgrep up to three times per
+# cache directory.
+#
+# Lines that must not vote are dropped here: Mole's own process, and the
+# measurement tools it forks over the very path being judged. `du -skPx
+# ~/Library/Caches/<id>` puts <id> in the table purely because Mole is looking
+# at it, which would make every slowly-measured cache report its owner as live.
+_MOLE_PROCESS_TABLE=""
+_MOLE_PROCESS_TABLE_STATE=""
+
+_mole_reset_process_snapshot() {
+    _MOLE_PROCESS_TABLE=""
+    _MOLE_PROCESS_TABLE_STATE=""
+    _MOLE_USER_CACHE_OWNER_STATE_CACHE=""
+}
+
+_mole_load_process_table() {
+    if [[ -n "${_MOLE_PROCESS_TABLE_STATE:-}" ]]; then
+        [[ "$_MOLE_PROCESS_TABLE_STATE" == "ok" ]] || return 1
+        return 0
+    fi
+
+    local raw=""
+    if ! raw=$(ps -axo pid,ppid,comm,args 2> /dev/null) || [[ -z "$raw" ]]; then
+        _MOLE_PROCESS_TABLE_STATE="unavailable"
+        return 1
+    fi
+
+    # Every text tool below runs under LC_ALL=C so it compares BYTES. A process
+    # table is not guaranteed to be UTF-8: an app named 富途牛牛 makes awk and
+    # grep abort with "illegal byte sequence" in a UTF-8 locale, and an aborted
+    # filter would silently shorten the table into a false "owner is idle".
+    local filtered=""
+
+    # Mole must not vote on itself. `pgrep -f` skipped the caller for free;
+    # a raw table does not, and every candidate id reaches this code as an
+    # argument, so the shell running `mo clean` (and any wrapper above it)
+    # carries that id in its own argv. Walking the ppid chain drops the whole
+    # invoking tree, which is also what excludes the `du` and `find` children
+    # forked to MEASURE the very directory being judged.
+    if ! filtered=$(printf '%s\n' "$raw" | LC_ALL=C awk -v self="$$" '
+        NR > 1 {
+            pid = $1
+            parent[pid] = $2
+            order[++count] = pid
+            # Drop the pid/ppid columns back off the line.
+            sub(/^[[:space:]]*[0-9]+[[:space:]]+[0-9]+[[:space:]]+/, "")
+            text[pid] = $0
+            comm[pid] = $1
+        }
+        END {
+            for (p = self; p != "" && p != "0" && p != "1" && !(p in seen); p = parent[p]) {
+                seen[p] = 1
+                mine[p] = 1
+            }
+            # Descendants too: a command substitution forks a child that
+            # inherits our argv verbatim, so the id would come back through
+            # the copy even after the ancestor chain is gone.
+            for (i = 1; i <= count; i++) {
+                pid = order[i]
+                depth = 0
+                for (p = pid; p != "" && p != "0" && p != "1" && depth < 64; p = parent[p]) {
+                    if (p == self) { mine[pid] = 1; break }
+                    depth++
+                }
+            }
+            for (i = 1; i <= count; i++) {
+                pid = order[i]
+                if (pid in mine) continue
+                n = split(comm[pid], parts, "/")
+                base = parts[n]
+                if (base == "du" || base == "find" || base == "mdfind" ||
+                    base == "ps" || base == "grep" || base == "stat" ||
+                    base == "ls" || base == "rm") continue
+                if (index(tolower(text[pid]), "com.tw93.mole") > 0) continue
+                print text[pid]
+            }
+        }'); then
+        # A filter that died mid-table would leave a SHORT table, which reads
+        # as "nothing owns this cache". Refuse to answer instead.
+        _MOLE_PROCESS_TABLE_STATE="unavailable"
+        return 1
+    fi
+
+    _MOLE_PROCESS_TABLE="$filtered"
+    _MOLE_PROCESS_TABLE_STATE="ok"
+    return 0
+}
+
+# Escape every non-alphanumeric byte so a cache-dir component is matched as a
+# literal inside an ERE.
+_mole_regex_escape() {
+    printf '%s' "$1" | sed 's/[^A-Za-z0-9_]/\\&/g'
+}
+
+# Tri-state process probe for a reverse-DNS cache owner:
+# 0 = a matching process is running, 1 = none matched, 2 = could not tell.
+#
+# Two acceptance shapes, deliberately asymmetric (parity with the Mac app's
+# ProcessGuard.processListMentionsCacheOwner):
+#   1. The full reverse-DNS id appears in the line. Self-identifying, so a
+#      plain substring is enough.
+#   2. The last DNS label appears as a DELIMITED token AND the same line
+#      independently names another component of the id. Corroboration is what
+#      makes a shared binary name usable: Claude and VS Code both ship a
+#      Squirrel binary called ShipIt, so `pgrep -x ShipIt` attributed VS Code's
+#      cache to a running Claude. Measured on this machine before the change,
+#      34 of 59 idle caches were called busy; the plain-substring shapes it
+#      relied on also read "default" out of syncdefaultsd and "data" out of
+#      dataaccessd.
+_mole_user_cache_owner_process_state() {
+    local owner="$1"
+    [[ -n "$owner" ]] || return 2
+
+    local cache_token="|${owner}:"
+    case "${_MOLE_USER_CACHE_OWNER_STATE_CACHE:-}" in
+        *"${cache_token}0|"*) return 0 ;;
+        *"${cache_token}1|"*) return 1 ;;
+        *"${cache_token}2|"*) return 2 ;;
+    esac
+
+    if ! _mole_load_process_table; then
+        # An unreadable process table is not proof the owner is idle.
+        return 2
+    fi
+    local table="$_MOLE_PROCESS_TABLE"
+
+    # Feed the table by here-string, never through a pipe. `grep -q` exits on
+    # its first match, and the printf still writing into that closed pipe takes
+    # SIGPIPE, which bash reports as "printf: write error: Broken pipe" on
+    # stderr; during `mo clean` that lands in the middle of the user's output.
+    local state=1
+    if LC_ALL=C grep -qiF -- "$owner" <<< "$table"; then
+        state=0
+    fi
+
+    local leaf="${owner##*.}"
+    if [[ $state -eq 1 && -n "$leaf" && "$leaf" != "$owner" && ${#leaf} -ge 4 ]]; then
+        # "com" is in every reverse-DNS id and corroborates nothing.
+        local -a corroborators=()
+        local old_ifs="$IFS"
+        local -a components=()
+        IFS='.' read -r -a components <<< "$owner"
+        IFS="$old_ifs"
+        local index=0
+        local last_index=$((${#components[@]} - 1))
+        local component
+        for component in "${components[@]}"; do
+            if [[ $index -lt $last_index && ${#component} -ge 4 ]]; then
+                case "$component" in
+                    [cC][oO][mM]) ;;
+                    *) corroborators+=("$(_mole_regex_escape "$component")") ;;
+                esac
+            fi
+            index=$((index + 1))
+        done
+
+        if [[ ${#corroborators[@]} -gt 0 ]]; then
+            local escaped_leaf
+            escaped_leaf=$(_mole_regex_escape "$leaf")
+            local alternation=""
+            for component in "${corroborators[@]}"; do
+                alternation="${alternation:+$alternation|}$component"
+            done
+            local boundary_open='(^|[^A-Za-z0-9])'
+            local boundary_close='([^A-Za-z0-9]|$)'
+            # Two passes, so both tokens must land on the SAME line. Materialize
+            # the first result instead of piping into a `grep -q`, for the same
+            # broken-pipe reason as the substring check above.
+            local leaf_lines=""
+            leaf_lines=$(LC_ALL=C grep -iE -- \
+                "${boundary_open}${escaped_leaf}${boundary_close}" <<< "$table") || leaf_lines=""
+            if [[ -n "$leaf_lines" ]] && LC_ALL=C grep -qiE -- \
+                "${boundary_open}(${alternation})${boundary_close}" <<< "$leaf_lines"; then
+                state=0
+            fi
+        fi
+    fi
+
+    _MOLE_USER_CACHE_OWNER_STATE_CACHE="${_MOLE_USER_CACHE_OWNER_STATE_CACHE-}${cache_token}${state}|"
+    return "$state"
+}
+
+# Is the database family live? 0 = in use, 1 = idle, 2 = could not tell.
+# WAL-mode -shm only exists while at least one connection is open (PR #1391),
+# but a stale -shm can remain after an unclean exit. When -shm exists we must
+# still verify a process holds it open; otherwise the guard refuses forever on
+# orphaned caches (#1439).
+_mole_sqlite_database_in_use() {
+    local path="$1"
+    local base
+    base=$(_mole_sqlite_family_base_path "$path")
+
+    # Check every family member, including a stale -shm. If any process has a
+    # handle open the database is live; if none do, the -shm is orphaned and
+    # deletion is safe. One lsof call covers the whole family: forking it per
+    # member tripled the live-cache gate's cost once the -shm fast path went
+    # away (#1439), and lsof already accepts several names at once.
+    local candidate
+    local -a family=()
+    for candidate in "$base" "${base}-wal" "${base}-shm"; do
+        [[ -e "$candidate" ]] || continue
+        family[${#family[@]}]="$candidate"
+    done
+    # Guard the empty expansion: macOS /bin/bash is 3.2, where "${a[@]}" on an
+    # empty array is an unbound-variable error under set -u.
+    [[ ${#family[@]} -gt 0 ]] || return 1
+
+    _mole_paths_have_open_handle "${family[@]}"
+}
+
+_mole_user_cache_sqlite_has_open_handle() {
+    local path="$1"
+    local state=0
+    _mole_sqlite_database_in_use "$path" || state=$?
+    return "$state"
+}
+
+# Identity captured by the most recent conclusively idle container-cache
+# probe. safe_remove rebinds it immediately before rm so a rename-and-recreate
+# cannot turn an idle snapshot of the old object into permission for the new
+# object at the same path.
+_MOLE_CONTAINER_CACHE_PROBE_PARENT=""
+_MOLE_CONTAINER_CACHE_PROBE_PARENT_ID=""
+_MOLE_CONTAINER_CACHE_PROBE_TARGET_ID=""
+_MOLE_COMPLETE_LSOF_MODE=""
+
+_mole_container_cache_probe_deadline() {
+    local timeout_seconds="${MOLE_TIMEOUT_MEDIUM_PROBE_SEC:-5}"
+    if [[ ! "$timeout_seconds" =~ ^[0-9]+(\.[0-9]+)?$ ||
+        "$timeout_seconds" =~ ^0+(\.0+)?$ ]]; then
+        timeout_seconds=5
+    fi
+    local timeout_whole="${timeout_seconds%%.*}"
+    local timeout_budget=$((10#$timeout_whole))
+    if [[ "$timeout_seconds" == *.* && "${timeout_seconds#*.}" =~ [1-9] ]]; then
+        timeout_budget=$((timeout_budget + 1))
+    fi
+    [[ $timeout_budget -ge 2 ]] || timeout_budget=2
+    printf '%s\n' "$((SECONDS + timeout_budget))"
+}
+
+_mole_lsof_records_include_root_process() {
+    local records="$1"
+    local padded=$'\n'"$records"$'\n'
+    [[ "$padded" == *$'\np1\n'* && "$padded" == *$'\nu0\n'* ]]
+}
+
+# Choose an lsof invocation that can see root-owned processes. macOS may return
+# status 1 with no diagnostics when an unprivileged lsof silently omits those
+# processes, which is not proof that a cache has no privileged open handles.
+# Prefer direct visibility; use only an already-authorized non-interactive sudo
+# session as a fallback. Tests and no-auth probes never attempt sudo.
+_mole_complete_lsof_mode() {
+    local probe_deadline="${1:-}"
+    case "${_MOLE_COMPLETE_LSOF_MODE:-}" in
+        direct | sudo) return 0 ;;
+        unknown) return 2 ;;
+    esac
+
+    command -v lsof > /dev/null 2>&1 || {
+        _MOLE_COMPLETE_LSOF_MODE="unknown"
+        return 2
+    }
+    declare -f run_with_timeout > /dev/null 2>&1 || {
+        _MOLE_COMPLETE_LSOF_MODE="unknown"
+        return 2
+    }
+
+    local probe_timeout=""
+    if ! probe_timeout=$(_mole_timeout_with_deadline "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
+        "$probe_deadline"); then
+        _MOLE_COMPLETE_LSOF_MODE="unknown"
+        return 2
+    fi
+
+    local records=""
+    local probe_rc=0
+    records=$(run_with_timeout "$probe_timeout" lsof -F pu -p 1 < /dev/null 2>&1) || probe_rc=$?
+    if [[ $probe_rc -eq 124 || $probe_rc -ge 128 ]]; then
+        return "$probe_rc"
+    fi
+    if [[ $probe_rc -eq 0 ]] && _mole_lsof_records_include_root_process "$records"; then
+        _MOLE_COMPLETE_LSOF_MODE="direct"
+        return 0
+    fi
+
+    if [[ "${MOLE_TEST_MODE:-0}" == "1" || "${MOLE_TEST_NO_AUTH:-0}" == "1" ]] ||
+        ! command -v sudo > /dev/null 2>&1; then
+        _MOLE_COMPLETE_LSOF_MODE="unknown"
+        return 2
+    fi
+
+    if ! probe_timeout=$(_mole_timeout_with_deadline "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
+        "$probe_deadline"); then
+        _MOLE_COMPLETE_LSOF_MODE="unknown"
+        return 2
+    fi
+    records=""
+    probe_rc=0
+    records=$(run_with_timeout "$probe_timeout" sudo -n lsof -F pu -p 1 < /dev/null 2>&1) || probe_rc=$?
+    if [[ $probe_rc -eq 124 || $probe_rc -ge 128 ]]; then
+        return "$probe_rc"
+    fi
+    if [[ $probe_rc -eq 0 ]] && _mole_lsof_records_include_root_process "$records"; then
+        _MOLE_COMPLETE_LSOF_MODE="sudo"
+        return 0
+    fi
+
+    _MOLE_COMPLETE_LSOF_MODE="unknown"
+    return 2
+}
+
+_mole_run_complete_lsof() {
+    local probe_timeout="$1"
+    shift
+    case "${_MOLE_COMPLETE_LSOF_MODE:-}" in
+        direct) run_with_timeout "$probe_timeout" lsof "$@" < /dev/null ;;
+        sudo) run_with_timeout "$probe_timeout" sudo -n lsof "$@" < /dev/null ;;
+        *) return 2 ;;
+    esac
+}
+
+# Is any exact path open? 0 = in use, 1 = idle, 2 = could not tell. A complete
+# process view is required before an empty lsof result can authorize deletion.
+_mole_paths_have_open_handle() {
+    [[ $# -gt 0 ]] || return 1
+
+    local visibility_rc=0
+    _mole_complete_lsof_mode || visibility_rc=$?
+    if [[ $visibility_rc -eq 124 || $visibility_rc -ge 128 ]]; then
+        return "$visibility_rc"
+    fi
+    [[ $visibility_rc -eq 0 ]] || return 2
+
+    local lsof_rc=0
+    local open_records=""
+    open_records=$(_mole_run_complete_lsof "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
+        -F n -- "$@" 2>&1) || lsof_rc=$?
+    if [[ $lsof_rc -eq 124 || $lsof_rc -ge 128 ]]; then
+        return "$lsof_rc"
+    fi
+    if [[ $lsof_rc -eq 0 ]]; then
+        return 0
+    fi
+    # lsof may return 1 when only some requested family members are open. A
+    # field record is still positive evidence of use, while diagnostics are an
+    # unknown result and must never be discarded as a reliable no-match.
+    local padded_records=$'\n'"$open_records"$'\n'
+    if [[ "$padded_records" == *$'\nn'* ]]; then
+        return 0
+    fi
+    [[ $lsof_rc -eq 1 && -z "$open_records" ]] || return 2
+    return 1
+}
+
+# Is any process holding the exact container-cache file, or a descendant of
+# the directory, open? 0 = in use, 1 = conclusively idle, 2 = could not tell;
+# signal statuses are preserved so clean can stop instead of treating an
+# interrupted safety probe as an ordinary skipped item.
+_mole_container_cache_has_open_handle() {
+    local path="$1"
+    _MOLE_CONTAINER_CACHE_PROBE_PARENT=""
+    _MOLE_CONTAINER_CACHE_PROBE_PARENT_ID=""
+    _MOLE_CONTAINER_CACHE_PROBE_TARGET_ID=""
+    command -v lsof > /dev/null 2>&1 || return 2
+    declare -f run_with_timeout > /dev/null 2>&1 || return 2
+    [[ -e "$path" ]] || return 1
+
+    if [[ -n "${_MOLE_CONTAINER_CACHE_PROBE_DEADLINE+x}" &&
+        -z "$_MOLE_CONTAINER_CACHE_PROBE_DEADLINE" ]]; then
+        _MOLE_CONTAINER_CACHE_PROBE_DEADLINE=$(_mole_container_cache_probe_deadline)
+    fi
+    local visibility_rc=0
+    _mole_complete_lsof_mode "${_MOLE_CONTAINER_CACHE_PROBE_DEADLINE:-}" || visibility_rc=$?
+    if [[ $visibility_rc -eq 124 || $visibility_rc -ge 128 ]]; then
+        return "$visibility_rc"
+    fi
+    [[ $visibility_rc -eq 0 ]] || return 2
+
+    local probe_timeout=""
+    if ! probe_timeout=$(_mole_timeout_with_deadline "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
+        "${_MOLE_CONTAINER_CACHE_PROBE_DEADLINE:-}"); then
+        debug_log "Container cache handle probe budget exhausted, keep: $path"
+        return 2
+    fi
+    # Bind the exact parent and target objects around lsof. The path can be
+    # renamed and recreated while the recursive probe is running.
+    _mole_snapshot_path_identity "$path" || return 2
+    local expected_parent="$_MOLE_PATH_SNAPSHOT_PARENT"
+    local expected_parent_id="$_MOLE_PATH_SNAPSHOT_PARENT_ID"
+    local expected_target_id="$_MOLE_PATH_SNAPSHOT_TARGET_ID"
+
+    local lsof_rc=0
+    local records=""
+    if [[ -d "$path" ]]; then
+        records=$(_mole_run_complete_lsof "$probe_timeout" \
+            -F pfn +D "$path" 2>&1) || lsof_rc=$?
+    else
+        records=$(_mole_run_complete_lsof "$probe_timeout" \
+            -F pfn -- "$path" 2>&1) || lsof_rc=$?
+    fi
+
+    if [[ $lsof_rc -eq 124 || $lsof_rc -ge 128 ]]; then
+        return "$lsof_rc"
+    fi
+    if [[ $lsof_rc -eq 0 ]]; then
+        return 0
+    fi
+    # A recursive walk may report one open record and still fail on another
+    # descendant. Field output starts with p/f/n; warning prose does not.
+    if [[ -n "$records" ]] && LC_ALL=C grep -qE '^[pfn]' <<< "$records"; then
+        return 0
+    fi
+    # Only status 1 with completely empty output is a conclusive no-match for
+    # this snapshot. It is not an ownership lease: safe_remove minimizes the
+    # unavoidable reopen window by taking this snapshot at the final sink.
+    # Missing lsof/timeout helper, timeout, signal, traversal warning, or other
+    # error is unknown and must not authorize deletion.
+    [[ $lsof_rc -eq 1 && -z "$records" ]] || return 2
+    if ! _mole_path_matches_identity \
+        "$path" "$expected_parent" "$expected_parent_id" "$expected_target_id"; then
+        debug_log "Container cache identity changed during handle probe, keep: $path"
+        return 2
+    fi
+    _MOLE_CONTAINER_CACHE_PROBE_PARENT="$expected_parent"
+    _MOLE_CONTAINER_CACHE_PROBE_PARENT_ID="$expected_parent_id"
+    _MOLE_CONTAINER_CACHE_PROBE_TARGET_ID="$expected_target_id"
+    return 1
+}
+
+# Return 0 when deletion must be refused (live owner or open cache handle).
+_mole_should_refuse_live_user_cache_path() {
+    local path="$1"
+    _MOLE_CONTAINER_CACHE_PROBE_PARENT=""
+    _MOLE_CONTAINER_CACHE_PROBE_PARENT_ID=""
+    _MOLE_CONTAINER_CACHE_PROBE_TARGET_ID=""
+    local scope=""
+    scope=$(_mole_user_cache_scope "$path") || return 1
+    local owner="${scope%%|*}"
+    local scope_type="${scope#*|}"
+
+    local process_state=0
+    _mole_user_cache_owner_process_state "$owner" || process_state=$?
+    if [[ $process_state -eq 0 ]]; then
+        debug_log "Live user cache owner running, keep: $path ($owner)"
+        return 0
+    fi
+    if [[ $process_state -eq 2 ]]; then
+        debug_log "Live user cache owner state unknown, keep: $path ($owner)"
+        return 0
+    fi
+
+    # Container ids and helper process names need not correspond (for example,
+    # a team-prefixed Group Container used by SkyComputerUseService). Inspect
+    # every open descendant instead of treating process-name silence as idle.
+    if [[ "$scope_type" == "container" ]]; then
+        # A real safe_remove defers this comparatively expensive recursive
+        # probe to its final-sink recheck. Nothing mutates the target between
+        # initial validation and that boundary. Dry-run and direct validators
+        # do not set this dynamic-scope flag and still probe here.
+        if [[ "${_MOLE_DEFER_CONTAINER_HANDLE_PROBE:-false}" == "true" ]]; then
+            return 1
+        fi
+        local container_open_state=0
+        _mole_container_cache_has_open_handle "$path" || container_open_state=$?
+        if [[ $container_open_state -eq 124 || $container_open_state -ge 128 ]]; then
+            return "$container_open_state"
+        fi
+        if [[ $container_open_state -eq 0 || $container_open_state -eq 2 ]]; then
+            debug_log "Container cache handle not conclusively idle, keep: $path"
+            return 0
+        fi
+    # Standard reverse-DNS caches retain the narrower SQLite-family probe.
+    elif _mole_is_user_cache_sqlite_family_path "$path"; then
+        local open_state=0
+        _mole_user_cache_sqlite_has_open_handle "$path" || open_state=$?
+        if [[ $open_state -eq 124 || $open_state -ge 128 ]]; then
+            return "$open_state"
+        fi
+        if [[ $open_state -eq 0 || $open_state -eq 2 ]]; then
+            debug_log "SQLite user cache handle not conclusively idle, keep: $path"
+            return 0
+        fi
+    elif [[ -d "$path" ]]; then
+        # A caller's GLOBIGNORE would silently hide database files from this
+        # glob, which reads as "no SQLite here" and unblocks the delete. Shadow
+        # it with an empty local: bash restores the caller's value AND its
+        # attributes on return, so no manual save, `declare -p` parsing, or
+        # export-state replay is needed. An empty GLOBIGNORE also turns off the
+        # dotglob that bash auto-enables for a non-empty one, so dotglob is set
+        # explicitly below and restored by hand (shopt state is not scoped).
+        # failglob off keeps an empty cache directory yielding a literal that
+        # the -f test drops. Both shopt flags are saved because cleanup helpers
+        # elsewhere in the tree set them without restoring. nullglob is left
+        # alone: either state reaches the same -f filter.
+        local GLOBIGNORE=""
+        local candidate open_state family_base seen_base already_seen
+        local restore_dotglob=false
+        local restore_failglob=false
+        local -a sqlite_candidates=()
+        local -a sqlite_family_bases=()
+
+        if shopt -q dotglob; then
+            restore_dotglob=true
+        fi
+        if shopt -q failglob; then
+            restore_failglob=true
+        fi
+        shopt -s dotglob
+        shopt -u failglob
+        sqlite_candidates=("$path"/*)
+        if [[ "$restore_dotglob" != "true" ]]; then shopt -u dotglob; fi
+        if [[ "$restore_failglob" == "true" ]]; then shopt -s failglob; fi
+
+        if [[ ${#sqlite_candidates[@]} -gt 0 ]]; then
+            for candidate in "${sqlite_candidates[@]}"; do
+                [[ -f "$candidate" ]] || continue
+                _mole_is_user_cache_sqlite_family_path "$candidate" || continue
+                family_base=$(_mole_sqlite_family_base_path "$candidate")
+                already_seen=false
+                if [[ ${#sqlite_family_bases[@]} -gt 0 ]]; then
+                    for seen_base in "${sqlite_family_bases[@]}"; do
+                        if [[ "$seen_base" == "$family_base" ]]; then
+                            already_seen=true
+                            break
+                        fi
+                    done
+                fi
+                [[ "$already_seen" == "true" ]] && continue
+                sqlite_family_bases[${#sqlite_family_bases[@]}]="$family_base"
+
+                open_state=0
+                _mole_user_cache_sqlite_has_open_handle "$family_base" || open_state=$?
+                if [[ $open_state -eq 124 || $open_state -ge 128 ]]; then
+                    return "$open_state"
+                fi
+                if [[ $open_state -eq 0 || $open_state -eq 2 ]]; then
+                    debug_log "SQLite under user cache dir not conclusively idle, keep: $path ($family_base)"
+                    return 0
+                fi
+            done
+        fi
+    fi
+
+    return 1
 }
 
 _mole_path_is_same_existing_file() {
@@ -188,6 +936,24 @@ _mole_is_critical_deletion_path() {
     fi
 
     return 1
+}
+
+# True when path is a direct child of the invoking user's Trash. Emptying Trash
+# is an explicit discard contract: cleanup protection for input methods,
+# keyboards, and similar names still applies to live Library paths, but not to
+# items the user or uninstall already moved into ~/.Trash.
+_mole_is_user_trash_top_level_item() {
+    local path="$1"
+    [[ -n "$path" && "$path" == /* ]] || return 1
+
+    local user_home="${HOME:-}"
+    [[ -n "$user_home" && "$user_home" == /* ]] || return 1
+
+    local policy_path
+    policy_path=$(_mole_normalize_deletion_policy_path "$path")
+
+    local trash_dir="${user_home%/}/.Trash"
+    [[ "${policy_path%/*}" == "$trash_dir" ]]
 }
 
 # Validate path for deletion (absolute, no traversal, not system dir)
@@ -304,6 +1070,58 @@ validate_path_for_deletion() {
             ;;
     esac
 
+    # Reject the active power telemetry database before the broad powerlog
+    # allowlist below. Size and mtime are diagnostic signals, never deletion
+    # authority for a database that a KeepAlive system service can reopen.
+    if _mole_is_active_powerlog_database_path "$policy_path"; then
+        debug_log "Path validation: active powerlog database kept: $policy_path"
+        return 1
+    fi
+
+    # Live reverse-DNS user caches (process + SQLite handle). Covers Autodesk
+    # helpers and every other com.vendor tree under ~/Library/Caches (#1390).
+    local live_cache_guard_rc=0
+    _mole_should_refuse_live_user_cache_path "$policy_path" || live_cache_guard_rc=$?
+    if [[ $live_cache_guard_rc -eq 0 ]]; then
+        debug_log "Path validation: live user cache kept: $policy_path"
+        return 1
+    fi
+    if [[ $live_cache_guard_rc -eq 124 || $live_cache_guard_rc -ge 128 ]]; then
+        _mole_record_clean_cancellation "$live_cache_guard_rc"
+        return "$live_cache_guard_rc"
+    fi
+
+    # General SQLite family gate from PR #1391: refuse any in-use database even
+    # outside reverse-DNS cache dirs (fail closed when lsof cannot answer).
+    if _mole_is_sqlite_database_path "$policy_path"; then
+        local sqlite_state=0
+        _mole_sqlite_database_in_use "$policy_path" || sqlite_state=$?
+        if [[ $sqlite_state -eq 124 || $sqlite_state -ge 128 ]]; then
+            _mole_record_clean_cancellation "$sqlite_state"
+            return "$sqlite_state"
+        fi
+        if [[ $sqlite_state -eq 0 || $sqlite_state -eq 2 ]]; then
+            debug_log "Path validation: in-use SQLite database kept: $policy_path"
+            return 1
+        fi
+    fi
+
+    # Browser partial downloads are mutable user files, not ordinary caches.
+    # Recheck them here so safe_remove binds the open-handle evidence at the
+    # final deletion boundary instead of trusting an earlier cleanup scan.
+    if _mole_is_incomplete_download_path "$policy_path"; then
+        local download_open_state=0
+        _mole_paths_have_open_handle "$policy_path" || download_open_state=$?
+        if [[ $download_open_state -eq 124 || $download_open_state -ge 128 ]]; then
+            _mole_record_clean_cancellation "$download_open_state"
+            return "$download_open_state"
+        fi
+        if [[ $download_open_state -eq 0 || $download_open_state -eq 2 ]]; then
+            debug_log "Path validation: incomplete download not conclusively idle, keep: $policy_path"
+            return 1
+        fi
+    fi
+
     # Endpoint-security/EDR agent caches under var/folders look like ordinary
     # rebuildable caches, but deleting anything in a sensor's container trips
     # tamper detection (reported as malware). Reject here, before the
@@ -339,7 +1157,9 @@ validate_path_for_deletion() {
 
     # Check if path is protected (keychains, system settings, etc)
     if declare -f should_protect_path > /dev/null 2>&1; then
-        if should_protect_path "$policy_path"; then
+        if _mole_is_user_trash_top_level_item "$policy_path"; then
+            :
+        elif should_protect_path "$policy_path"; then
             if [[ "${MO_DEBUG:-0}" == "1" ]]; then
                 log_warning "Path validation: protected path skipped: $policy_path"
             fi
@@ -362,18 +1182,65 @@ _record_file_ops_dry_run_target() {
 
     local size_kb=0
     local size_known=true
+    local eligibility_still_current=true
     if [[ -n "$precomputed_size_kb" && "$precomputed_size_kb" =~ ^[0-9]+$ ]]; then
         size_kb="$precomputed_size_kb"
     else
+        eligibility_still_current=false
         local measured_size=""
-        if measured_size=$(get_path_size_kb "$path" 2> /dev/null) && [[ "$measured_size" =~ ^[0-9]+$ ]]; then
+        local measure_rc=0
+        measured_size=$(get_path_size_kb "$path" 2> /dev/null) || measure_rc=$?
+        if [[ $measure_rc -ge 128 ]]; then
+            return "$measure_rc"
+        fi
+        if [[ $measure_rc -eq 124 ]]; then
+            # Sizing budget exhausted: preview the item as size-unknown rather
+            # than cancelling the whole dry run.
+            MOLE_CLEAN_SIZING_TIMEOUTS=$((${MOLE_CLEAN_SIZING_TIMEOUTS:-0} + 1))
+        fi
+        if [[ $measure_rc -eq 0 && "$measured_size" =~ ^[0-9]+$ ]]; then
             size_kb="$measured_size"
         else
             size_known=false
         fi
     fi
 
-    record_dry_run_cleanup_target "$path" "$size_kb" 1 "$size_known" || true
+    # A browser can reopen a partial download while the size probe runs. Keep
+    # dry-run eligibility aligned with the real final sink instead of listing a
+    # file that real cleanup would now refuse.
+    if _mole_is_incomplete_download_path "$path"; then
+        local download_open_state=0
+        _mole_paths_have_open_handle "$path" || download_open_state=$?
+        if [[ $download_open_state -eq 124 || $download_open_state -ge 128 ]]; then
+            return "$download_open_state"
+        fi
+        [[ $download_open_state -eq 1 ]] || return 1
+    fi
+
+    # A precomputed size means validate_path_for_deletion was the last
+    # meaningful probe. If this helper measured after validation, rerun the
+    # recorder guards: an owner can open the cache while du is walking it.
+    local _MOLE_DRY_RUN_TARGET_PREVALIDATED="$eligibility_still_current"
+    local record_rc=0
+    record_dry_run_cleanup_target \
+        "$path" "$size_kb" 1 "$size_known" || record_rc=$?
+    return "$record_rc"
+}
+
+# Preserve the first timeout or signal observed by a clean deletion sink. Some
+# older cleanup families intentionally treat ordinary item failures as
+# best-effort; this sticky status prevents those `|| true` paths from turning a
+# user interrupt into permission to continue deleting later targets.
+_mole_record_clean_cancellation() {
+    local status="$1"
+    if [[ "${MOLE_CURRENT_COMMAND:-}" == "clean" &&
+        ("$status" -eq 124 || "$status" -ge 128) ]]; then
+        local existing="${MOLE_CLEAN_CANCEL_STATUS:-0}"
+        if [[ $existing -ne 124 && $existing -lt 128 ]]; then
+            MOLE_CLEAN_CANCEL_STATUS=$status
+            export MOLE_CLEAN_CANCEL_STATUS
+        fi
+    fi
 }
 
 # Safe wrapper around rm -rf with validation
@@ -381,14 +1248,53 @@ safe_remove() {
     local path="$1"
     local silent="${2:-false}"
     local precomputed_size_kb="${3:-}"
+    local deadline_seconds="${4:-}"
+    local expected_parent="${5:-}"
+    local expected_parent_id="${6:-}"
+    local expected_target_id="${7:-}"
+    local _MOLE_DEFER_CONTAINER_HANDLE_PROBE=false
+    local container_probe_parent=""
+    local container_probe_parent_id=""
+    local container_probe_target_id=""
+    local exact_probe_parent=""
+    local exact_probe_parent_id=""
+    local exact_probe_target_id=""
+
+    local pending_clean_cancel="${MOLE_CLEAN_CANCEL_STATUS:-0}"
+    if [[ "${MOLE_CURRENT_COMMAND:-}" == "clean" &&
+        ("$pending_clean_cancel" -eq 124 || "$pending_clean_cancel" -ge 128) ]]; then
+        return "$pending_clean_cancel"
+    fi
 
     # Validate path. Silent cleanup callers still need the same policy result,
     # but should not print one validation warning per skipped cache item.
+    # Real cleanup performs its recursive container-handle probe once at the
+    # final sink below. A dry-run with no precomputed size likewise defers that
+    # one expensive probe until after sizing, where the preview recorder runs
+    # the complete eligibility pass. Pre-sized dry-runs probe here once.
+    local dry_run_sizes_before_preview=false
+    if [[ "${MOLE_DRY_RUN:-0}" == "1" &&
+        (! "$precomputed_size_kb" =~ ^[0-9]+$) ]] &&
+        declare -f record_dry_run_cleanup_target > /dev/null 2>&1; then
+        dry_run_sizes_before_preview=true
+    fi
+    if [[ "${MOLE_DRY_RUN:-0}" != "1" || "$dry_run_sizes_before_preview" == "true" ]]; then
+        _MOLE_DEFER_CONTAINER_HANDLE_PROBE=true
+    fi
+    local validation_rc=0
     if [[ "$silent" == "true" ]]; then
-        validate_path_for_deletion "$path" 2> /dev/null || return 1
-    elif ! validate_path_for_deletion "$path"; then
+        validate_path_for_deletion "$path" 2> /dev/null || validation_rc=$?
+    else
+        validate_path_for_deletion "$path" || validation_rc=$?
+    fi
+    if [[ $validation_rc -ne 0 ]]; then
+        if [[ $validation_rc -eq 124 || $validation_rc -ge 128 ]]; then
+            _mole_record_clean_cancellation "$validation_rc"
+            return "$validation_rc"
+        fi
         return 1
     fi
+    _MOLE_DEFER_CONTAINER_HANDLE_PROBE=false
 
     # Honor the user whitelist here, not just in safe_clean. safe_remove is
     # called directly by several clean/optimize flows (Xcode DerivedData,
@@ -406,9 +1312,25 @@ safe_remove() {
         return 0
     fi
 
+    # Keep preview eligibility identical to real cleanup. This first check
+    # rejects an already-present compiled model cache before the dry-run return;
+    # the final-sink check below still catches one created during size probing.
+    if declare -f holds_compiled_model_cache > /dev/null 2>&1 && holds_compiled_model_cache "$path" 2> /dev/null; then
+        debug_log "Skipped removal for compiled model cache: $path"
+        log_operation "${MOLE_CURRENT_COMMAND:-clean}" "SKIPPED" "$path" "compiled model cache"
+        return 1
+    fi
+
     # Dry-run mode: log but don't delete
     if [[ "${MOLE_DRY_RUN:-0}" == "1" ]]; then
-        _record_file_ops_dry_run_target "$path" "$precomputed_size_kb"
+        local dry_record_rc=0
+        _record_file_ops_dry_run_target \
+            "$path" "$precomputed_size_kb" || dry_record_rc=$?
+        if [[ $dry_record_rc -eq 124 || $dry_record_rc -ge 128 ]]; then
+            _mole_record_clean_cancellation "$dry_record_rc"
+            return "$dry_record_rc"
+        fi
+        [[ $dry_record_rc -eq 0 ]] || return "$dry_record_rc"
         if [[ "${MO_DEBUG:-}" == "1" ]]; then
             local file_type="file"
             [[ -d "$path" ]] && file_type="directory"
@@ -418,15 +1340,27 @@ safe_remove() {
             local file_age=""
 
             if [[ -e "$path" ]]; then
-                local size_kb
-                size_kb=$(get_path_size_kb "$path" 2> /dev/null || echo "0")
+                local size_kb=0
+                local size_rc=0
+                size_kb=$(get_path_size_kb "$path" 2> /dev/null) || size_rc=$?
+                if [[ $size_rc -eq 124 || $size_rc -ge 128 ]]; then
+                    _mole_record_clean_cancellation "$size_rc"
+                    return "$size_rc"
+                fi
+                [[ $size_rc -eq 0 ]] || size_kb=0
                 if [[ "$size_kb" -gt 0 ]]; then
                     file_size=$(bytes_to_human "$((size_kb * 1024))")
                 fi
 
                 if [[ -f "$path" || -d "$path" ]] && ! [[ -L "$path" ]]; then
-                    local mod_time
-                    mod_time=$(stat -f%m "$path" 2> /dev/null || echo "0")
+                    local mod_time=0
+                    local stat_rc=0
+                    mod_time=$(stat -f%m "$path" 2> /dev/null) || stat_rc=$?
+                    if [[ $stat_rc -eq 124 || $stat_rc -ge 128 ]]; then
+                        _mole_record_clean_cancellation "$stat_rc"
+                        return "$stat_rc"
+                    fi
+                    [[ $stat_rc -eq 0 ]] || mod_time=0
                     local now
                     now=$(date +%s 2> /dev/null || echo "0")
                     if [[ "$mod_time" -gt 0 && "$now" -gt 0 ]]; then
@@ -449,24 +1383,217 @@ safe_remove() {
     local size_kb=0
     local size_human=""
     if oplog_enabled; then
-        if [[ -n "$precomputed_size_kb" && "$precomputed_size_kb" =~ ^[0-9]+$ ]]; then
-            size_kb="$precomputed_size_kb"
+        if [[ -n "$precomputed_size_kb" ]]; then
+            if [[ "$precomputed_size_kb" =~ ^[0-9]+$ ]]; then
+                size_kb="$precomputed_size_kb"
+            fi
         elif [[ -e "$path" ]]; then
-            size_kb=$(get_path_size_kb "$path" 2> /dev/null || echo "0")
+            local size_probe_rc=0
+            local size_probe_timeout=""
+            size_probe_timeout=$(_mole_timeout_with_deadline "$MOLE_TIMEOUT_DISK_VERIFY_SEC" \
+                "$deadline_seconds") || size_probe_rc=$?
+            if [[ $size_probe_rc -eq 0 ]]; then
+                size_kb=$(get_path_size_kb "$path" "$size_probe_timeout" 2> /dev/null) || size_probe_rc=$?
+            fi
+            if [[ $size_probe_rc -eq 124 ]]; then
+                # Sizing budget exhausted: still remove the item, with the
+                # freed total under-reported, matching the batch-sizing policy.
+                MOLE_CLEAN_SIZING_TIMEOUTS=$((${MOLE_CLEAN_SIZING_TIMEOUTS:-0} + 1))
+            fi
+            if [[ $size_probe_rc -ge 128 ]]; then
+                _mole_record_clean_cancellation "$size_probe_rc"
+                return "$size_probe_rc"
+            fi
+            [[ $size_probe_rc -eq 0 && "$size_kb" =~ ^[0-9]+$ ]] || size_kb=0
         fi
         if [[ "$size_kb" =~ ^[0-9]+$ ]] && [[ "$size_kb" -gt 0 ]]; then
             size_human=$(bytes_to_human "$((size_kb * 1024))" 2> /dev/null || echo "${size_kb}KB")
         fi
     fi
 
+    # Recheck at the final sink. A daemon can create this compiled-model cache
+    # while the preceding size probe walks the target, and deleting its parent
+    # then breaks recognition until the owning process restarts.
+    if declare -f holds_compiled_model_cache > /dev/null 2>&1 && holds_compiled_model_cache "$path" 2> /dev/null; then
+        debug_log "Skipped removal after compiled model cache appeared: $path"
+        log_operation "${MOLE_CURRENT_COMMAND:-clean}" "SKIPPED" "$path" "compiled model cache"
+        return 1
+    fi
+
+    # Recheck live-owner / open-SQLite state after size probing: a helper can
+    # launch while du is walking the tree (same race class as the compiled
+    # model cache check above).
+    _mole_reset_process_snapshot
+    local live_cache_guard_rc=0
+    _mole_should_refuse_live_user_cache_path "$path" || live_cache_guard_rc=$?
+    if [[ $live_cache_guard_rc -eq 0 ]]; then
+        debug_log "Skipped removal after live user cache appeared: $path"
+        log_operation "${MOLE_CURRENT_COMMAND:-clean}" "SKIPPED" "$path" "live user cache"
+        return 1
+    fi
+    if [[ $live_cache_guard_rc -eq 124 || $live_cache_guard_rc -ge 128 ]]; then
+        _mole_record_clean_cancellation "$live_cache_guard_rc"
+        return "$live_cache_guard_rc"
+    fi
+    container_probe_parent="$_MOLE_CONTAINER_CACHE_PROBE_PARENT"
+    container_probe_parent_id="$_MOLE_CONTAINER_CACHE_PROBE_PARENT_ID"
+    container_probe_target_id="$_MOLE_CONTAINER_CACHE_PROBE_TARGET_ID"
+
+    # Reverse-DNS and container caches were rechecked by the live-cache guard.
+    # SQLite files elsewhere still need their own post-size handle probe.
+    if _mole_is_sqlite_database_path "$path" &&
+        ! _mole_user_cache_scope "$path" > /dev/null 2>&1; then
+        _mole_snapshot_path_identity "$path" || return 1
+        local sqlite_parent="$_MOLE_PATH_SNAPSHOT_PARENT"
+        local sqlite_parent_id="$_MOLE_PATH_SNAPSHOT_PARENT_ID"
+        local sqlite_target_id="$_MOLE_PATH_SNAPSHOT_TARGET_ID"
+        local sqlite_state=0
+        _mole_sqlite_database_in_use "$path" || sqlite_state=$?
+        if [[ $sqlite_state -eq 124 || $sqlite_state -ge 128 ]]; then
+            _mole_record_clean_cancellation "$sqlite_state"
+            return "$sqlite_state"
+        fi
+        if [[ $sqlite_state -ne 1 ]]; then
+            debug_log "Skipped SQLite file after final open-file recheck: $path"
+            log_operation "${MOLE_CURRENT_COMMAND:-clean}" "SKIPPED" "$path" "active or unknown SQLite database"
+            return 1
+        fi
+        if ! _mole_path_matches_identity \
+            "$path" "$sqlite_parent" "$sqlite_parent_id" "$sqlite_target_id"; then
+            debug_log "Skipped SQLite file after identity changed during final open-file recheck: $path"
+            log_operation "${MOLE_CURRENT_COMMAND:-clean}" "SKIPPED" "$path" "identity changed"
+            return 1
+        fi
+        exact_probe_parent="$sqlite_parent"
+        exact_probe_parent_id="$sqlite_parent_id"
+        exact_probe_target_id="$sqlite_target_id"
+    fi
+
+    # Downloads are outside the user-cache owner guard above. Recheck the exact
+    # file after sizing so a browser that resumed the transfer cannot race the
+    # earlier validation into the unlink.
+    if _mole_is_incomplete_download_path "$path"; then
+        _mole_snapshot_path_identity "$path" || return 1
+        local download_parent="$_MOLE_PATH_SNAPSHOT_PARENT"
+        local download_parent_id="$_MOLE_PATH_SNAPSHOT_PARENT_ID"
+        local download_target_id="$_MOLE_PATH_SNAPSHOT_TARGET_ID"
+        local download_open_state=0
+        _mole_paths_have_open_handle "$path" || download_open_state=$?
+        if [[ $download_open_state -eq 124 || $download_open_state -ge 128 ]]; then
+            _mole_record_clean_cancellation "$download_open_state"
+            return "$download_open_state"
+        fi
+        if [[ $download_open_state -ne 1 ]]; then
+            debug_log "Skipped incomplete download after final open-file recheck: $path"
+            log_operation "${MOLE_CURRENT_COMMAND:-clean}" "SKIPPED" "$path" "active or unknown download"
+            return 1
+        fi
+        if ! _mole_path_matches_identity \
+            "$path" "$download_parent" "$download_parent_id" "$download_target_id"; then
+            debug_log "Skipped incomplete download after identity changed during final open-file recheck: $path"
+            log_operation "${MOLE_CURRENT_COMMAND:-clean}" "SKIPPED" "$path" "identity changed"
+            return 1
+        fi
+        exact_probe_parent="$download_parent"
+        exact_probe_parent_id="$download_parent_id"
+        exact_probe_target_id="$download_target_id"
+    fi
+
+    if [[ -n "$expected_parent" ]] && ! _mole_path_matches_identity \
+        "$path" "$expected_parent" "$expected_parent_id" "$expected_target_id"; then
+        debug_log "Refusing removal after final path identity changed: $path"
+        log_operation "${MOLE_CURRENT_COMMAND:-clean}" "SKIPPED" "$path" "identity changed"
+        return 1
+    fi
+
+    # Last hop before rm, for callers whose exclusion depends on state this
+    # function cannot express as a parent/target inode pair. A candidate list
+    # that skipped a live owner root only proves where that root pointed when
+    # the list was built; re-asking here closes the rest of the window rather
+    # than leaving it open from discovery all the way to the unlink. Set
+    # _MOLE_SAFE_REMOVE_FINAL_GUARD to a function name that takes the path and
+    # returns non-zero to refuse.
+    local final_sink_guard="${_MOLE_SAFE_REMOVE_FINAL_GUARD:-}"
+    if [[ -n "$final_sink_guard" ]] && declare -f "$final_sink_guard" > /dev/null 2>&1; then
+        local final_sink_guard_rc=0
+        "$final_sink_guard" "$path" || final_sink_guard_rc=$?
+        if [[ $final_sink_guard_rc -ne 0 ]]; then
+            debug_log "Refusing removal after the final sink guard denied: $path"
+            log_operation "${MOLE_CURRENT_COMMAND:-clean}" "SKIPPED" "$path" "sink guard denied"
+            if [[ $final_sink_guard_rc -eq 124 || $final_sink_guard_rc -ge 128 ]]; then
+                _mole_record_clean_cancellation "$final_sink_guard_rc"
+                return "$final_sink_guard_rc"
+            fi
+            return 1
+        fi
+    fi
+
+    # A caller-specific final guard may perform process or metadata probes.
+    # Rebind the original object once more after that work so a replacement
+    # during the guard cannot reach rm under the identity checked above.
+    if [[ -n "$expected_parent" ]] && ! _mole_path_matches_identity \
+        "$path" "$expected_parent" "$expected_parent_id" "$expected_target_id"; then
+        debug_log "Refusing removal after path identity changed during the final sink guard: $path"
+        log_operation "${MOLE_CURRENT_COMMAND:-clean}" "SKIPPED" "$path" "identity changed"
+        return 1
+    fi
+
+    if [[ -n "$container_probe_parent" ]] && ! _mole_path_matches_identity \
+        "$path" "$container_probe_parent" "$container_probe_parent_id" \
+        "$container_probe_target_id"; then
+        debug_log "Refusing removal after container cache identity changed: $path"
+        log_operation "${MOLE_CURRENT_COMMAND:-clean}" "SKIPPED" "$path" "identity changed"
+        return 1
+    fi
+
+    if [[ -n "$exact_probe_parent" ]] && ! _mole_path_matches_identity \
+        "$path" "$exact_probe_parent" "$exact_probe_parent_id" \
+        "$exact_probe_target_id"; then
+        debug_log "Refusing removal after final open-file target identity changed: $path"
+        log_operation "${MOLE_CURRENT_COMMAND:-clean}" "SKIPPED" "$path" "identity changed"
+        return 1
+    fi
+
     # Perform the deletion
     # Use || to capture the exit code so set -e won't abort on rm failures
     local error_msg
     local rm_exit=0
-    error_msg=$(rm -rf "$path" 2>&1) || rm_exit=$? # safe_remove
+    local section_deadline_spent=0
+    if declare -F rm > /dev/null 2>&1; then
+        error_msg=$(rm -rf "$path" 2>&1) || rm_exit=$? # SAFE: safe_remove validated and rebound this exact target above
+    else
+        local rm_timeout=""
+        rm_timeout=$(_mole_timeout_with_deadline "$MOLE_TIMEOUT_DISK_VERIFY_SEC" \
+            "$deadline_seconds") || rm_exit=$?
+        if [[ $rm_exit -eq 0 ]]; then
+            error_msg=$(run_with_timeout "$rm_timeout" rm -rf "$path" < /dev/null 2>&1) || rm_exit=$? # SAFE: safe_remove validated and rebound this exact target above
+        else
+            # The section's own wall-clock budget ran out, so rm never started.
+            section_deadline_spent=1
+        fi
+    fi
+
+    if [[ $rm_exit -eq 124 ]]; then
+        debug_log "Removal timed out: $path"
+        if [[ $section_deadline_spent -eq 1 ]]; then
+            # Not a slow removal: the caller's section deadline expired before
+            # rm ran, and that section reports its own stop. Counting it here
+            # would point the user at the per-item removal budget instead.
+            log_operation "${MOLE_CURRENT_COMMAND:-clean}" "SKIPPED" "$path" "section time limit reached"
+        else
+            log_operation "${MOLE_CURRENT_COMMAND:-clean}" "FAILED" "$path" "removal timed out"
+            # A slow disk can exceed the per-item removal budget. That is a
+            # failed removal, not a user interrupt: count it and keep going so
+            # one slow cache never cancels the remaining cleanup.
+            MOLE_CLEAN_REMOVAL_TIMEOUTS=$((${MOLE_CLEAN_REMOVAL_TIMEOUTS:-0} + 1))
+            _mole_record_removal_timeout_path "$path"
+        fi
+        return 124
+    fi
 
     # Preserve interrupt semantics so callers can abort long-running deletions.
     if [[ $rm_exit -ge 128 ]]; then
+        _mole_record_clean_cancellation "$rm_exit"
         return "$rm_exit"
     fi
 
@@ -494,6 +1621,15 @@ safe_remove() {
 safe_remove_symlink() {
     local path="$1"
     local use_sudo="${2:-false}"
+    local expected_parent="${3:-}"
+    local expected_parent_id="${4:-}"
+    local expected_target_id="${5:-}"
+
+    local pending_clean_cancel="${MOLE_CLEAN_CANCEL_STATUS:-0}"
+    if [[ "${MOLE_CURRENT_COMMAND:-}" == "clean" &&
+        ("$pending_clean_cancel" -eq 124 || "$pending_clean_cancel" -ge 128) ]]; then
+        return "$pending_clean_cancel"
+    fi
 
     if [[ ! -L "$path" ]]; then
         return 1
@@ -519,9 +1655,20 @@ safe_remove_symlink() {
     fi
 
     if [[ "${MOLE_DRY_RUN:-0}" == "1" ]]; then
-        _record_file_ops_dry_run_target "$path"
+        local dry_record_rc=0
+        _record_file_ops_dry_run_target "$path" || dry_record_rc=$?
+        if [[ $dry_record_rc -eq 124 || $dry_record_rc -ge 128 ]]; then
+            _mole_record_clean_cancellation "$dry_record_rc"
+            return "$dry_record_rc"
+        fi
         debug_log "[DRY RUN] Would remove symlink: $path"
         return 0
+    fi
+
+    if [[ -n "$expected_parent" ]] && ! _mole_path_matches_identity \
+        "$path" "$expected_parent" "$expected_parent_id" "$expected_target_id"; then
+        debug_log "Refusing symlink removal after final path identity changed: $path"
+        return 1
     fi
 
     local rm_exit=0
@@ -539,6 +1686,10 @@ safe_remove_symlink() {
         log_operation "${MOLE_CURRENT_COMMAND:-clean}" "REMOVED" "$path" "symlink"
         return 0
     else
+        if [[ $rm_exit -eq 124 || $rm_exit -ge 128 ]]; then
+            _mole_record_clean_cancellation "$rm_exit"
+            return "$rm_exit"
+        fi
         log_operation "${MOLE_CURRENT_COMMAND:-clean}" "FAILED" "$path" "symlink removal failed"
         return 1
     fi
@@ -579,7 +1730,18 @@ _mole_privileged_path_has_mutable_ancestor() {
                 # Under `sudo mo`, the shell's -w probe reflects root rather
                 # than the invoking user. Drop authority for the ACL check so
                 # immutable system parents do not become false positives.
-                sudo -n -u "#$invoking_uid" /usr/bin/test -w "$probe" 2> /dev/null && return 0
+                local acl_probe_rc=0
+                _mole_bounded_sudo "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
+                    -n -u "#$invoking_uid" /bin/test -w "$probe" < /dev/null 2> /dev/null || acl_probe_rc=$?
+                if [[ $acl_probe_rc -eq 0 ]]; then
+                    return 0
+                fi
+                # Only test's ordinary false status proves the invoking user
+                # cannot write here. Timeout, auth, and execution failures are
+                # unknown and must classify the ancestor as mutable.
+                if [[ $acl_probe_rc -ne 1 ]]; then
+                    return 0
+                fi
             else
                 return 0
             fi
@@ -596,6 +1758,16 @@ _mole_privileged_path_has_mutable_ancestor() {
 safe_sudo_remove() {
     local path="$1"
     local precomputed_size_kb="${2:-}"
+    local deadline_seconds="${3:-}"
+    local expected_parent="${4:-}"
+    local expected_parent_id="${5:-}"
+    local expected_target_id="${6:-}"
+
+    local pending_clean_cancel="${MOLE_CLEAN_CANCEL_STATUS:-0}"
+    if [[ "${MOLE_CURRENT_COMMAND:-}" == "clean" &&
+        ("$pending_clean_cancel" -eq 124 || "$pending_clean_cancel" -ge 128) ]]; then
+        return "$pending_clean_cancel"
+    fi
 
     if ! validate_path_for_deletion "$path"; then
         if declare -f should_protect_path > /dev/null 2>&1 && should_protect_path "$path"; then
@@ -622,10 +1794,19 @@ safe_sudo_remove() {
         return 1
     fi
 
+    # This policy must run before dry-run/test-mode returns so preview and real
+    # privileged cleanup agree on the eligible target set.
+    if declare -f holds_compiled_model_cache > /dev/null 2>&1 && holds_compiled_model_cache "$path" 2> /dev/null; then
+        debug_log "Skipped sudo removal for compiled model cache: $path"
+        log_operation "${MOLE_CURRENT_COMMAND:-clean}" "SKIPPED" "$path" "compiled model cache"
+        return "$MOLE_ERR_PROTECTED_PATH"
+    fi
+
     if _mole_privileged_path_has_mutable_ancestor "$path"; then
         if [[ ${EUID:-0} -ne 0 ]]; then
             debug_log "Downgrading sudo remove below mutable parent: $path"
-            safe_remove "$path" true
+            safe_remove "$path" true "" "$deadline_seconds" \
+                "$expected_parent" "$expected_parent_id" "$expected_target_id"
             return $?
         fi
         debug_log "Refusing sudo remove below mutable parent: $path"
@@ -633,7 +1814,13 @@ safe_sudo_remove() {
     fi
 
     if [[ "${MOLE_DRY_RUN:-0}" == "1" ]]; then
-        _record_file_ops_dry_run_target "$path" "$precomputed_size_kb"
+        local dry_record_rc=0
+        _record_file_ops_dry_run_target \
+            "$path" "$precomputed_size_kb" || dry_record_rc=$?
+        if [[ $dry_record_rc -eq 124 || $dry_record_rc -ge 128 ]]; then
+            _mole_record_clean_cancellation "$dry_record_rc"
+            return "$dry_record_rc"
+        fi
     fi
 
     if [[ "${MOLE_TEST_MODE:-0}" == "1" || "${MOLE_TEST_NO_AUTH:-0}" == "1" ]]; then
@@ -653,22 +1840,59 @@ safe_sudo_remove() {
             local file_size=""
             local file_age=""
 
-            if sudo -n test -e "$path" 2> /dev/null; then
+            local exists_rc=0
+            _mole_bounded_sudo "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
+                -n test -e "$path" < /dev/null 2> /dev/null || exists_rc=$?
+            if [[ $exists_rc -eq 124 || $exists_rc -ge 128 ]]; then
+                _mole_record_clean_cancellation "$exists_rc"
+                return "$exists_rc"
+            fi
+            if [[ $exists_rc -eq 0 ]]; then
                 local size_kb=0
                 if [[ -n "$precomputed_size_kb" ]]; then
                     if [[ "$precomputed_size_kb" =~ ^[0-9]+$ ]]; then
                         size_kb="$precomputed_size_kb"
                     fi
                 else
-                    size_kb=$(run_with_timeout "$MOLE_TIMEOUT_DISK_VERIFY_SEC" sudo -n du -skP "$path" 2> /dev/null | awk '{print $1}' || echo "0")
+                    local size_rc=0
+                    size_kb=$(_mole_bounded_sudo "$MOLE_TIMEOUT_DISK_VERIFY_SEC" \
+                        -n du -skP "$path" < /dev/null 2> /dev/null | awk '{print $1}') || size_rc=$?
+                    if [[ $size_rc -eq 124 || $size_rc -ge 128 ]]; then
+                        _mole_record_clean_cancellation "$size_rc"
+                        return "$size_rc"
+                    fi
+                    [[ $size_rc -eq 0 ]] || size_kb=0
                 fi
                 if [[ "$size_kb" -gt 0 ]]; then
                     file_size=$(bytes_to_human "$((size_kb * 1024))")
                 fi
 
-                if sudo -n test -f "$path" 2> /dev/null || sudo -n test -d "$path" 2> /dev/null; then
-                    local mod_time
-                    mod_time=$(sudo -n stat -f%m "$path" 2> /dev/null || echo "0")
+                local type_probe_rc=0
+                _mole_bounded_sudo "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
+                    -n test -f "$path" < /dev/null 2> /dev/null || type_probe_rc=$?
+                if [[ $type_probe_rc -eq 124 || $type_probe_rc -ge 128 ]]; then
+                    _mole_record_clean_cancellation "$type_probe_rc"
+                    return "$type_probe_rc"
+                fi
+                if [[ $type_probe_rc -ne 0 ]]; then
+                    type_probe_rc=0
+                    _mole_bounded_sudo "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
+                        -n test -d "$path" < /dev/null 2> /dev/null || type_probe_rc=$?
+                    if [[ $type_probe_rc -eq 124 || $type_probe_rc -ge 128 ]]; then
+                        _mole_record_clean_cancellation "$type_probe_rc"
+                        return "$type_probe_rc"
+                    fi
+                fi
+                if [[ $type_probe_rc -eq 0 ]]; then
+                    local mod_time=0
+                    local stat_rc=0
+                    mod_time=$(_mole_bounded_sudo "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
+                        -n stat -f%m "$path" < /dev/null 2> /dev/null) || stat_rc=$?
+                    if [[ $stat_rc -eq 124 || $stat_rc -ge 128 ]]; then
+                        _mole_record_clean_cancellation "$stat_rc"
+                        return "$stat_rc"
+                    fi
+                    [[ $stat_rc -eq 0 ]] || mod_time=0
                     local now
                     now=$(date +%s 2> /dev/null || echo "0")
                     if [[ "$mod_time" -gt 0 && "$now" -gt 0 ]]; then
@@ -694,21 +1918,96 @@ safe_sudo_remove() {
             if [[ "$precomputed_size_kb" =~ ^[0-9]+$ ]]; then
                 size_kb="$precomputed_size_kb"
             fi
-        elif sudo -n test -e "$path" 2> /dev/null; then
-            size_kb=$(run_with_timeout "$MOLE_TIMEOUT_DISK_VERIFY_SEC" sudo -n du -skP "$path" 2> /dev/null | awk '{print $1}' || echo "0")
+        else
+            local exists_probe_rc=0
+            local exists_probe_timeout=""
+            exists_probe_timeout=$(_mole_timeout_with_deadline "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
+                "$deadline_seconds") || exists_probe_rc=$?
+            if [[ $exists_probe_rc -eq 0 ]]; then
+                _mole_bounded_sudo "$exists_probe_timeout" \
+                    -n test -e "$path" < /dev/null 2> /dev/null || exists_probe_rc=$?
+            fi
+            if [[ $exists_probe_rc -eq 124 ]]; then
+                _mole_record_clean_cancellation 124
+                return 124
+            fi
+            if [[ $exists_probe_rc -ge 128 ]]; then
+                _mole_record_clean_cancellation "$exists_probe_rc"
+                return "$exists_probe_rc"
+            fi
+            if [[ $exists_probe_rc -eq 0 ]]; then
+                local size_probe_rc=0
+                local size_probe_timeout=""
+                size_probe_timeout=$(_mole_timeout_with_deadline "$MOLE_TIMEOUT_DISK_VERIFY_SEC" \
+                    "$deadline_seconds") || size_probe_rc=$?
+                if [[ $size_probe_rc -eq 0 ]]; then
+                    size_kb=$(_mole_bounded_sudo "$size_probe_timeout" \
+                        -n du -skP "$path" < /dev/null 2> /dev/null | awk '{print $1}') || size_probe_rc=$?
+                fi
+                if [[ $size_probe_rc -eq 124 ]]; then
+                    MOLE_CLEAN_SIZING_TIMEOUTS=$((${MOLE_CLEAN_SIZING_TIMEOUTS:-0} + 1))
+                fi
+                if [[ $size_probe_rc -ge 128 ]]; then
+                    _mole_record_clean_cancellation "$size_probe_rc"
+                    return "$size_probe_rc"
+                fi
+                [[ $size_probe_rc -eq 0 && "$size_kb" =~ ^[0-9]+$ ]] || size_kb=0
+            fi
         fi
         if [[ "$size_kb" =~ ^[0-9]+$ ]] && [[ "$size_kb" -gt 0 ]]; then
             size_human=$(bytes_to_human "$((size_kb * 1024))" 2> /dev/null || echo "${size_kb}KB")
         fi
     fi
 
+    # Keep the same last-mile policy as safe_remove: privileged cleanup must
+    # also fail closed if a compiled-model cache appears during size probing.
+    if declare -f holds_compiled_model_cache > /dev/null 2>&1 && holds_compiled_model_cache "$path" 2> /dev/null; then
+        debug_log "Skipped sudo removal after compiled model cache appeared: $path"
+        log_operation "${MOLE_CURRENT_COMMAND:-clean}" "SKIPPED" "$path" "compiled model cache"
+        return "$MOLE_ERR_PROTECTED_PATH"
+    fi
+
     local output
     local ret=0
-    output=$(sudo -n rm -rf "$path" 2>&1) || ret=$? # safe_remove
+    if [[ -n "$expected_parent" ]] && ! _mole_path_matches_identity \
+        "$path" "$expected_parent" "$expected_parent_id" "$expected_target_id"; then
+        debug_log "Refusing privileged removal after final path identity changed: $path"
+        log_operation "${MOLE_CURRENT_COMMAND:-clean}" "SKIPPED" "$path" "identity changed"
+        return 1
+    fi
+    local remove_timeout=""
+    local section_deadline_spent=0
+    remove_timeout=$(_mole_timeout_with_deadline "$MOLE_TIMEOUT_DISK_VERIFY_SEC" \
+        "$deadline_seconds") || ret=$?
+    if [[ $ret -eq 0 ]]; then
+        output=$(_mole_bounded_sudo "$remove_timeout" \
+            -n rm -rf "$path" < /dev/null 2>&1) || ret=$? # SAFE: safe_sudo_remove validated the exact immutable-ancestor target above
+    else
+        # The section's own wall-clock budget ran out, so rm never started.
+        section_deadline_spent=1
+    fi
 
     if [[ $ret -eq 0 ]]; then
         log_operation "${MOLE_CURRENT_COMMAND:-clean}" "REMOVED" "$path" "$size_human"
         return 0
+    fi
+
+    if [[ $ret -eq 124 ]]; then
+        if [[ $section_deadline_spent -eq 1 ]]; then
+            # The section prints its own "time limit reached" line; counting it
+            # here too would tell the user to raise the per-item removal budget,
+            # which is not the budget that ran out.
+            log_operation "${MOLE_CURRENT_COMMAND:-clean}" "SKIPPED" "$path" "section time limit reached"
+        else
+            log_operation "${MOLE_CURRENT_COMMAND:-clean}" "FAILED" "$path" "removal timed out"
+            MOLE_CLEAN_REMOVAL_TIMEOUTS=$((${MOLE_CLEAN_REMOVAL_TIMEOUTS:-0} + 1))
+            _mole_record_removal_timeout_path "$path"
+        fi
+        return 124
+    fi
+    if [[ $ret -ge 128 ]]; then
+        _mole_record_clean_cancellation "$ret"
+        return "$ret"
     fi
 
     case "$output" in
@@ -744,7 +2043,7 @@ safe_sudo_remove() {
 # every call for forensic review. Designed for destructive paths where undo
 # matters (e.g. uninstall). Not used by cache-clean paths.
 #
-# Usage: mole_delete <path> [needs_sudo=false]
+# Usage: mole_delete <path> [needs_sudo=false] [expected_dev_inode_mtime]
 #
 # Environment:
 #   MOLE_DELETE_MODE      "permanent" (default) or "trash"; other values fail
@@ -762,6 +2061,7 @@ safe_sudo_remove() {
 mole_delete() {
     local path="$1"
     local needs_sudo="${2:-false}"
+    local expected_identity="${3:-}"
     local mode="${MOLE_DELETE_MODE:-permanent}"
 
     [[ -z "$path" ]] && return 1
@@ -817,8 +2117,9 @@ mole_delete() {
             if [[ "${MOLE_TEST_MODE:-0}" == "1" || "${MOLE_TEST_NO_AUTH:-0}" == "1" ]]; then
                 du_rc=1
             else
-                raw_size=$(run_with_timeout "$MOLE_TIMEOUT_DISK_VERIFY_SEC" sudo -n du -skP "$path" 2> /dev/null | awk '{print $1; exit}')
-                du_rc=${PIPESTATUS[0]}
+                raw_size=$(run_with_timeout "$MOLE_TIMEOUT_DISK_VERIFY_SEC" \
+                    sudo -n du -skP "$path" 2> /dev/null |
+                    awk '{print $1; exit}') || du_rc=$?
             fi
         else
             raw_size=$(get_path_size_kb "$path" 2> /dev/null) || du_rc=$?
@@ -826,13 +2127,59 @@ mole_delete() {
         if [[ "$du_rc" -eq 0 && "$raw_size" =~ ^[0-9]+$ ]]; then
             size_kb="$raw_size"
         fi
+        # Ctrl-C and other signals are cancellation, not an unknown-size
+        # measurement. Stop before any dry-run registration, Trash move, or
+        # permanent removal so the user's interrupt cannot be ignored.
+        if [[ $du_rc -eq 124 || $du_rc -ge 128 ]]; then
+            local cancel_status="interrupted"
+            [[ $du_rc -eq 124 ]] && cancel_status="timed-out"
+            _mole_delete_log "$mode" "$size_kb" "$cancel_status" "$path"
+            return "$du_rc"
+        fi
+    fi
+
+    local expected_parent=""
+    local expected_parent_id=""
+    local expected_target_id=""
+    if [[ -n "$expected_identity" ]]; then
+        if ! _mole_snapshot_path_identity "$path"; then
+            _mole_delete_log "$mode" "$size_kb" "identity-changed" "$path"
+            return 1
+        fi
+        expected_parent="$_MOLE_PATH_SNAPSHOT_PARENT"
+        expected_parent_id="$_MOLE_PATH_SNAPSHOT_PARENT_ID"
+        expected_target_id="$_MOLE_PATH_SNAPSHOT_TARGET_ID"
+        local current_identity=""
+        local identity_rc=0
+        current_identity=$(run_with_timeout "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
+            "$STAT_BSD" -f%d:%i:%m "$path" 2> /dev/null) || identity_rc=$?
+        if [[ $identity_rc -eq 124 || $identity_rc -ge 128 ]]; then
+            local identity_status="interrupted"
+            [[ $identity_rc -eq 124 ]] && identity_status="timed-out"
+            _mole_delete_log "$mode" "$size_kb" "$identity_status" "$path"
+            return "$identity_rc"
+        fi
+        if [[ $identity_rc -ne 0 || "$current_identity" != "$expected_identity" ||
+            "$expected_target_id" != "${expected_identity%:*}" ||
+            "$expected_target_id" != "${current_identity%:*}" ]]; then
+            _mole_delete_log "$mode" "$size_kb" "identity-changed" "$path"
+            debug_log "Refusing deletion after selected path identity changed: $path"
+            return 1
+        fi
     fi
 
     if [[ "${MOLE_DRY_RUN:-0}" == "1" ]]; then
+        local preview_rc=0
         if [[ "$size_kb" =~ ^[0-9]+$ ]]; then
-            _record_file_ops_dry_run_target "$path" "$size_kb"
+            _record_file_ops_dry_run_target "$path" "$size_kb" || preview_rc=$?
         else
-            _record_file_ops_dry_run_target "$path"
+            _record_file_ops_dry_run_target "$path" || preview_rc=$?
+        fi
+        if [[ $preview_rc -eq 124 || $preview_rc -ge 128 ]]; then
+            local preview_status="interrupted"
+            [[ $preview_rc -eq 124 ]] && preview_status="timed-out"
+            _mole_delete_log "$mode" "$size_kb" "$preview_status" "$path"
+            return "$preview_rc"
         fi
         debug_log "[DRY RUN] Would delete ($mode): $path"
         _mole_delete_log "$mode" "$size_kb" "dry-run" "$path"
@@ -850,7 +2197,9 @@ mole_delete() {
     # fail closed instead of silently switching to permanent removal.
     if [[ "$mode" == "trash" ]]; then
         local trash_rc=0
-        _mole_move_to_trash "$path" "$needs_sudo" || trash_rc=$?
+        _mole_move_to_trash "$path" "$needs_sudo" \
+            "$expected_parent" "$expected_parent_id" \
+            "$expected_target_id" || trash_rc=$?
         if [[ $trash_rc -eq 0 ]]; then
             _mole_delete_log "trash" "$size_kb" "ok" "$path"
             log_operation "${MOLE_CURRENT_COMMAND:-uninstall}" "TRASHED" "$path" "${size_kb}KB"
@@ -873,6 +2222,12 @@ mole_delete() {
             debug_log "Trash move stopped because a mutable parent was detected: $path"
             return "$MOLE_ERR_MUTABLE_PARENT"
         fi
+        if [[ $trash_rc -eq 124 || $trash_rc -ge 128 ]]; then
+            local trash_status="interrupted"
+            [[ $trash_rc -eq 124 ]] && trash_status="timed-out"
+            _mole_delete_log "trash" "$size_kb" "$trash_status" "$path"
+            return "$trash_rc"
+        fi
         _mole_delete_log "trash" "$size_kb" "trash-failed" "$path"
         log_operation "${MOLE_CURRENT_COMMAND:-uninstall}" "SKIPPED" "$path" "trash-failed"
         if [[ -z "${_MOLE_TRASH_UNAVAILABLE_WARNED:-}" ]]; then
@@ -894,16 +2249,26 @@ mole_delete() {
         # regular paths and symlinks before either helper can downgrade.
         rc=$MOLE_ERR_MUTABLE_PARENT
     elif [[ -L "$path" ]]; then
-        safe_remove_symlink "$path" "$needs_sudo" || rc=$?
+        safe_remove_symlink "$path" "$needs_sudo" \
+            "$expected_parent" "$expected_parent_id" \
+            "$expected_target_id" || rc=$?
     elif [[ "$needs_sudo" == "true" ]]; then
-        safe_sudo_remove "$path" "$size_kb" || rc=$?
+        safe_sudo_remove "$path" "$size_kb" "" \
+            "$expected_parent" "$expected_parent_id" \
+            "$expected_target_id" || rc=$?
     else
-        safe_remove "$path" "true" || rc=$?
+        safe_remove "$path" "true" "$size_kb" "" \
+            "$expected_parent" "$expected_parent_id" \
+            "$expected_target_id" || rc=$?
     fi
 
     local status_label="ok"
     if [[ $rc -eq $MOLE_ERR_MUTABLE_PARENT ]]; then
         status_label="mutable-parent"
+    elif [[ $rc -eq 124 ]]; then
+        status_label="timed-out"
+    elif [[ $rc -ge 128 ]]; then
+        status_label="interrupted"
     elif [[ $rc -ne 0 ]]; then
         status_label="error"
     fi
@@ -936,13 +2301,18 @@ _mole_path_is_immediate_child_of() {
     [[ -n "$child" && "$child" != */* ]]
 }
 
+_mole_path_is_application_bundle() {
+    local path="${1%/}"
+    _mole_path_is_immediate_child_of "$path" "/Applications" &&
+        [[ "${path##*/}" == *.[aA][pP][pP] ]]
+}
+
 # Finder and third-party Trash helpers can fail on app bundles and TCC-managed
 # app data even after authentication. Route only these exact one-level targets
 # through the direct, recoverable Trash mover.
 _mole_path_requires_direct_trash() {
     local path="${1%/}"
-    if _mole_path_is_immediate_child_of "$path" "/Applications" &&
-        [[ "${path##*/}" == *.app ]]; then
+    if _mole_path_is_application_bundle "$path"; then
         return 0
     fi
 
@@ -954,15 +2324,87 @@ _mole_path_requires_direct_trash() {
     return 1
 }
 
+# Refresh the process evidence for one Trash target, then rebind its physical
+# identity. The process table may be reused during discovery, but a distinct app
+# can start before a later item reaches the move sink; stale evidence must never
+# authorize that move.
+_mole_trash_target_still_safe() {
+    local path="$1"
+    local expected_parent="${2:-}"
+    local expected_parent_id="${3:-}"
+    local expected_target_id="${4:-}"
+
+    _mole_reset_process_snapshot
+    local live_cache_guard_rc=0
+    _mole_should_refuse_live_user_cache_path "$path" || live_cache_guard_rc=$?
+    if [[ $live_cache_guard_rc -eq 0 ]]; then
+        debug_log "Skipped Trash move after live user cache appeared: $path"
+        log_operation "${MOLE_CURRENT_COMMAND:-uninstall}" "SKIPPED" "$path" "live user cache"
+        return 1
+    fi
+    if [[ $live_cache_guard_rc -eq 124 || $live_cache_guard_rc -ge 128 ]]; then
+        _mole_record_clean_cancellation "$live_cache_guard_rc"
+        return "$live_cache_guard_rc"
+    fi
+
+    if [[ -n "$expected_parent" ]]; then
+        _mole_bound_path_matches "$path" "$expected_parent" \
+            "$expected_parent_id" "$expected_target_id"
+        return $?
+    fi
+    _mole_bound_path_matches "$path" "$_MOLE_CONTAINER_CACHE_PROBE_PARENT" \
+        "$_MOLE_CONTAINER_CACHE_PROBE_PARENT_ID" \
+        "$_MOLE_CONTAINER_CACHE_PROBE_TARGET_ID"
+}
+
+# Finder's Trash API can move package-installed app bundles that macOS App
+# Management blocks from a direct mv. Run it only as the invoking user and only
+# for an exact one-level /Applications/*.app target selected above.
+_mole_move_app_to_trash_via_finder() {
+    local path="$1"
+    local expected_parent="${2:-}"
+    local expected_parent_id="${3:-}"
+    local expected_target_id="${4:-}"
+    local finder_rc=0
+
+    _mole_path_is_application_bundle "$path" || return 1
+    _mole_trash_target_still_safe "$path" "$expected_parent" \
+        "$expected_parent_id" "$expected_target_id" || return 1
+
+    run_with_timeout "$MOLE_TIMEOUT_DISK_VERIFY_SEC" osascript - "$path" > /dev/null 2>&1 << 'APPLESCRIPT' || finder_rc=$?
+on run argv
+    set p to POSIX file (item 1 of argv)
+    tell application "Finder"
+        delete p
+    end tell
+end run
+APPLESCRIPT
+
+    if [[ $finder_rc -eq 124 || $finder_rc -ge 128 ]]; then
+        return "$finder_rc"
+    elif [[ $finder_rc -ne 0 ]] || [[ -e "$path" || -L "$path" ]]; then
+        debug_log "Finder failed to move application to Trash: $path"
+        return 1
+    fi
+
+    debug_log "Finder moved application to Trash: $path"
+    return 0
+}
+
 # Move a path to the macOS Trash. Test harnesses set MOLE_TEST_TRASH_DIR to
 # redirect the move to a tmpdir, avoiding any Finder/osascript interaction.
 _mole_move_to_trash() {
     local path="$1"
     local needs_sudo="${2:-false}"
+    local expected_parent="${3:-}"
+    local expected_parent_id="${4:-}"
+    local expected_target_id="${5:-}"
 
     if [[ -n "${MOLE_TEST_TRASH_DIR:-}" ]]; then
         mkdir -p "$MOLE_TEST_TRASH_DIR" 2> /dev/null || return 1
         local dest="$MOLE_TEST_TRASH_DIR/$(basename "$path").$$.$(date +%s 2> /dev/null || echo 0)"
+        _mole_trash_target_still_safe "$path" "$expected_parent" \
+            "$expected_parent_id" "$expected_target_id" || return 1
         mv "$path" "$dest" 2> /dev/null
         return $?
     fi
@@ -972,19 +2414,47 @@ _mole_move_to_trash() {
         return 1
     fi
 
-    if [[ "$needs_sudo" == "true" ]] || _mole_path_requires_direct_trash "$path"; then
-        _mole_move_path_to_user_trash "$path" "$needs_sudo"
+    if [[ "$needs_sudo" == "true" ]]; then
+        _mole_move_path_to_user_trash "$path" "$needs_sudo" \
+            "$expected_parent" "$expected_parent_id" "$expected_target_id"
         return $?
+    fi
+
+    if _mole_path_requires_direct_trash "$path"; then
+        local direct_rc=0
+        _mole_move_path_to_user_trash "$path" false \
+            "$expected_parent" "$expected_parent_id" \
+            "$expected_target_id" || direct_rc=$?
+        if [[ $direct_rc -eq $MOLE_ERR_PRIVACY_DENIED ]] &&
+            _mole_path_is_application_bundle "$path"; then
+            debug_log "Direct Trash move was denied; retrying application through Finder: $path"
+            local finder_rc=0
+            _mole_move_app_to_trash_via_finder "$path" \
+                "$expected_parent" "$expected_parent_id" \
+                "$expected_target_id" || finder_rc=$?
+            [[ $finder_rc -eq 0 ]] && return 0
+            [[ $finder_rc -eq 124 || $finder_rc -ge 128 ]] && return "$finder_rc"
+        fi
+        return "$direct_rc"
     fi
 
     # Prefer the `trash` CLI (Homebrew formula) for normal user-owned paths.
     if command -v trash > /dev/null 2>&1; then
-        trash "$path" > /dev/null 2>&1 && return 0
+        local trash_rc=0
+        _mole_trash_target_still_safe "$path" "$expected_parent" \
+            "$expected_parent_id" "$expected_target_id" || return 1
+        run_with_timeout "$MOLE_TIMEOUT_DISK_VERIFY_SEC" \
+            trash "$path" > /dev/null 2>&1 || trash_rc=$?
+        [[ $trash_rc -eq 0 ]] && return 0
+        [[ $trash_rc -eq 124 || $trash_rc -ge 128 ]] && return "$trash_rc"
     fi
 
     # AppleScript fallback. Pass the path via argv so special chars (quotes,
     # backslashes) cannot break out of the quoted string.
-    osascript - "$path" > /dev/null 2>&1 << 'APPLESCRIPT'
+    _mole_trash_target_still_safe "$path" "$expected_parent" \
+        "$expected_parent_id" "$expected_target_id" || return 1
+    run_with_timeout "$MOLE_TIMEOUT_DISK_VERIFY_SEC" \
+        osascript - "$path" > /dev/null 2>&1 << 'APPLESCRIPT'
 on run argv
     set p to POSIX file (item 1 of argv)
     tell application "Finder"
@@ -1058,6 +2528,9 @@ _mole_create_privileged_trash_stage() {
 _mole_move_path_to_user_trash() {
     local path="$1"
     local needs_sudo="${2:-false}"
+    local expected_parent="${3:-}"
+    local expected_parent_id="${4:-}"
+    local expected_target_id="${5:-}"
 
     if [[ "${MOLE_TEST_MODE:-0}" == "1" || "${MOLE_TEST_NO_AUTH:-0}" == "1" ]]; then
         return 1
@@ -1146,6 +2619,23 @@ _mole_move_path_to_user_trash() {
         dest="$trash_dir/$base.$ts.$$.$suffix"
     done
 
+    if [[ -n "$expected_parent" ]]; then
+        if ! _mole_path_matches_identity \
+            "$path" "$expected_parent" "$expected_parent_id" "$expected_target_id"; then
+            debug_log "Refusing Trash move after selected path identity changed: $path"
+            return 1
+        fi
+    elif [[ -n "${_MOLE_TRASH_MOVE_EXPECTED_PATH:-}" && "$_MOLE_TRASH_MOVE_EXPECTED_PATH" == "$path" ]]; then
+        if ! _mole_path_matches_identity \
+            "$path" \
+            "$_MOLE_TRASH_MOVE_EXPECTED_PARENT" \
+            "$_MOLE_TRASH_MOVE_EXPECTED_PARENT_ID" \
+            "$_MOLE_TRASH_MOVE_EXPECTED_TARGET_ID"; then
+            debug_log "Refusing Trash move after source path identity changed: $path"
+            return 1
+        fi
+    fi
+
     local move_output=""
     local move_rc=0
     if [[ "$needs_sudo" == "true" ]]; then
@@ -1167,15 +2657,30 @@ _mole_move_path_to_user_trash() {
         # between source and staging if it fails midway.
         local source_device=""
         local stage_device=""
-        source_device=$($STAT_BSD -f%d "$path" 2> /dev/null || true)
-        stage_device=$($STAT_BSD -f%d "$stage_dir" 2> /dev/null || true)
+        local device_rc=0
+        source_device=$($STAT_BSD -f%d "$path" 2> /dev/null) || device_rc=$?
+        [[ $device_rc -eq 124 || $device_rc -ge 128 ]] && return "$device_rc"
+        if [[ $device_rc -eq 0 ]]; then
+            stage_device=$($STAT_BSD -f%d "$stage_dir" 2> /dev/null) || device_rc=$?
+        fi
+        [[ $device_rc -eq 124 || $device_rc -ge 128 ]] && return "$device_rc"
         if [[ ! "$source_device" =~ ^[0-9]+$ || "$source_device" != "$stage_device" ]]; then
             sudo -n /bin/rm -rf "$stage_dir" 2> /dev/null || true # SAFE: exact empty staging directory created by mktemp above
             debug_log "Refusing cross-volume privileged Trash staging: $path"
             return 1
         fi
 
-        if ! sudo -n /bin/mv "$path" "$stage_path" 2> /dev/null; then
+        local stage_move_rc=0
+        _mole_trash_target_still_safe "$path" "$expected_parent" \
+            "$expected_parent_id" "$expected_target_id" || return 1
+        sudo -n /bin/mv "$path" "$stage_path" 2> /dev/null || stage_move_rc=$?
+        if [[ $stage_move_rc -ne 0 ]]; then
+            if [[ $stage_move_rc -eq 124 || $stage_move_rc -ge 128 ]]; then
+                if [[ -e "$stage_path" || -L "$stage_path" ]]; then
+                    log_error "Trash move interrupted; item preserved for recovery at: $stage_path"
+                fi
+                return "$stage_move_rc"
+            fi
             sudo -n /bin/rm -rf "$stage_dir" 2> /dev/null || true # SAFE: exact root-owned directory created by mktemp above
             debug_log "Failed to move path into immutable Trash staging: $path"
             return 1
@@ -1188,9 +2693,21 @@ _mole_move_path_to_user_trash() {
         # filesystem and can block on it. Once either payload ownership or stage
         # ownership changes, preserve on any later failure rather than
         # reintroducing user-owned content into the privileged source path.
-        if ! sudo -n /bin/chmod 700 "$stage_dir" 2> /dev/null ||
-            ! sudo -n /usr/sbin/chown -Rhx "$owner_uid:$owner_gid" "$stage_path" 2> /dev/null ||
-            ! sudo -n /usr/sbin/chown "$owner_uid:$owner_gid" "$stage_dir" 2> /dev/null; then
+        local handoff_rc=0
+        sudo -n /bin/chmod 700 "$stage_dir" 2> /dev/null || handoff_rc=$?
+        if [[ $handoff_rc -eq 0 ]]; then
+            sudo -n /usr/sbin/chown -Rhx "$owner_uid:$owner_gid" \
+                "$stage_path" 2> /dev/null || handoff_rc=$?
+        fi
+        if [[ $handoff_rc -eq 0 ]]; then
+            sudo -n /usr/sbin/chown "$owner_uid:$owner_gid" \
+                "$stage_dir" 2> /dev/null || handoff_rc=$?
+        fi
+        if [[ $handoff_rc -ne 0 ]]; then
+            if [[ $handoff_rc -eq 124 || $handoff_rc -ge 128 ]]; then
+                log_error "Trash move interrupted; item preserved for recovery at: $stage_path"
+                return "$handoff_rc"
+            fi
             log_error "Trash move failed; item preserved for recovery at: $stage_path"
             debug_log "Failed to hand Trash staging directory to invoking user"
             return 1
@@ -1203,6 +2720,14 @@ _mole_move_path_to_user_trash() {
         fi
 
         if [[ $move_rc -ne 0 || -e "$stage_path" || -L "$stage_path" ]]; then
+            if [[ $move_rc -eq 124 || $move_rc -ge 128 ]]; then
+                if [[ -e "$stage_path" || -L "$stage_path" ]]; then
+                    log_error "Trash move interrupted; item preserved for recovery at: $stage_path"
+                elif [[ -e "$dest" || -L "$dest" ]]; then
+                    debug_log "Trash move completed before interruption was observed: $dest"
+                fi
+                return "$move_rc"
+            fi
             move_rc=1
             # stage_dir is user-controlled after the ownership handoff above.
             # Never let root resolve stage_path again: it may have been replaced
@@ -1215,9 +2740,12 @@ _mole_move_path_to_user_trash() {
             sudo -n /bin/rmdir "$stage_dir" 2> /dev/null || true
         fi
     else
+        _mole_trash_target_still_safe "$path" "$expected_parent" \
+            "$expected_parent_id" "$expected_target_id" || return 1
         move_output=$(mv -n "$path" "$dest" 2>&1) || move_rc=$?
     fi
     if [[ $move_rc -ne 0 ]]; then
+        [[ $move_rc -eq 124 || $move_rc -ge 128 ]] && return "$move_rc"
         debug_log "Failed to move path directly to invoking user Trash: $path -> $dest: $move_output"
         case "$move_output" in
             *"Operation not permitted"* | *"operation not permitted"* | \
@@ -1237,22 +2765,118 @@ _mole_move_path_to_user_trash() {
 }
 
 # Batched Trash move for non-sudo, non-symlink paths. Removes the per-file
-# subprocess fan-out that made AppleScript-fallback uninstalls feel frozen
-# (100 files * ~1s each). Returns 0 only when the entire batch landed in the
-# Trash; callers must fall back to the per-file path on non-zero so nothing
-# is silently skipped.
+# Finder/AppleScript fan-out that made uninstalls feel frozen. The caller binds
+# each item to its original physical parent and inode through the snapshot
+# arrays below; this helper rechecks that identity before every direct move.
+_MOLE_TRASH_BATCH_SNAPSHOT_PATHS=()
+_MOLE_TRASH_BATCH_SNAPSHOT_PARENTS=()
+_MOLE_TRASH_BATCH_SNAPSHOT_PARENT_IDS=()
+_MOLE_TRASH_BATCH_SNAPSHOT_TARGET_IDS=()
+_MOLE_TRASH_BATCH_MOVED_PATHS=()
+_MOLE_TRASH_MOVE_EXPECTED_PATH=""
+_MOLE_TRASH_MOVE_EXPECTED_PARENT=""
+_MOLE_TRASH_MOVE_EXPECTED_PARENT_ID=""
+_MOLE_TRASH_MOVE_EXPECTED_TARGET_ID=""
+
+_MOLE_PATH_SNAPSHOT_PARENT=""
+_MOLE_PATH_SNAPSHOT_PARENT_ID=""
+_MOLE_PATH_SNAPSHOT_TARGET_ID=""
+
+_mole_snapshot_path_identity() {
+    local path="$1"
+    _MOLE_PATH_SNAPSHOT_PARENT=""
+    _MOLE_PATH_SNAPSHOT_PARENT_ID=""
+    _MOLE_PATH_SNAPSHOT_TARGET_ID=""
+
+    [[ -e "$path" || -L "$path" ]] || return 1
+    local lexical_parent="${path%/*}"
+    [[ -n "$lexical_parent" && "$lexical_parent" != "$path" ]] || lexical_parent="/"
+
+    local physical_parent=""
+    physical_parent=$(cd -P "$lexical_parent" 2> /dev/null && pwd -P) || return 1
+    local parent_id=""
+    local target_id=""
+    local identities=""
+    identities=$("$STAT_BSD" -f '%d:%i' "$physical_parent" "$path" 2> /dev/null) || return 1
+    [[ "$identities" == *$'\n'* ]] || return 1
+    parent_id="${identities%%$'\n'*}"
+    target_id="${identities#*$'\n'}"
+    [[ "$parent_id" =~ ^[0-9]+:[0-9]+$ && "$target_id" =~ ^[0-9]+:[0-9]+$ ]] || return 1
+
+    _MOLE_PATH_SNAPSHOT_PARENT="$physical_parent"
+    _MOLE_PATH_SNAPSHOT_PARENT_ID="$parent_id"
+    _MOLE_PATH_SNAPSHOT_TARGET_ID="$target_id"
+}
+
+_mole_path_matches_identity() {
+    local path="$1"
+    local expected_parent="$2"
+    local expected_parent_id="$3"
+    local expected_target_id="$4"
+
+    _mole_snapshot_path_identity "$path" || return 1
+    [[ "$_MOLE_PATH_SNAPSHOT_PARENT" == "$expected_parent" ]] || return 1
+    [[ "$_MOLE_PATH_SNAPSHOT_PARENT_ID" == "$expected_parent_id" ]] || return 1
+    [[ "$_MOLE_PATH_SNAPSHOT_TARGET_ID" == "$expected_target_id" ]]
+}
+
+_mole_bound_path_matches() {
+    local path="$1"
+    local expected_parent="${2:-}"
+    local expected_parent_id="${3:-}"
+    local expected_target_id="${4:-}"
+    [[ -z "$expected_parent" ]] && return 0
+    _mole_path_matches_identity \
+        "$path" "$expected_parent" "$expected_parent_id" "$expected_target_id"
+}
+
 _mole_move_to_trash_batch() {
     local -a paths=("$@")
     [[ ${#paths[@]} -eq 0 ]] && return 0
+    _MOLE_TRASH_BATCH_MOVED_PATHS=()
+
+    local use_bound_snapshots=false
+    if [[ ${#_MOLE_TRASH_BATCH_SNAPSHOT_PATHS[@]} -eq ${#paths[@]} &&
+        ${#_MOLE_TRASH_BATCH_SNAPSHOT_PARENTS[@]} -eq ${#paths[@]} &&
+        ${#_MOLE_TRASH_BATCH_SNAPSHOT_PARENT_IDS[@]} -eq ${#paths[@]} &&
+        ${#_MOLE_TRASH_BATCH_SNAPSHOT_TARGET_IDS[@]} -eq ${#paths[@]} ]]; then
+        use_bound_snapshots=true
+    fi
+
+    local -a expected_parents=()
+    local -a expected_parent_ids=()
+    local -a expected_target_ids=()
+    local index p
+    for ((index = 0; index < ${#paths[@]}; index++)); do
+        p="${paths[$index]}"
+        if [[ "$use_bound_snapshots" == "true" ]]; then
+            [[ "${_MOLE_TRASH_BATCH_SNAPSHOT_PATHS[$index]}" == "$p" ]] || return 1
+            expected_parents+=("${_MOLE_TRASH_BATCH_SNAPSHOT_PARENTS[$index]}")
+            expected_parent_ids+=("${_MOLE_TRASH_BATCH_SNAPSHOT_PARENT_IDS[$index]}")
+            expected_target_ids+=("${_MOLE_TRASH_BATCH_SNAPSHOT_TARGET_IDS[$index]}")
+        else
+            _mole_snapshot_path_identity "$p" || return 1
+            expected_parents+=("$_MOLE_PATH_SNAPSHOT_PARENT")
+            expected_parent_ids+=("$_MOLE_PATH_SNAPSHOT_PARENT_ID")
+            expected_target_ids+=("$_MOLE_PATH_SNAPSHOT_TARGET_ID")
+        fi
+    done
 
     if [[ -n "${MOLE_TEST_TRASH_DIR:-}" ]]; then
         mkdir -p "$MOLE_TEST_TRASH_DIR" 2> /dev/null || return 1
         local ts
         ts=$(date +%s 2> /dev/null || echo 0)
-        local p dest
-        for p in "${paths[@]}"; do
+        local dest
+        for ((index = 0; index < ${#paths[@]}; index++)); do
+            p="${paths[$index]}"
+            _mole_trash_target_still_safe \
+                "$p" \
+                "${expected_parents[$index]}" \
+                "${expected_parent_ids[$index]}" \
+                "${expected_target_ids[$index]}" || return 1
             dest="$MOLE_TEST_TRASH_DIR/$(basename "$p").$$.${ts}.$RANDOM"
-            mv "$p" "$dest" 2> /dev/null || return 1
+            /bin/mv "$p" "$dest" 2> /dev/null || return 1
+            _MOLE_TRASH_BATCH_MOVED_PATHS+=("$p")
         done
         return 0
     fi
@@ -1261,20 +2885,38 @@ _mole_move_to_trash_batch() {
         return 1
     fi
 
-    if command -v trash > /dev/null 2>&1; then
-        trash "${paths[@]}" > /dev/null 2>&1 && return 0
-    fi
-
-    # AppleScript fallback: build one POSIX-file list and tell Finder once.
-    osascript - "${paths[@]}" > /dev/null 2>&1 << 'APPLESCRIPT'
-on run argv
-    set posixList to {}
-    repeat with a in argv
-        set end of posixList to POSIX file (a as text)
-    end repeat
-    tell application "Finder" to delete posixList
-end run
-APPLESCRIPT
+    # Avoid handing a stale lexical batch to a third-party Trash CLI or Finder.
+    # Direct per-item renames keep the helper in one shell process and let us
+    # recheck the bound parent/inode immediately before every move.
+    local failed=0
+    for ((index = 0; index < ${#paths[@]}; index++)); do
+        p="${paths[$index]}"
+        if ! _mole_path_matches_identity \
+            "$p" \
+            "${expected_parents[$index]}" \
+            "${expected_parent_ids[$index]}" \
+            "${expected_target_ids[$index]}"; then
+            failed=1
+            continue
+        fi
+        _MOLE_TRASH_MOVE_EXPECTED_PATH="$p"
+        _MOLE_TRASH_MOVE_EXPECTED_PARENT="${expected_parents[$index]}"
+        _MOLE_TRASH_MOVE_EXPECTED_PARENT_ID="${expected_parent_ids[$index]}"
+        _MOLE_TRASH_MOVE_EXPECTED_TARGET_ID="${expected_target_ids[$index]}"
+        if _mole_move_path_to_user_trash "$p" false \
+            "${expected_parents[$index]}" \
+            "${expected_parent_ids[$index]}" \
+            "${expected_target_ids[$index]}"; then
+            _MOLE_TRASH_BATCH_MOVED_PATHS+=("$p")
+        else
+            failed=1
+        fi
+        _MOLE_TRASH_MOVE_EXPECTED_PATH=""
+        _MOLE_TRASH_MOVE_EXPECTED_PARENT=""
+        _MOLE_TRASH_MOVE_EXPECTED_PARENT_ID=""
+        _MOLE_TRASH_MOVE_EXPECTED_TARGET_ID=""
+    done
+    [[ $failed -eq 0 ]]
 }
 
 _mole_delete_log() {
@@ -1348,10 +2990,25 @@ safe_find_delete() {
         find_args+=("-mtime" "+$age_days")
     fi
 
-    # Iterate results to respect both system protection and user whitelist.
+    local scan_file=""
+    if ! scan_file=$(create_temp_file 2> /dev/null); then
+        return 1
+    fi
+    local scan_rc=0
+    run_with_timeout "$MOLE_TIMEOUT_DISK_VERIFY_SEC" find \
+        "$base_dir" "${find_args[@]}" -print0 < /dev/null > "$scan_file" 2> /dev/null || scan_rc=$?
+    if [[ $scan_rc -ne 0 ]]; then
+        rm -f -- "$scan_file" 2> /dev/null || true # SAFE: exact tracked temp file created above
+        debug_log "Cleanup scan failed for $base_dir (status $scan_rc)"
+        return "$scan_rc"
+    fi
+
+    # Iterate only a completed result set so a timeout cannot authorize
+    # deletion of the partial prefix.
     # Per-caller whitelist gates were missed in past releases (see #710, #724,
     # #738, #744, #757); enforcing here makes the protection structural so
     # new clean_* functions get whitelist enforcement for free.
+    local delete_rc=0
     while IFS= read -r -d '' match; do
         if declare -f should_protect_path > /dev/null 2>&1 && should_protect_path "$match"; then
             continue
@@ -1360,15 +3017,64 @@ safe_find_delete() {
             continue
         fi
         if [[ "${MOLE_DRY_RUN:-0}" == "1" ]] && declare -f record_dry_run_cleanup_target > /dev/null 2>&1; then
-            local match_size_kb
-            match_size_kb=$(get_path_size_kb "$match" 2> /dev/null || echo "0")
+            local match_size_kb=0
+            local match_size_rc=0
+            match_size_kb=$(get_path_size_kb "$match" 2> /dev/null) || match_size_rc=$?
+            if [[ $match_size_rc -eq 124 || $match_size_rc -ge 128 ]]; then
+                delete_rc=$match_size_rc
+                break
+            fi
+            [[ $match_size_rc -eq 0 ]] || match_size_kb=0
             [[ "$match_size_kb" =~ ^[0-9]+$ ]] || match_size_kb=0
             record_dry_run_cleanup_target "$match" "$match_size_kb" 1 true || continue
         fi
-        safe_remove "$match" true || true
-    done < <(command find "$base_dir" "${find_args[@]}" -print0 2> /dev/null < /dev/null || true)
+        local remove_rc=0
+        safe_remove "$match" true || remove_rc=$?
+        if [[ $remove_rc -eq 124 || $remove_rc -ge 128 ]]; then
+            delete_rc=$remove_rc
+            break
+        fi
+        if [[ $remove_rc -ne 0 && $delete_rc -eq 0 ]]; then
+            delete_rc=$remove_rc
+        fi
+    done < "$scan_file"
+    rm -f -- "$scan_file" 2> /dev/null || true # SAFE: exact tracked temp file created above
 
+    return "$delete_rc"
+}
+
+# Run privileged find with a wall-clock budget and closed stdin.
+_mole_bounded_sudo_find() {
+    local duration="${1:-${MOLE_TIMEOUT_DISK_VERIFY_SEC:-30}}"
+    shift || true
+    [[ $# -gt 0 ]] || return 2
+    _mole_bounded_sudo "$duration" -n find "$@" < /dev/null
+}
+
+# Store a privileged scan only after the producer completed successfully. A
+# timeout or any other failure truncates the destination so callers cannot act
+# on a partial prefix.
+_mole_materialize_bounded_sudo_find() {
+    local output_file="$1"
+    local duration="$2"
+    shift 2
+    [[ $# -gt 0 ]] || return 2
+
+    : > "$output_file" || return 1
+    local scan_rc=0
+    _mole_bounded_sudo_find "$duration" "$@" > "$output_file" 2> /dev/null || scan_rc=$?
+    if [[ $scan_rc -ne 0 ]]; then
+        : > "$output_file" || true
+        return "$scan_rc"
+    fi
     return 0
+}
+
+# Keep privileged batch state bounded in Bash. This is a function rather than a
+# public setting so tests can exercise the limit without exposing another user
+# knob or constructing thousands of command-substitution probes.
+_mole_privileged_batch_max_items() {
+    printf '4096\n'
 }
 
 # Safe sudo discovery and deletion
@@ -1377,11 +3083,45 @@ safe_sudo_find_delete() {
     local pattern="$2"
     local age_days="${3:-7}"
     local type_filter="${4:-f}"
+    local max_depth="${5:-5}"
+    local deadline_seconds="${6:-}"
+    local -a name_patterns=("$pattern")
+    if [[ $# -gt 6 ]]; then
+        name_patterns+=("${@:7}")
+    fi
+
+    # Callers use this count to distinguish a completed empty scan from actual
+    # cleanup. It is reset for every invocation and updated only for confirmed
+    # removals or accepted dry-run previews.
+    MOLE_SAFE_SUDO_FIND_DELETE_COUNT=0
+
+    if [[ "$type_filter" != "f" && "$type_filter" != "d" ]]; then
+        log_error "Invalid type filter: $type_filter, must be 'f' or 'd'"
+        return 1
+    fi
+    if [[ ! "$age_days" =~ ^[0-9]+$ ]]; then
+        log_error "Invalid age: $age_days, must be a non-negative integer"
+        return 1
+    fi
+    if [[ ! "$max_depth" =~ ^[1-5]$ ]]; then
+        log_error "Invalid max depth: $max_depth, must be between 1 and 5"
+        return 1
+    fi
+    if [[ -n "$deadline_seconds" && ! "$deadline_seconds" =~ ^[0-9]+$ ]]; then
+        log_error "Invalid cleanup deadline: $deadline_seconds"
+        return 1
+    fi
 
     if [[ "${MOLE_TEST_MODE:-0}" == "1" || "${MOLE_TEST_NO_AUTH:-0}" == "1" ]]; then
         debug_log "Skipping sudo find/delete in test mode: $base_dir"
         return 0
     fi
+
+    # An already-expired overall budget authorizes no privileged probe at all.
+    # Re-clamp every later probe because any preceding command can consume the
+    # final second of the caller's section budget.
+    _mole_timeout_with_deadline "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
+        "$deadline_seconds" > /dev/null || return $?
 
     # Keep the entire sudo-probing body independent of the caller's errexit
     # state. macOS 14's /bin/bash build fires the caller's errexit when a
@@ -1399,42 +3139,132 @@ safe_sudo_find_delete() {
             ;;
     esac
 
-    # Validate base directory (use sudo for permission-restricted dirs)
-    if ! sudo -n test -d "$base_dir" 2> /dev/null; then
-        debug_log "Directory does not exist, skipping: $base_dir"
-        if [[ $restore_errexit -eq 1 ]]; then
-            set -e
+    # Confirm noninteractive authorization before interpreting a failed path
+    # predicate as "not present". Otherwise an expired credential looks like an
+    # empty successful scan and callers can print a false cleanup result.
+    local sudo_rc=0
+    _mole_bounded_sudo_until "$deadline_seconds" "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
+        -n true < /dev/null > /dev/null 2>&1 || sudo_rc=$?
+    if [[ $sudo_rc -ne 0 ]]; then
+        [[ $restore_errexit -eq 1 ]] && set -e
+        [[ $sudo_rc -ge 128 ]] && return "$sudo_rc"
+        [[ $sudo_rc -eq 124 ]] && return 124
+        return "$MOLE_ERR_AUTH_FAILED"
+    fi
+
+    # Validate base directory (use sudo for permission-restricted dirs).
+    local base_rc=0
+    _mole_bounded_sudo_until "$deadline_seconds" "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
+        -n test -d "$base_dir" < /dev/null 2> /dev/null || base_rc=$?
+    if [[ $base_rc -ne 0 ]]; then
+        if [[ $base_rc -ge 128 ]]; then
+            [[ $restore_errexit -eq 1 ]] && set -e
+            return "$base_rc"
         fi
+        if [[ $base_rc -eq 124 ]]; then
+            [[ $restore_errexit -eq 1 ]] && set -e
+            return 124
+        fi
+        # `sudo test` uses status 1 both for a false predicate and for some
+        # authorization failures. Recheck credentials before calling this a
+        # missing directory; a credential may expire after the initial probe.
+        local base_auth_rc=0
+        _mole_bounded_sudo_until "$deadline_seconds" "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
+            -n true < /dev/null > /dev/null 2>&1 || base_auth_rc=$?
+        if [[ $base_auth_rc -ne 0 ]]; then
+            [[ $restore_errexit -eq 1 ]] && set -e
+            [[ $base_auth_rc -ge 128 ]] && return "$base_auth_rc"
+            [[ $base_auth_rc -eq 124 ]] && return 124
+            return "$MOLE_ERR_AUTH_FAILED"
+        fi
+        debug_log "Directory does not exist, skipping: $base_dir"
+        [[ $restore_errexit -eq 1 ]] && set -e
         return 0
     fi
 
-    if sudo -n test -L "$base_dir" 2> /dev/null; then
+    local link_rc=0
+    _mole_bounded_sudo_until "$deadline_seconds" "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
+        -n test -L "$base_dir" < /dev/null 2> /dev/null || link_rc=$?
+    if [[ $link_rc -eq 0 ]]; then
         log_error "Refusing to search symlinked directory: $base_dir"
-        if [[ $restore_errexit -eq 1 ]]; then
-            set -e
-        fi
+        [[ $restore_errexit -eq 1 ]] && set -e
         return 1
     fi
-
-    # Validate type filter
-    if [[ "$type_filter" != "f" && "$type_filter" != "d" ]]; then
-        log_error "Invalid type filter: $type_filter, must be 'f' or 'd'"
-        if [[ $restore_errexit -eq 1 ]]; then
-            set -e
+    if [[ $link_rc -eq 124 ]]; then
+        [[ $restore_errexit -eq 1 ]] && set -e
+        return 124
+    fi
+    if [[ $link_rc -ge 128 ]]; then
+        [[ $restore_errexit -eq 1 ]] && set -e
+        return "$link_rc"
+    fi
+    if [[ $link_rc -eq 1 ]]; then
+        local link_auth_rc=0
+        _mole_bounded_sudo_until "$deadline_seconds" "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
+            -n true < /dev/null > /dev/null 2>&1 || link_auth_rc=$?
+        if [[ $link_auth_rc -ne 0 ]]; then
+            [[ $restore_errexit -eq 1 ]] && set -e
+            [[ $link_auth_rc -ge 128 ]] && return "$link_auth_rc"
+            [[ $link_auth_rc -eq 124 ]] && return 124
+            return "$MOLE_ERR_AUTH_FAILED"
         fi
-        return 1
+    fi
+    if [[ $link_rc -ne 1 ]]; then
+        [[ $restore_errexit -eq 1 ]] && set -e
+        return "$link_rc"
     fi
 
     debug_log "Finding, sudo, in $base_dir: $pattern, age: ${age_days}d, type: $type_filter"
 
-    local find_args=("-maxdepth" "5")
-    # Skip -name if pattern is "*" (matches everything anyway, but adds overhead)
-    if [[ "$pattern" != "*" ]]; then
-        find_args+=("-name" "$pattern")
+    local find_args=("-maxdepth" "$max_depth")
+    local match_all_names=false
+    local name_pattern=""
+    for name_pattern in "${name_patterns[@]}"; do
+        if [[ "$name_pattern" == "*" ]]; then
+            match_all_names=true
+            break
+        fi
+    done
+    if [[ "$match_all_names" != "true" ]]; then
+        if [[ ${#name_patterns[@]} -eq 1 ]]; then
+            find_args+=("-name" "${name_patterns[0]}")
+        else
+            find_args+=("(")
+            local pattern_index=0
+            for ((pattern_index = 0; pattern_index < ${#name_patterns[@]}; pattern_index++)); do
+                [[ $pattern_index -gt 0 ]] && find_args+=("-o")
+                find_args+=("-name" "${name_patterns[$pattern_index]}")
+            done
+            find_args+=(")")
+        fi
     fi
     find_args+=("-type" "$type_filter")
     if [[ "$age_days" -gt 0 ]]; then
         find_args+=("-mtime" "+$age_days")
+    fi
+
+    # Materialize the completed scan before deleting anything. Process
+    # substitution cannot expose the producer's exit status, so it previously
+    # turned timeout 124 into an empty/partial successful scan and could delete
+    # the partial prefix. A failed scan now authorizes no deletion.
+    local scan_file=""
+    if ! scan_file=$(create_temp_file 2> /dev/null); then
+        [[ $restore_errexit -eq 1 ]] && set -e
+        return 1
+    fi
+    local scan_rc=0
+    local scan_timeout=""
+    scan_timeout=$(_mole_timeout_with_deadline "$MOLE_TIMEOUT_DISK_VERIFY_SEC" \
+        "$deadline_seconds") || scan_rc=$?
+    if [[ $scan_rc -eq 0 ]]; then
+        _mole_materialize_bounded_sudo_find "$scan_file" "$scan_timeout" \
+            "$base_dir" "${find_args[@]}" -print0 || scan_rc=$?
+    fi
+    if [[ $scan_rc -ne 0 ]]; then
+        rm -f -- "$scan_file" 2> /dev/null || true # SAFE: exact tracked temp file created above
+        debug_log "Privileged cleanup scan failed for $base_dir (status $scan_rc)"
+        [[ $restore_errexit -eq 1 ]] && set -e
+        return "$scan_rc"
     fi
 
     # Iterate results to respect both system protection and user whitelist.
@@ -1448,11 +3278,36 @@ safe_sudo_find_delete() {
     # Directories and dry-run keep the single-file path so rm -rf handling
     # and preview output stay unchanged.
     local -a batch_files=()
+    local -a batch_identities=()
+    local max_batch_items=""
+    max_batch_items=$(_mole_privileged_batch_max_items)
+    [[ "$max_batch_items" =~ ^[1-9][0-9]*$ ]] || max_batch_items=4096
+    local removed_count=0
+    local delete_rc=0
+    local deadline_reached=false
+    local batch_aborted=false
     while IFS= read -r -d '' match; do
+        if [[ -n "$deadline_seconds" && $SECONDS -ge $deadline_seconds ]]; then
+            deadline_reached=true
+            delete_rc=124
+            break
+        fi
         if should_protect_path "$match"; then
             continue
         fi
+        # Fast-path the active family before the general validator below. The
+        # validator remains authoritative and also normalizes dot aliases so
+        # preview and real cleanup cannot diverge.
+        if _mole_is_active_powerlog_database_path "$match"; then
+            continue
+        fi
         if declare -f is_path_whitelisted > /dev/null && is_path_whitelisted "$match"; then
+            continue
+        fi
+        # Run the same final path policy before preview accounting and real
+        # removal. This keeps aliases such as /./ and case variants out of
+        # both surfaces instead of relying on a raw-string precheck.
+        if ! validate_path_for_deletion "$match"; then
             continue
         fi
         if _mole_privileged_path_has_mutable_ancestor "$match"; then
@@ -1461,9 +3316,19 @@ safe_sudo_find_delete() {
             # caller's own permissions; root invocations skip the path because
             # they have no unprivileged identity to fall back to.
             if [[ ${EUID:-0} -ne 0 ]]; then
-                safe_remove "$match" true || true
+                local mutable_rc=0
+                safe_remove "$match" true "" "$deadline_seconds" || mutable_rc=$?
+                if [[ $mutable_rc -eq 0 ]]; then
+                    removed_count=$((removed_count + 1))
+                elif [[ $mutable_rc -eq 124 || $mutable_rc -ge 128 ]]; then
+                    delete_rc=$mutable_rc
+                    break
+                elif [[ $delete_rc -eq 0 ]]; then
+                    delete_rc=$mutable_rc
+                fi
             else
                 debug_log "Skipping sudo delete below mutable parent: $match"
+                [[ $delete_rc -eq 0 ]] && delete_rc=1
             fi
             continue
         fi
@@ -1471,7 +3336,18 @@ safe_sudo_find_delete() {
             local match_size_kb=0
             local match_size_known=false
             local raw_match_size=""
-            if raw_match_size=$(run_with_timeout "$MOLE_TIMEOUT_DISK_VERIFY_SEC" sudo -n du -skP "$match" 2> /dev/null | awk '{print $1; exit}'); then
+            local size_timeout=""
+            local dry_size_rc=0
+            size_timeout=$(_mole_timeout_with_deadline "$MOLE_TIMEOUT_DISK_VERIFY_SEC" \
+                "$deadline_seconds") || dry_size_rc=$?
+            if [[ $dry_size_rc -eq 0 ]]; then
+                raw_match_size=$(_mole_bounded_sudo "$size_timeout" \
+                    -n du -skP "$match" < /dev/null 2> /dev/null | awk '{print $1; exit}') || dry_size_rc=$?
+            fi
+            if [[ $dry_size_rc -eq 124 || $dry_size_rc -ge 128 ]]; then
+                delete_rc=$dry_size_rc
+                break
+            elif [[ $dry_size_rc -eq 0 ]]; then
                 if [[ "$raw_match_size" =~ ^[0-9]+$ ]]; then
                     match_size_kb="$raw_match_size"
                     match_size_known=true
@@ -1482,56 +3358,137 @@ safe_sudo_find_delete() {
         # -type f never emits symlinks; a path that is one now was swapped
         # after find saw it, and the single-file path refuses those.
         if [[ "$type_filter" == "f" && "${MOLE_DRY_RUN:-0}" != "1" && ! -L "$match" ]]; then
-            if validate_path_for_deletion "$match"; then
+            local identity_timeout=""
+            local match_identity=""
+            local identity_rc=0
+            identity_timeout=$(_mole_timeout_with_deadline "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
+                "$deadline_seconds") || identity_rc=$?
+            if [[ $identity_rc -eq 0 ]]; then
+                match_identity=$(_mole_bounded_sudo "$identity_timeout" \
+                    -n "$STAT_BSD" -f%d:%i:%m "$match" < /dev/null 2> /dev/null) || identity_rc=$?
+            fi
+            if [[ $identity_rc -eq 124 || $identity_rc -ge 128 ]]; then
+                delete_rc=$identity_rc
+                break
+            fi
+            if [[ $identity_rc -eq 0 && "$match_identity" =~ ^[0-9]+:[0-9]+:[0-9]+$ ]]; then
+                if [[ ${#batch_files[@]} -ge $max_batch_items ]]; then
+                    debug_log "Privileged cleanup candidate limit reached for $base_dir"
+                    delete_rc=1
+                    batch_aborted=true
+                    break
+                fi
                 batch_files+=("$match")
+                batch_identities+=("$match_identity")
+            elif [[ $delete_rc -eq 0 ]]; then
+                delete_rc=${identity_rc:-1}
+                [[ $delete_rc -ne 0 ]] || delete_rc=1
             fi
             continue
         fi
-        safe_sudo_remove "$match" || true
-    done < <(sudo -n find "$base_dir" "${find_args[@]}" -print0 2> /dev/null || true)
-
-    if [[ ${#batch_files[@]} -gt 0 ]]; then
-        local batch_rc=0
-        printf '%s\0' "${batch_files[@]}" | sudo -n xargs -0 rm -f -- 2> /dev/null || batch_rc=$?
-
-        # Plain if, not `oplog_enabled && ...`: the short-circuit form returns
-        # 1 when the oplog is disabled and would trip set -e in callers.
-        local batch_ts=""
-        if oplog_enabled; then
-            batch_ts=$(get_timestamp)
+        local single_rc=0
+        safe_sudo_remove "$match" "" "$deadline_seconds" || single_rc=$?
+        if [[ $single_rc -eq 0 ]]; then
+            removed_count=$((removed_count + 1))
+        elif [[ $single_rc -eq 124 || $single_rc -ge 128 ]]; then
+            delete_rc=$single_rc
+            break
+        elif [[ $delete_rc -eq 0 ]]; then
+            delete_rc=$single_rc
         fi
-        # When the batch failed, confirm sudo credentials are still live
-        # before trusting the per-file probe below: with a lapsed credential
-        # `sudo -n test -e` fails for every file, which is indistinguishable
-        # from "file gone" and would log REMOVED entries for files still on
-        # disk. With dead credentials, retry everything through the
-        # single-file path so each failure is classified and logged.
-        local batch_sudo_alive=1
-        if [[ $batch_rc -ne 0 ]] && ! sudo -n true 2> /dev/null; then
-            batch_sudo_alive=0
-        fi
-        local -a removed_lines=()
-        local batch_file
-        for batch_file in "${batch_files[@]}"; do
-            if [[ $batch_rc -ne 0 ]] && { [[ $batch_sudo_alive -eq 0 ]] || sudo -n test -e "$batch_file" 2> /dev/null; }; then
-                # Survived the batch (SIP, immutable flag, permissions):
-                # retry through the single-file path so the failure is
-                # classified and logged exactly as before.
-                safe_sudo_remove "$batch_file" || true
-            elif [[ -n "$batch_ts" ]]; then
-                removed_lines+=("[$batch_ts] [${MOLE_CURRENT_COMMAND:-clean}] REMOVED $batch_file (batch)")
-            fi
-        done
-        if [[ ${#removed_lines[@]} -gt 0 ]]; then
-            append_log_lines "$OPERATIONS_LOG_FILE" "${removed_lines[@]}"
+    done < "$scan_file"
+    rm -f -- "$scan_file" 2> /dev/null || true # SAFE: exact tracked temp file created above
+
+    if [[ -n "$deadline_seconds" && $SECONDS -ge $deadline_seconds ]]; then
+        deadline_reached=true
+        if [[ $delete_rc -lt 128 ]]; then
+            delete_rc=124
         fi
     fi
+
+    if [[ ${#batch_files[@]} -gt 0 && "$deadline_reached" != "true" && "$batch_aborted" != "true" && $delete_rc -ne 124 && $delete_rc -lt 128 ]]; then
+        local batch_rc=0
+        local batch_result_file=""
+        local batch_timeout=""
+        if ! batch_timeout=$(_mole_timeout_with_deadline "$MOLE_TIMEOUT_DISK_VERIFY_SEC" \
+            "$deadline_seconds"); then
+            batch_rc=124
+        elif ! batch_result_file=$(create_temp_file 2> /dev/null); then
+            batch_rc=1
+        else
+            # The privileged worker acknowledges each completed unlink with a
+            # NUL-delimited path. A later failure or timeout therefore cannot
+            # erase the forensic record for an already completed prefix.
+            local -a batch_worker_records=()
+            local batch_index=0
+            for ((batch_index = 0; batch_index < ${#batch_files[@]}; batch_index++)); do
+                batch_worker_records+=("${batch_identities[$batch_index]}:${batch_files[$batch_index]}")
+            done
+            # shellcheck disable=SC2016 # $path expands inside privileged /bin/sh.
+            printf '%s\0' "${batch_worker_records[@]}" |
+                _mole_bounded_sudo "$batch_timeout" \
+                    -n xargs -0 /bin/sh -c '
+                        stat_tool=$1
+                        age_days=$2
+                        shift 2
+                        for record do
+                            dev=${record%%:*}
+                            rest=${record#*:}
+                            ino=${rest%%:*}
+                            rest=${rest#*:}
+                            mtime=${rest%%:*}
+                            path=${rest#*:}
+                            expected=$dev:$ino:$mtime
+                            if [ "$age_days" -gt 0 ]; then
+                                actual=$(/usr/bin/find "$path" -maxdepth 0 -type f -mtime "+$age_days" \
+                                    -exec "$stat_tool" -f%d:%i:%m {} \; 2>/dev/null) || continue
+                            else
+                                actual=$($stat_tool -f%d:%i:%m "$path" 2>/dev/null) || continue
+                            fi
+                            [ "$actual" = "$expected" ] || continue
+                            /bin/rm -f -- "$path" || exit 1
+                            printf "%s\0" "$path"
+                        done
+                    ' sh "$STAT_BSD" "$age_days" > "$batch_result_file" 2> /dev/null || batch_rc=$?
+
+            local batch_ts=""
+            if oplog_enabled; then
+                batch_ts=$(get_timestamp)
+            fi
+            local batch_ack_count=0
+            local -a removed_lines=()
+            local batch_file=""
+            while IFS= read -r -d '' batch_file; do
+                batch_ack_count=$((batch_ack_count + 1))
+                if [[ -n "$batch_ts" ]]; then
+                    removed_lines+=("[$batch_ts] [${MOLE_CURRENT_COMMAND:-clean}] REMOVED $batch_file (batch)")
+                fi
+            done < "$batch_result_file"
+            rm -f -- "$batch_result_file" 2> /dev/null || true # SAFE: exact tracked temp file created above
+
+            removed_count=$((removed_count + batch_ack_count))
+            if [[ ${#removed_lines[@]} -gt 0 ]]; then
+                append_log_lines "$OPERATIONS_LOG_FILE" "${removed_lines[@]}"
+            fi
+            if [[ $batch_rc -eq 0 && $batch_ack_count -ne ${#batch_files[@]} ]]; then
+                batch_rc=1
+            fi
+        fi
+
+        if [[ $batch_rc -ne 0 && $delete_rc -eq 0 ]]; then
+            delete_rc=$batch_rc
+            log_operation "${MOLE_CURRENT_COMMAND:-clean}" "FAILED" "$base_dir" \
+                "batch removal incomplete (status $batch_rc)"
+        fi
+    fi
+
+    MOLE_SAFE_SUDO_FIND_DELETE_COUNT=$removed_count
 
     if [[ $restore_errexit -eq 1 ]]; then
         set -e
     fi
 
-    return 0
+    return "$delete_rc"
 }
 
 # ============================================================================
@@ -1540,51 +3497,90 @@ safe_sudo_find_delete() {
 
 # Get path size in KB (returns 0 if not found)
 #
-# For regular files and symlinks, prefer 'stat' over 'du': it avoids the
-# fork+pipe cost of 'du | awk' on every call, which adds up in tight loops
-# (e.g. external-volume ._* sweeps, Application Support log scans). 'du -skP'
-# and 'stat -f%z' both report logical size without following symlinks on
-# macOS, and the 1KB-rounded outputs match for the file types we encounter
-# (logs, caches, leftovers). Directories still go through 'du' because 'stat'
+# For regular files and symlinks, prefer allocated blocks from 'stat' over
+# 'du': it avoids the fork+pipe cost of 'du | awk' on every call, which adds
+# up in tight loops (e.g. external-volume ._* sweeps, Application Support log
+# scans). macOS st_blocks and 'du -skP' use the same 512-byte allocation basis
+# without following symlinks. Directories still go through 'du' because 'stat'
 # only reports a single directory entry, not recursive content size. .app
-# bundles continue to go through mdls because APFS clones make 'du'
-# under-report large bundles like Xcode.
+# bundles use Spotlight's physical size when available so uninstall previews
+# do not add logical bundle bytes to physical leftover sizes.
 get_path_size_kb() {
     local path="$1"
+    local size_timeout="${2:-$MOLE_TIMEOUT_DISK_VERIFY_SEC}"
     [[ -z "$path" || ! -e "$path" ]] && {
         echo "0"
         return
     }
 
-    # For .app bundles, prefer mdls logical size as it matches Finder
-    # (APFS clone/sparse files make 'du' severely underreport apps like Xcode)
-    if [[ "$path" == *.app || "$path" == *.app/ ]]; then
+    if [[ ! "$size_timeout" =~ ^[0-9]+(\.[0-9]+)?$ || "$size_timeout" =~ ^0+(\.0+)?$ ]]; then
+        size_timeout="$MOLE_TIMEOUT_DISK_VERIFY_SEC"
+    fi
+    local timeout_whole="${size_timeout%%.*}"
+    local timeout_budget=$((10#$timeout_whole))
+    if [[ "$size_timeout" == *.* && "${size_timeout#*.}" =~ [1-9] ]]; then
+        timeout_budget=$((timeout_budget + 1))
+    fi
+    [[ $timeout_budget -gt 0 ]] || timeout_budget=1
+    local size_deadline=$((SECONDS + timeout_budget))
+
+    # Uninstall totals represent estimated disk occupancy. Keep .app bundles
+    # on the same physical-size basis as the directory fallback; logical size
+    # can be much larger for APFS-cloned bundles and must not be mixed into the
+    # same total as `du` results (#1404).
+    if [[ "$path" == *.[aA][pP][pP] || "$path" == *.[aA][pP][pP]/ ]]; then
         local mdls_size
-        mdls_size=$(mdls -name kMDItemLogicalSize -raw "$path" 2> /dev/null || true)
+        local mdls_timeout=""
+        local mdls_deadline_rc=0
+        mdls_timeout=$(_mole_timeout_with_deadline \
+            "$size_timeout" "$size_deadline") || mdls_deadline_rc=$?
+        [[ $mdls_deadline_rc -eq 0 ]] || return "$mdls_deadline_rc"
+        local mdls_rc=0
+        mdls_size=$(run_with_timeout "$mdls_timeout" mdls \
+            -name kMDItemPhysicalSize -raw "$path" < /dev/null 2> /dev/null) || mdls_rc=$?
+        [[ $mdls_rc -eq 124 || $mdls_rc -ge 128 ]] && return "$mdls_rc"
         if [[ "$mdls_size" =~ ^[0-9]+$ && "$mdls_size" -gt 0 ]]; then
-            # Return in KB
-            echo "$((mdls_size / 1024))"
+            echo $(((mdls_size + 1023) / 1024))
             return
         fi
     fi
 
-    # Fast path for regular files and symlinks: avoid forking 'du'.
+    # Fast path for regular files and symlinks: st_blocks is measured in
+    # 512-byte units and matches the physical basis of `du -skP`.
     if [[ -f "$path" || -L "$path" ]]; then
-        local bytes
-        bytes=$(stat -f%z "$path" 2> /dev/null || echo "")
-        if [[ "$bytes" =~ ^[0-9]+$ ]]; then
-            # Round up to whole KB to match 'du -skP' semantics.
-            echo $(((bytes + 1023) / 1024))
+        local blocks
+        local stat_timeout=""
+        local stat_deadline_rc=0
+        stat_timeout=$(_mole_timeout_with_deadline \
+            "$size_timeout" "$size_deadline") || stat_deadline_rc=$?
+        [[ $stat_deadline_rc -eq 0 ]] || return "$stat_deadline_rc"
+        local stat_rc=0
+        blocks=$(run_with_timeout "$stat_timeout" stat \
+            -f%b "$path" < /dev/null 2> /dev/null) || stat_rc=$?
+        [[ $stat_rc -eq 124 || $stat_rc -ge 128 ]] && return "$stat_rc"
+        if [[ "$blocks" =~ ^[0-9]+$ ]]; then
+            echo $(((blocks + 1) / 2))
             return
         fi
     fi
 
     # Bounded like every other du call site (hints/project/caches): an
     # unbounded walk here wedges one parallel sizing worker forever on a
-    # stalled SMB/FUSE mount. On timeout the size reads 0, which only
-    # affects display/accounting, never deletion decisions.
+    # stalled SMB/FUSE mount. A timeout is cancellation, not a zero-byte
+    # measurement, because callers may feed the result into a deletion plan.
     local size
-    size=$(run_with_timeout "$MOLE_TIMEOUT_DISK_VERIFY_SEC" du -skP "$path" 2> /dev/null | awk 'NR==1 {print $1; exit}' || true)
+    local du_timeout=""
+    local du_deadline_rc=0
+    du_timeout=$(_mole_timeout_with_deadline \
+        "$size_timeout" "$size_deadline") || du_deadline_rc=$?
+    [[ $du_deadline_rc -eq 0 ]] || return "$du_deadline_rc"
+    local du_rc=0
+    size=$(run_with_timeout "$du_timeout" du -skP "$path" 2> /dev/null |
+        awk 'NR==1 {print $1; exit}') || du_rc=$?
+    # `du` may print a partial aggregate before reporting an unreadable child.
+    # Any nonzero status makes that number incomplete, so never return it as a
+    # successful size estimate (#1404).
+    [[ $du_rc -eq 0 ]] || return "$du_rc"
 
     if [[ "$size" =~ ^[0-9]+$ ]]; then
         echo "$size"
@@ -1627,8 +3623,11 @@ calculate_total_size() {
     done <<< "$files"
 
     for file in "${unique_paths[@]+"${unique_paths[@]}"}"; do
-        local size_kb
-        size_kb=$(get_path_size_kb "$file")
+        local size_kb=0
+        local size_rc=0
+        size_kb=$(get_path_size_kb "$file") || size_rc=$?
+        [[ $size_rc -eq 124 || $size_rc -ge 128 ]] && return "$size_rc"
+        [[ $size_rc -eq 0 && "$size_kb" =~ ^[0-9]+$ ]] || size_kb=0
         total_kb=$((total_kb + size_kb))
     done
 

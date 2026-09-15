@@ -52,7 +52,12 @@ opt_existing_path_size_kb() {
         return 0
     }
 
-    opt_numeric_kb "$(get_path_size_kb "$path" 2> /dev/null || echo "0")"
+    local size_kb=0
+    local size_rc=0
+    size_kb=$(get_path_size_kb "$path" 2> /dev/null) || size_rc=$?
+    [[ $size_rc -eq 124 || $size_rc -ge 128 ]] && return "$size_rc"
+    [[ $size_rc -eq 0 ]] || size_kb=0
+    opt_numeric_kb "$size_kb"
 }
 
 opt_existing_file_size_kb_strict() {
@@ -78,10 +83,16 @@ run_launchctl_unload() {
         if ! optimize_sudo_available; then
             return 0
         fi
-        sudo launchctl unload "$plist_file" 2> /dev/null || true
+        local unload_rc=0
+        run_with_timeout "$MOLE_TIMEOUT_MEDIUM_PROBE_SEC" sudo launchctl \
+            unload "$plist_file" 2> /dev/null || unload_rc=$?
     else
-        launchctl unload "$plist_file" 2> /dev/null || true
+        local unload_rc=0
+        run_with_timeout "$MOLE_TIMEOUT_MEDIUM_PROBE_SEC" launchctl \
+            unload "$plist_file" 2> /dev/null || unload_rc=$?
     fi
+    [[ $unload_rc -eq 124 || $unload_rc -ge 128 ]] && return "$unload_rc"
+    return 0
 }
 
 needs_permissions_repair() {
@@ -260,8 +271,11 @@ opt_cache_refresh() {
         [[ -e "$target_path" ]] || continue
         should_protect_path "$target_path" && continue
 
-        local size_kb
-        size_kb=$(opt_existing_path_size_kb "$target_path")
+        local size_kb=0
+        local size_rc=0
+        size_kb=$(opt_existing_path_size_kb "$target_path") || size_rc=$?
+        [[ $size_rc -eq 124 || $size_rc -ge 128 ]] && return "$size_rc"
+        [[ $size_rc -eq 0 ]] || size_kb=0
         removable_targets+=("$target_path")
         removable_sizes+=("$size_kb")
     done
@@ -284,7 +298,12 @@ opt_cache_refresh() {
 
     local index
     for index in "${!removable_targets[@]}"; do
-        if safe_remove "${removable_targets[$index]}" true "${removable_sizes[$index]}" > /dev/null 2>&1; then
+        local remove_rc=0
+        safe_remove "${removable_targets[$index]}" true \
+            "${removable_sizes[$index]}" > /dev/null 2>&1 || remove_rc=$?
+        if [[ $remove_rc -eq 124 || $remove_rc -ge 128 ]]; then
+            return "$remove_rc"
+        elif [[ $remove_rc -eq 0 ]]; then
             removed_count=$((removed_count + 1))
             cleaned_cache_size=$((cleaned_cache_size + removable_sizes[index]))
         else
@@ -336,7 +355,14 @@ opt_saved_state_cleanup() {
             optimize_task_result "$MOLE_OPTIMIZE_OUTCOME_FAILED"
             return 0
         fi
-        if ! run_with_timeout "$MOLE_TIMEOUT_MEDIUM_PROBE_SEC" find "$state_dir" -type d -name "*.savedState" -mtime "+$MOLE_SAVED_STATE_AGE_DAYS" -print0 > "$scan_file" 2> /dev/null; then
+        local scan_rc=0
+        run_with_timeout "$MOLE_TIMEOUT_MEDIUM_PROBE_SEC" find "$state_dir" \
+            -type d -name "*.savedState" \
+            -mtime "+$MOLE_SAVED_STATE_AGE_DAYS" -print0 \
+            > "$scan_file" 2> /dev/null || scan_rc=$?
+        if [[ $scan_rc -ne 0 ]]; then
+            : > "$scan_file" || true
+            [[ $scan_rc -eq 124 || $scan_rc -ge 128 ]] && return "$scan_rc"
             echo -e "  ${YELLOW}${ICON_WARNING}${NC} Failed to scan old saved states"
             scan_failed=1
         fi
@@ -344,7 +370,11 @@ opt_saved_state_cleanup() {
             if should_protect_path "$state_path"; then
                 continue
             fi
-            if safe_remove "$state_path" true > /dev/null 2>&1; then
+            local remove_rc=0
+            safe_remove "$state_path" true > /dev/null 2>&1 || remove_rc=$?
+            if [[ $remove_rc -eq 124 || $remove_rc -ge 128 ]]; then
+                return "$remove_rc"
+            elif [[ $remove_rc -eq 0 ]]; then
                 removed=$((removed + 1))
             else
                 remove_failed=$((remove_failed + 1))
@@ -568,6 +598,9 @@ opt_sqlite_vacuum() {
     local failed=0
     local policy_skipped=0
     local already_optimal=0
+    # Paths held back only by the size ceiling (issue #1367): never claim
+    # "all already optimized" when this list is non-empty.
+    local -a policy_skipped_paths=()
 
     for pattern in "${db_paths[@]}"; do
         while IFS= read -r db_file; do
@@ -586,6 +619,7 @@ opt_sqlite_vacuum() {
             file_size=$(get_file_size "$db_file")
             if [[ "$file_size" -gt "$MOLE_SQLITE_MAX_SIZE" ]]; then
                 policy_skipped=$((policy_skipped + 1))
+                policy_skipped_paths+=("$db_file")
                 continue
             fi
 
@@ -645,12 +679,19 @@ opt_sqlite_vacuum() {
     fi
 
     export OPTIMIZE_DATABASES_COUNT="${vacuumed}"
+    # Headline must not say "already optimized" when size policy skipped
+    # anything, or when nothing was even compact enough to claim success
+    # (issue #1367).
     if [[ $vacuumed -gt 0 ]]; then
         opt_msg "Optimized $vacuumed databases for Mail, Safari, Messages"
-    elif [[ $timed_out -eq 0 && $failed -eq 0 ]]; then
+    elif [[ $timed_out -ne 0 || $failed -ne 0 ]]; then
+        echo -e "  ${YELLOW}${ICON_WARNING}${NC} Database optimization incomplete"
+    elif [[ $policy_skipped -gt 0 ]]; then
+        opt_msg "No databases compacted"
+    elif [[ $already_optimal -gt 0 ]]; then
         opt_msg "All databases already optimized"
     else
-        echo -e "  ${YELLOW}${ICON_WARNING}${NC} Database optimization incomplete"
+        opt_msg "No databases found to optimize"
     fi
 
     if [[ $already_optimal -gt 0 ]]; then
@@ -658,7 +699,17 @@ opt_sqlite_vacuum() {
     fi
 
     if [[ $policy_skipped -gt 0 ]]; then
-        opt_msg "Skipped $policy_skipped oversized databases"
+        opt_msg "Skipped $policy_skipped databases over the 100 MB safety limit"
+        local skipped_path skipped_size skipped_display
+        for skipped_path in "${policy_skipped_paths[@]}"; do
+            skipped_size=$(get_file_size "$skipped_path" 2> /dev/null || echo 0)
+            if [[ "$skipped_size" =~ ^[0-9]+$ && "$skipped_size" -gt 0 ]]; then
+                skipped_display=$(bytes_to_human "$skipped_size")
+            else
+                skipped_display="unknown size"
+            fi
+            echo -e "  ${GRAY}${ICON_SUBLIST}${NC} ${skipped_path/#$HOME/~} · ${skipped_display}"
+        done
     fi
 
     if [[ $timed_out -gt 0 ]]; then
@@ -1017,10 +1068,19 @@ opt_prune_spotlight_orphan_rules() {
                 # Only act on well-formed bundle ids; bundle_has_installed_app
                 # double-checks with mdfind and a filesystem scan, so a return of
                 # 1 means the app is genuinely gone. Anything else is kept.
-                if mole_is_reverse_dns_bundle_id "$entry" && ! bundle_has_installed_app "$entry"; then
-                    removed+=("$entry")
-                else
+                if ! mole_is_reverse_dns_bundle_id "$entry"; then
                     keep+=("$entry")
+                else
+                    local resolver_rc=0
+                    bundle_has_installed_app "$entry" \
+                        "$((SECONDS + MOLE_TIMEOUT_MEDIUM_PROBE_SEC))" || resolver_rc=$?
+                    if [[ $resolver_rc -eq 1 ]]; then
+                        removed+=("$entry")
+                    elif [[ $resolver_rc -ge 128 ]]; then
+                        return "$resolver_rc"
+                    else
+                        keep+=("$entry")
+                    fi
                 fi
                 ;;
         esac
@@ -1210,9 +1270,17 @@ opt_launch_agents_cleanup() {
         [[ -f "$plist" ]] || continue
 
         local binary=""
-        binary=$(/usr/libexec/PlistBuddy -c "Print :ProgramArguments:0" "$plist" 2> /dev/null || true)
+        local plist_rc=0
+        binary=$(run_with_timeout "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
+            /usr/libexec/PlistBuddy -c "Print :ProgramArguments:0" \
+            "$plist" 2> /dev/null) || plist_rc=$?
+        [[ $plist_rc -eq 124 || $plist_rc -ge 128 ]] && return "$plist_rc"
         if [[ -z "$binary" ]]; then
-            binary=$(/usr/libexec/PlistBuddy -c "Print :Program" "$plist" 2> /dev/null || true)
+            plist_rc=0
+            binary=$(run_with_timeout "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
+                /usr/libexec/PlistBuddy -c "Print :Program" \
+                "$plist" 2> /dev/null) || plist_rc=$?
+            [[ $plist_rc -eq 124 || $plist_rc -ge 128 ]] && return "$plist_rc"
         fi
 
         # Only an absolute path that is genuinely missing counts as broken.
@@ -1235,8 +1303,14 @@ opt_launch_agents_cleanup() {
     local removed_count=0
     local failed=0
     for plist in "${broken_plists[@]}"; do
-        run_launchctl_unload "$plist"
-        if safe_remove "$plist" true > /dev/null 2>&1; then
+        local unload_rc=0
+        run_launchctl_unload "$plist" || unload_rc=$?
+        [[ $unload_rc -eq 124 || $unload_rc -ge 128 ]] && return "$unload_rc"
+        local remove_rc=0
+        safe_remove "$plist" true > /dev/null 2>&1 || remove_rc=$?
+        if [[ $remove_rc -eq 124 || $remove_rc -ge 128 ]]; then
+            return "$remove_rc"
+        elif [[ $remove_rc -eq 0 ]]; then
             removed_count=$((removed_count + 1))
         else
             failed=$((failed + 1))
@@ -1323,7 +1397,14 @@ opt_shared_file_list_repair() {
         optimize_task_result "$MOLE_OPTIMIZE_OUTCOME_FAILED"
         return 0
     fi
-    if ! run_with_timeout "$MOLE_TIMEOUT_MEDIUM_PROBE_SEC" find "$sfl_dir" \( -name "*.sfl2" -o -name "*.sfl3" \) -type f ! -path "*ApplicationRecentDocuments*" -print0 > "$scan_file" 2> /dev/null; then
+    local scan_rc=0
+    run_with_timeout "$MOLE_TIMEOUT_MEDIUM_PROBE_SEC" find "$sfl_dir" \
+        \( -name "*.sfl2" -o -name "*.sfl3" \) -type f \
+        ! -path "*ApplicationRecentDocuments*" -print0 \
+        > "$scan_file" 2> /dev/null || scan_rc=$?
+    if [[ $scan_rc -ne 0 ]]; then
+        : > "$scan_file" || true
+        [[ $scan_rc -eq 124 || $scan_rc -ge 128 ]] && return "$scan_rc"
         echo -e "  ${YELLOW}${ICON_WARNING}${NC} Failed to scan shared file lists"
         scan_failed=1
     fi
@@ -1332,7 +1413,13 @@ opt_shared_file_list_repair() {
         # Skip recent-documents list (user data, not a cache)
         [[ "$sfl_file" == *"ApplicationRecentDocuments"* ]] && continue
         if ! plutil -lint "$sfl_file" > /dev/null 2>&1; then
-            if [[ "${MOLE_DRY_RUN:-0}" == "1" ]] || safe_remove "$sfl_file" true > /dev/null 2>&1; then
+            local remove_rc=0
+            if [[ "${MOLE_DRY_RUN:-0}" != "1" ]]; then
+                safe_remove "$sfl_file" true > /dev/null 2>&1 || remove_rc=$?
+            fi
+            if [[ $remove_rc -eq 124 || $remove_rc -ge 128 ]]; then
+                return "$remove_rc"
+            elif [[ $remove_rc -eq 0 ]]; then
                 repaired=$((repaired + 1))
             else
                 remove_failed=$((remove_failed + 1))
@@ -1351,17 +1438,40 @@ opt_shared_file_list_repair() {
     optimize_task_result_from_counts "$repaired" "$((scan_failed + remove_failed))"
 }
 
-# Clean old delivered notifications from NotificationCenter database.
-opt_notification_cleanup() {
-    local nc_db_dir
-    nc_db_dir="$(getconf DARWIN_USER_DIR 2> /dev/null || true)/com.apple.notificationcenter/db2"
-    local nc_db="$nc_db_dir/db"
-
-    if [[ ! -f "$nc_db" ]]; then
-        opt_msg "Notification Center database not found"
-        optimize_task_result "$MOLE_OPTIMIZE_OUTCOME_UNCHANGED"
+# Resolve the live Notification Center SQLite database.
+# macOS 15+ (Sequoia and later) stores it under the usernoted group container;
+# older systems keep it under DARWIN_USER_DIR. Prefer the path that actually
+# exists so we never report "not found" while usernoted holds the real db open
+# (issue #1368).
+# shellcheck disable=SC2329
+resolve_notification_center_db() {
+    local group_db="$HOME/Library/Group Containers/group.com.apple.usernoted/db2/db"
+    if [[ -f "$group_db" ]]; then
+        printf '%s\n' "$group_db"
         return 0
     fi
+
+    local darwin_dir=""
+    darwin_dir="$(getconf DARWIN_USER_DIR 2> /dev/null || true)"
+    darwin_dir="${darwin_dir%/}"
+    if [[ -n "$darwin_dir" && -f "$darwin_dir/com.apple.notificationcenter/db2/db" ]]; then
+        printf '%s\n' "$darwin_dir/com.apple.notificationcenter/db2/db"
+        return 0
+    fi
+    return 1
+}
+
+# Clean old delivered notifications from NotificationCenter database.
+opt_notification_cleanup() {
+    local nc_db=""
+    if ! nc_db=$(resolve_notification_center_db); then
+        # Unavailable, not a healthy empty state: the success "not found" line
+        # made a missed Sequoia path look like a no-op (issue #1368).
+        echo -e "  ${GRAY}-${NC} Notification Center database unavailable (no supported path)"
+        optimize_task_result "$MOLE_OPTIMIZE_OUTCOME_UNAVAILABLE"
+        return 0
+    fi
+    debug_log "Notification Center database: $nc_db"
 
     local db_size=""
     if ! db_size=$(opt_existing_file_size_kb_strict "$nc_db"); then
@@ -1496,7 +1606,11 @@ opt_coreduet_cleanup() {
         local remove_failed=0
         for f in "$wal_file" "$shm_file"; do
             if [[ -f "$f" ]]; then
-                if safe_remove "$f" true > /dev/null 2>&1; then
+                local remove_rc=0
+                safe_remove "$f" true > /dev/null 2>&1 || remove_rc=$?
+                if [[ $remove_rc -eq 124 || $remove_rc -ge 128 ]]; then
+                    return "$remove_rc"
+                elif [[ $remove_rc -eq 0 ]]; then
                     removed_count=$((removed_count + 1))
                 else
                     remove_failed=$((remove_failed + 1))
@@ -1535,7 +1649,8 @@ opt_coreduet_cleanup() {
 # POSIX path. Display names can differ from the on-disk bundle name, so the
 # audit needs both pieces before deciding an item is broken.
 _login_items_snapshot() {
-    osascript << 'APPLESCRIPT'
+    local timeout_seconds="${1:-$MOLE_TIMEOUT_MEDIUM_PROBE_SEC}"
+    run_with_timeout "$timeout_seconds" osascript << 'APPLESCRIPT'
 set oldDelimiters to AppleScript's text item delimiters
 set tabChar to ASCII character 9
 set linefeedChar to ASCII character 10
@@ -1584,31 +1699,140 @@ _login_item_name_matches() {
     [[ -z "$actual" ]] && return 1
 
     local actual_nospace="${actual// /}"
-    [[ "$actual" == "$expected" ]] && return 0
-    [[ "$actual_nospace" == "$expected_nospace" ]] && return 0
-    [[ -n "$expected_stripped" && "$actual_nospace" == "$expected_stripped" ]] && return 0
-
-    return 1
+    local nocasematch_state
+    nocasematch_state=$(shopt -p nocasematch || true)
+    shopt -s nocasematch
+    local matched=false
+    if [[ "$actual" == "$expected" || "$actual_nospace" == "$expected_nospace" ||
+        (-n "$expected_stripped" && "$actual_nospace" == "$expected_stripped") ]]; then
+        matched=true
+    fi
+    eval "$nocasematch_state"
+    [[ "$matched" == "true" ]]
 }
 
-_login_item_bundle_metadata_matches() {
-    local app_path="$1"
-    local name="$2"
-    local nospace="$3"
-    local stripped="$4"
-    local info="$app_path/Contents/Info.plist"
-    [[ -f "$info" ]] || return 1
+_login_item_build_metadata_inventory() {
+    local app_scan_file="$1"
+    local metadata_file="$2"
+    local deadline_seconds="$3"
+    local probe_timeout=""
+    probe_timeout=$(_mole_timeout_with_deadline \
+        "$MOLE_TIMEOUT_HINT_SCAN_SEC" "$deadline_seconds") || return $?
 
-    local key value
-    for key in CFBundleDisplayName CFBundleName CFBundleExecutable; do
-        value=$(plutil -extract "$key" raw "$info" 2> /dev/null || echo "")
-        if _login_item_name_matches "$value" "$name" "$nospace" "$stripped"; then
-            _login_item_debug "'$name' matched $key '$value' at $app_path"
-            return 0
+    : > "$metadata_file" || return 2
+    local metadata_rc=0
+    # One bounded worker owns all per-plist subprocesses. Wrapping hundreds of
+    # individual plutil calls makes the Perl timeout fallback itself dominate
+    # the audit; the outer process-group timeout still kills a stalled child and
+    # the caller discards the entire partial record stream on any failure.
+    # shellcheck disable=SC2016 # The child expands its own positional data.
+    run_with_timeout "$probe_timeout" /bin/bash --noprofile --norc -c '
+        while IFS= read -r -d "" app_path; do
+            info="$app_path/Contents/Info.plist"
+            state=ready
+            display_name=""
+            bundle_name=""
+            executable=""
+            if [[ ! -f "$info" ]]; then
+                state=missing
+            elif [[ ! -r "$info" ]]; then
+                state=unreadable
+            elif ! /usr/bin/plutil -lint "$info" > /dev/null 2>&1; then
+                state=invalid
+            else
+                display_name=$(/usr/bin/plutil -extract CFBundleDisplayName raw "$info" 2> /dev/null || true)
+                bundle_name=$(/usr/bin/plutil -extract CFBundleName raw "$info" 2> /dev/null || true)
+                executable=$(/usr/bin/plutil -extract CFBundleExecutable raw "$info" 2> /dev/null || true)
+            fi
+            printf "%s\0%s\0%s\0%s\0%s\0" \
+                "$app_path" "$state" "$display_name" "$bundle_name" "$executable"
+        done
+    ' < "$app_scan_file" > "$metadata_file" 2> /dev/null || metadata_rc=$?
+    if [[ $metadata_rc -ne 0 ]]; then
+        : > "$metadata_file" || true
+        return "$metadata_rc"
+    fi
+    return 0
+}
+
+_login_item_build_app_inventory() {
+    local inventory_file="$1"
+    local deadline_seconds="$2"
+    local app_scan_file=""
+    local root_metadata_file=""
+    if ! app_scan_file=$(mktemp_file "optimize-login-item-paths") ||
+        ! root_metadata_file=$(mktemp_file "optimize-login-item-root-metadata"); then
+        return 2
+    fi
+
+    : > "$inventory_file" || return 2
+    local -a inventory_roots=("$HOME/Applications" "/Applications")
+    if declare -p _MOLE_BUNDLE_RESOLVER_APP_ROOTS > /dev/null 2>&1; then
+        local configured_root already_listed
+        for configured_root in "${_MOLE_BUNDLE_RESOLVER_APP_ROOTS[@]}"; do
+            already_listed=false
+            local listed_root
+            for listed_root in "${inventory_roots[@]}"; do
+                if [[ "$configured_root" == "$listed_root" ]]; then
+                    already_listed=true
+                    break
+                fi
+            done
+            if [[ "$already_listed" != "true" ]]; then
+                inventory_roots+=("$configured_root")
+            fi
+        done
+    fi
+
+    local -a scanned_roots=()
+    local roots probe_timeout probe_rc metadata_rc
+    # User-installed apps are usually the smaller tree and must not sit behind
+    # a large /Applications traversal that can consume the whole shared budget.
+    for roots in "${inventory_roots[@]}"; do
+        [[ -d "$roots" ]] || continue
+        local covered_by_parent=false
+        local scanned_root
+        if [[ ${#scanned_roots[@]} -gt 0 ]]; then
+            for scanned_root in "${scanned_roots[@]}"; do
+                if [[ "$roots" == "$scanned_root"/* ]]; then
+                    covered_by_parent=true
+                    break
+                fi
+            done
+        fi
+        [[ "$covered_by_parent" == "true" ]] && continue
+        scanned_roots+=("$roots")
+        : > "$app_scan_file" || return 2
+        probe_timeout=$(_mole_timeout_with_deadline \
+            "$MOLE_TIMEOUT_MEDIUM_PROBE_SEC" "$deadline_seconds") || return $?
+        probe_rc=0
+        run_with_timeout "$probe_timeout" find "$roots" -maxdepth 6 \
+            -type d -iname "*.app" -print0 > "$app_scan_file" 2> /dev/null || probe_rc=$?
+        if [[ $probe_rc -ne 0 ]]; then
+            : > "$inventory_file" || true
+            if [[ $probe_rc -eq 124 || $probe_rc -ge 128 ]]; then
+                return "$probe_rc"
+            fi
+            return 2
+        fi
+
+        metadata_rc=0
+        _login_item_build_metadata_inventory \
+            "$app_scan_file" "$root_metadata_file" \
+            "$deadline_seconds" || metadata_rc=$?
+        if [[ $metadata_rc -ne 0 ]]; then
+            : > "$inventory_file" || true
+            if [[ $metadata_rc -eq 124 || $metadata_rc -ge 128 ]]; then
+                return "$metadata_rc"
+            fi
+            return 2
+        fi
+        if ! command cat "$root_metadata_file" >> "$inventory_file"; then
+            : > "$inventory_file" || true
+            return 2
         fi
     done
-
-    return 1
+    return 0
 }
 
 # Check if a login item name corresponds to an installed app.
@@ -1617,6 +1841,8 @@ _login_item_bundle_metadata_matches() {
 _login_item_app_exists() {
     local name="$1"
     local item_path="${2:-}"
+    local deadline_seconds="${3:-$((SECONDS + MOLE_TIMEOUT_HINT_SCAN_SEC))}"
+    local app_inventory_file="${4:-}"
 
     if [[ -n "$item_path" ]]; then
         if [[ -e "$item_path" || -L "$item_path" ]]; then
@@ -1628,60 +1854,114 @@ _login_item_app_exists() {
         _login_item_debug "'$name' has no login item path from System Events"
     fi
 
-    # 1. Exact match
-    if [[ "$name" != *"'"* ]] && mdfind "kMDItemFSName == '${name}.app'" 2> /dev/null | grep -q .; then
-        _login_item_debug "'$name' resolved by Spotlight exact app name"
-        return 0
-    fi
-    # 2. Try without spaces (e.g. "Top Calendar" -> "TopCalendar")
+    # Display names often need a no-space or helper-suffix variant. Query each
+    # through the shared deadline and keep probe failures distinct from a clean
+    # no-match result.
     local nospace="${name// /}"
-    if [[ "$name" != *"'"* && "$nospace" != "$name" ]] && mdfind "kMDItemFSName == '${nospace}.app'" 2> /dev/null | grep -q .; then
-        _login_item_debug "'$name' resolved by Spotlight no-space app name"
-        return 0
-    fi
-    # 3. Strip common helper suffixes (e.g. "AliLangClient" -> "AliLang")
     local stripped
     stripped=$(echo "$nospace" | sed -E 's/(Client|Helper|Agent|Launcher|Service)$//')
-    if [[ "$name" != *"'"* && "$stripped" != "$nospace" ]] && mdfind "kMDItemFSName == '${stripped}.app'" 2> /dev/null | grep -q .; then
-        _login_item_debug "'$name' resolved by Spotlight stripped helper name"
-        return 0
-    fi
-    # 4. Recursive filesystem fallback for nested helper apps inside parent
-    #    bundles. Spotlight often misses helpers under Contents/.
-    local candidate roots app_name app_path
-    local -a app_names=("${name}.app")
-    [[ "$nospace" != "$name" ]] && app_names+=("${nospace}.app")
-    [[ "$stripped" != "$nospace" ]] && app_names+=("${stripped}.app")
-    for roots in "/Applications" "$HOME/Applications"; do
-        [[ -d "$roots" ]] || continue
-        local -a name_expr=()
-        for app_name in "${app_names[@]}"; do
-            if [[ ${#name_expr[@]} -gt 0 ]]; then
-                name_expr+=("-o")
-            fi
-            name_expr+=("-name" "$app_name")
-        done
-        candidate=$(command find "$roots" -maxdepth 6 -type d \( "${name_expr[@]}" \) -print -quit 2> /dev/null || true)
-        if [[ -n "$candidate" && -d "$candidate" ]]; then
-            _login_item_debug "'$name' resolved by filesystem app name: $candidate"
+    local -a lookup_names=("$name")
+    [[ "$nospace" != "$name" ]] && lookup_names+=("$nospace")
+    [[ "$stripped" != "$nospace" ]] && lookup_names+=("$stripped")
+
+    local probe_uncertain=false
+    local lookup_name spotlight_output probe_timeout probe_rc
+    for lookup_name in "${lookup_names[@]}"; do
+        [[ "$lookup_name" != *"'"* ]] || continue
+        probe_timeout=$(_mole_timeout_with_deadline \
+            "$MOLE_TIMEOUT_MEDIUM_PROBE_SEC" "$deadline_seconds") || return $?
+        spotlight_output=""
+        probe_rc=0
+        spotlight_output=$(run_with_timeout "$probe_timeout" \
+            mdfind "kMDItemFSName == '${lookup_name}.app'" 2> /dev/null) || probe_rc=$?
+        if [[ $probe_rc -eq 124 || $probe_rc -ge 128 ]]; then
+            return "$probe_rc"
+        elif [[ $probe_rc -ne 0 ]]; then
+            probe_uncertain=true
+        elif [[ -n "$spotlight_output" ]]; then
+            _login_item_debug "'$name' resolved by Spotlight app name '$lookup_name'"
             return 0
         fi
-
-        while IFS= read -r -d '' app_path; do
-            if _login_item_bundle_metadata_matches "$app_path" "$name" "$nospace" "$stripped"; then
-                return 0
-            fi
-        done < <(command find "$roots" -maxdepth 6 -type d -name "*.app" -print0 2> /dev/null)
     done
-    # 5. Fallback: check sfltool dumpbtm for the actual on-disk path.
+
+    # The audit caller supplies one complete inventory for every unresolved
+    # item. Standalone callers build the same plan once for this lookup.
+    if [[ -z "$app_inventory_file" ]]; then
+        if ! app_inventory_file=$(mktemp_file "optimize-login-item-inventory"); then
+            return 2
+        fi
+        local inventory_rc=0
+        _login_item_build_app_inventory \
+            "$app_inventory_file" "$deadline_seconds" || inventory_rc=$?
+        if [[ $inventory_rc -ne 0 ]]; then
+            return "$inventory_rc"
+        fi
+    elif [[ ! -f "$app_inventory_file" ]]; then
+        return 2
+    fi
+
+    local app_path app_basename metadata_state display_name bundle_name executable
+    local record_complete=true
+    while IFS= read -r -d '' app_path; do
+        if ! IFS= read -r -d '' metadata_state ||
+            ! IFS= read -r -d '' display_name ||
+            ! IFS= read -r -d '' bundle_name ||
+            ! IFS= read -r -d '' executable; then
+            record_complete=false
+            break
+        fi
+        if [[ ! -e "$app_path" && ! -L "$app_path" ]]; then
+            probe_uncertain=true
+            continue
+        fi
+        app_basename="${app_path##*/}"
+        app_basename="${app_basename%.[aA][pP][pP]}"
+        if _login_item_name_matches "$app_basename" "$name" "$nospace" "$stripped"; then
+            _login_item_debug "'$name' resolved by filesystem app name: $app_path"
+            return 0
+        fi
+        if [[ "$metadata_state" == "unreadable" || "$metadata_state" == "invalid" ]]; then
+            probe_uncertain=true
+            continue
+        fi
+        if _login_item_name_matches "$display_name" "$name" "$nospace" "$stripped" ||
+            _login_item_name_matches "$bundle_name" "$name" "$nospace" "$stripped" ||
+            _login_item_name_matches "$executable" "$name" "$nospace" "$stripped"; then
+            _login_item_debug "'$name' matched bundle metadata at $app_path"
+            return 0
+        fi
+    done < "$app_inventory_file"
+    if [[ "$record_complete" != "true" ]]; then
+        probe_uncertain=true
+    fi
+
+    # Last fallback: check sfltool dumpbtm for the actual on-disk path.
     #    Nested helper apps (e.g. DBnginMenuHelper.app inside DBngin.app) are
     #    invisible to mdfind but still have a valid URL in the BTM database.
     #    Root only: unprivileged dumpbtm pops the macOS "sfltool wants to
     #    make changes" admin-password dialog, so without an active sudo
     #    session this fallback is skipped rather than prompting.
     local btm_path=""
-    if [[ "${MOLE_TEST_MODE:-0}" != "1" && "${MOLE_TEST_NO_AUTH:-0}" != "1" ]] && sudo -n true 2> /dev/null; then
-        btm_path=$(sudo -n sfltool dumpbtm 2> /dev/null | awk -v item="$name" '
+    if [[ "${MOLE_TEST_MODE:-0}" != "1" && "${MOLE_TEST_NO_AUTH:-0}" != "1" ]]; then
+        local sudo_ready_rc=0
+        probe_timeout=$(_mole_timeout_with_deadline \
+            "$MOLE_TIMEOUT_QUICK_DETECT_SEC" "$deadline_seconds") || return $?
+        run_with_timeout "$probe_timeout" sudo -n true 2> /dev/null || sudo_ready_rc=$?
+        if [[ $sudo_ready_rc -eq 124 || $sudo_ready_rc -ge 128 ]]; then
+            return "$sudo_ready_rc"
+        elif [[ $sudo_ready_rc -eq 0 ]]; then
+            local btm_output=""
+            probe_timeout=$(_mole_timeout_with_deadline \
+                "$MOLE_TIMEOUT_MEDIUM_PROBE_SEC" "$deadline_seconds") || return $?
+            probe_rc=0
+            btm_output=$(run_with_timeout "$probe_timeout" \
+                sudo -n sfltool dumpbtm 2> /dev/null) || probe_rc=$?
+            if [[ $probe_rc -eq 124 || $probe_rc -ge 128 ]]; then
+                return "$probe_rc"
+            elif [[ $probe_rc -ne 0 ]]; then
+                probe_uncertain=true
+            else
+                btm_path=$(printf '%s\n' "$btm_output" | awk -v item="$name" '
         BEGIN { IGNORECASE = 1 }
         index($0, item) {
             if (match($0, "/.*\\.app")) {
@@ -1690,10 +1970,16 @@ _login_item_app_exists() {
             }
         }
     ')
+            fi
+        fi
     fi
     if [[ -n "$btm_path" ]] && [[ -e "$btm_path" ]]; then
         _login_item_debug "'$name' resolved by sfltool BTM path: $btm_path"
         return 0
+    fi
+    if [[ "$probe_uncertain" == "true" ]]; then
+        _login_item_debug "'$name' unresolved because at least one owner probe was incomplete"
+        return 2
     fi
     _login_item_debug "'$name' unresolved after path, Spotlight, filesystem, and BTM checks"
     return 1
@@ -1706,13 +1992,28 @@ opt_login_items_audit() {
         return 0
     fi
 
-    local items_output=""
+    local audit_deadline=$((SECONDS + MOLE_TIMEOUT_HINT_SCAN_SEC))
+    local snapshot_timeout=""
     local snapshot_status=0
-    items_output=$(_login_items_snapshot 2> /dev/null) || snapshot_status=$?
+    snapshot_timeout=$(_mole_timeout_with_deadline \
+        "$MOLE_TIMEOUT_MEDIUM_PROBE_SEC" "$audit_deadline") || snapshot_status=$?
+    local items_output=""
+    if [[ $snapshot_status -eq 0 ]]; then
+        items_output=$(_login_items_snapshot "$snapshot_timeout" 2> /dev/null) || snapshot_status=$?
+    fi
 
     if [[ $snapshot_status -ne 0 ]]; then
-        echo -e "  ${YELLOW}${ICON_WARNING}${NC} Failed to inspect login items"
+        if [[ $snapshot_status -eq 124 ]]; then
+            echo -e "  ${YELLOW}${ICON_WARNING}${NC} Failed to inspect login items (snapshot timed out)"
+        elif [[ $snapshot_status -ge 128 ]]; then
+            echo -e "  ${YELLOW}${ICON_WARNING}${NC} Failed to inspect login items (snapshot interrupted)"
+        else
+            echo -e "  ${YELLOW}${ICON_WARNING}${NC} Failed to inspect login items"
+        fi
         optimize_task_result "$MOLE_OPTIMIZE_OUTCOME_FAILED"
+        if [[ $snapshot_status -ge 128 ]]; then
+            return "$snapshot_status"
+        fi
         return 0
     fi
 
@@ -1722,18 +2023,94 @@ opt_login_items_audit() {
         return 0
     fi
 
-    local broken=0
-    local checked=0
+    local -a login_item_names=()
+    local -a login_item_paths=()
     local item item_path
     while IFS=$'\t' read -r item item_path; do
         [[ -z "$item" ]] && continue
+        login_item_names+=("$item")
+        login_item_paths+=("$item_path")
+    done <<< "$items_output"
+
+    local app_inventory_file=""
+    local inventory_needed=false
+    local item_index
+    for ((item_index = 0; item_index < ${#login_item_names[@]}; item_index++)); do
+        item_path="${login_item_paths[$item_index]:-}"
+        if [[ -z "$item_path" || (! -e "$item_path" && ! -L "$item_path") ]]; then
+            inventory_needed=true
+            break
+        fi
+    done
+    if [[ "$inventory_needed" == "true" ]]; then
+        if ! app_inventory_file=$(mktemp_file "optimize-login-item-inventory"); then
+            echo -e "  ${YELLOW}${ICON_WARNING}${NC} Login items audit incomplete (could not prepare app inventory; no conclusions published)"
+            optimize_task_result "$MOLE_OPTIMIZE_OUTCOME_FAILED"
+            return 0
+        fi
+        local inventory_status=0
+        _login_item_build_app_inventory \
+            "$app_inventory_file" "$audit_deadline" || inventory_status=$?
+        if [[ $inventory_status -ne 0 ]]; then
+            if [[ $inventory_status -eq 124 ]]; then
+                echo -e "  ${YELLOW}${ICON_WARNING}${NC} Login items audit incomplete (app inventory timed out; no conclusions published)"
+            elif [[ $inventory_status -ge 128 ]]; then
+                echo -e "  ${YELLOW}${ICON_WARNING}${NC} Login items audit incomplete (app inventory interrupted; no conclusions published)"
+            else
+                echo -e "  ${YELLOW}${ICON_WARNING}${NC} Login items audit incomplete (app inventory unavailable; no conclusions published)"
+            fi
+            optimize_task_result "$MOLE_OPTIMIZE_OUTCOME_FAILED"
+            if [[ $inventory_status -ge 128 ]]; then
+                return "$inventory_status"
+            fi
+            return 0
+        fi
+    fi
+
+    local broken=0
+    local checked=0
+    local audit_status=0
+    local -a broken_items=()
+    local item_status
+    for ((item_index = 0; item_index < ${#login_item_names[@]}; item_index++)); do
+        item="${login_item_names[$item_index]}"
+        item_path="${login_item_paths[$item_index]:-}"
         checked=$((checked + 1))
-        if _login_item_app_exists "$item" "$item_path"; then
+        item_status=0
+        _login_item_app_exists \
+            "$item" "$item_path" "$audit_deadline" \
+            "$app_inventory_file" || item_status=$?
+        if [[ $item_status -eq 0 ]]; then
+            continue
+        elif [[ $item_status -eq 1 ]]; then
+            broken_items+=("$item")
             continue
         fi
-        echo -e "  ${YELLOW}${ICON_WARNING}${NC} Broken login item: $item (app not found)"
-        broken=$((broken + 1))
-    done <<< "$items_output"
+        audit_status=$item_status
+        break
+    done
+
+    if [[ $audit_status -ne 0 ]]; then
+        if [[ $audit_status -eq 124 ]]; then
+            echo -e "  ${YELLOW}${ICON_WARNING}${NC} Login items audit incomplete (time limit reached; no conclusions published)"
+        elif [[ $audit_status -ge 128 ]]; then
+            echo -e "  ${YELLOW}${ICON_WARNING}${NC} Login items audit incomplete (probe interrupted; no conclusions published)"
+        else
+            echo -e "  ${YELLOW}${ICON_WARNING}${NC} Login items audit incomplete (owner state unknown; no conclusions published)"
+        fi
+        optimize_task_result "$MOLE_OPTIMIZE_OUTCOME_FAILED"
+        if [[ $audit_status -ge 128 ]]; then
+            return "$audit_status"
+        fi
+        return 0
+    fi
+
+    if [[ ${#broken_items[@]} -gt 0 ]]; then
+        for item in "${broken_items[@]}"; do
+            echo -e "  ${YELLOW}${ICON_WARNING}${NC} Broken login item: $item (app not found)"
+            broken=$((broken + 1))
+        done
+    fi
 
     if [[ $broken -eq 0 ]]; then
         opt_msg "Login items all healthy ($checked checked)"

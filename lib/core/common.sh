@@ -70,6 +70,59 @@ mole_identity_in_list() {
     return 1
 }
 
+# True when a launcher entry provably belongs to a REMOVED Homebrew keg: a
+# dangling symlink into Cellar/mole, or a regular file whose brew-written
+# SCRIPT_DIR line names a Cellar/mole path that no longer exists (the #1488
+# shape: a stale copy survived an upgrade, ran, and failed sourcing its libs).
+# A healthy brew link, a healthy brew wrapper, and a manual install (whose
+# SCRIPT_DIR points at the config dir, never Cellar) all return 1.
+_mole_brew_entry_references_dead_cellar() {
+    local entry="$1"
+    [[ -n "$entry" ]] || return 1
+    local referenced=""
+    if [[ -L "$entry" ]]; then
+        referenced=$(readlink "$entry" 2> /dev/null) || return 1
+        [[ "$referenced" == *"Cellar/mole"* ]] || return 1
+        # A resolvable link is healthy; only a dangling link into a removed
+        # keg is evidence.
+        [[ -e "$entry" ]] && return 1
+        return 0
+    fi
+    [[ -f "$entry" ]] || return 1
+    referenced=$(LC_ALL=C sed -n "s|^SCRIPT_DIR='\(.*/Cellar/mole/[^']*\)'.*$|\1|p" "$entry" 2> /dev/null | head -1)
+    [[ -n "$referenced" ]] || return 1
+    [[ ! -d "$referenced" ]]
+}
+
+# After a brew update/upgrade, make sure the launchers in brew's own bin still
+# resolve. `brew upgrade` happily reports success (or "already installed")
+# while a stale foreign entry keeps shadowing the real one, because brew never
+# overwrites files it does not own; only evidence of a DEAD keg authorizes the
+# forced relink, so a live manual install is never touched (#1488).
+_mole_repair_stale_brew_entries() {
+    command -v brew > /dev/null 2>&1 || return 0
+    local brew_prefix=""
+    brew_prefix=$(brew --prefix 2> /dev/null) || return 0
+    [[ -n "$brew_prefix" && -d "$brew_prefix/bin" ]] || return 0
+
+    local entry stale=false
+    for entry in "$brew_prefix/bin/mole" "$brew_prefix/bin/mo"; do
+        _mole_brew_entry_references_dead_cellar "$entry" && stale=true
+    done
+    [[ "$stale" == "true" ]] || return 0
+
+    local relink_rc=0
+    HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_AUTO_UPDATE=1 NONINTERACTIVE=1 \
+        run_with_timeout "${MOLE_HOMEBREW_UPDATE_TIMEOUT:-120}" \
+        brew link --overwrite mole > /dev/null 2>&1 || relink_rc=$?
+    if [[ $relink_rc -eq 0 ]]; then
+        echo -e "${GREEN}${ICON_SUCCESS}${NC} Repaired stale launcher, now pointing at the current Homebrew install"
+    else
+        log_warning "Launcher still points at a removed Homebrew version"
+        printf 'Run: brew link --overwrite mole\n' >&2
+    fi
+}
+
 # Update via Homebrew
 update_via_homebrew() {
     local current_version="$1"
@@ -133,7 +186,8 @@ update_via_homebrew() {
         local installed_version
         installed_version=$(HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_AUTO_UPDATE=1 \
             run_with_timeout "$MOLE_TIMEOUT_PKG_LIST_SEC" brew list --versions mole 2> /dev/null | awk '{print $2}')
-        [[ -z "$installed_version" ]] && installed_version=$(mo --version 2> /dev/null | awk '/Mole version/ {print $3; exit}')
+        [[ -z "$installed_version" ]] && installed_version=$(run_with_timeout "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
+            mo --version 2> /dev/null | awk '/Mole version/ {print $3; exit}' || true)
         echo ""
         echo -e "${GREEN}${ICON_SUCCESS}${NC} Already on latest version, ${installed_version:-$current_version}"
         echo ""
@@ -142,11 +196,17 @@ update_via_homebrew() {
         local new_version
         new_version=$(HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_AUTO_UPDATE=1 \
             run_with_timeout "$MOLE_TIMEOUT_PKG_LIST_SEC" brew list --versions mole 2> /dev/null | awk '{print $2}')
-        [[ -z "$new_version" ]] && new_version=$(mo --version 2> /dev/null | awk '/Mole version/ {print $3; exit}')
+        [[ -z "$new_version" ]] && new_version=$(run_with_timeout "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
+            mo --version 2> /dev/null | awk '/Mole version/ {print $3; exit}' || true)
         echo ""
         echo -e "${GREEN}${ICON_SUCCESS}${NC} Updated to latest version, ${new_version:-$current_version}"
         echo ""
     fi
+
+    # Both success shapes can leave a stale foreign launcher shadowing the
+    # fresh keg (brew never overwrites files it does not own); heal it while
+    # the user is right here asking for an update.
+    _mole_repair_stale_brew_entries
 
     # Clear update cache (suppress errors if cache doesn't exist or is locked)
     rm -f "$HOME/.cache/mole/version_check" "$HOME/.cache/mole/update_message" 2> /dev/null || true

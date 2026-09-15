@@ -1,154 +1,187 @@
 #!/usr/bin/env bats
 
 setup_file() {
-	PROJECT_ROOT="$(cd "${BATS_TEST_DIRNAME}/.." && pwd)"
-	export PROJECT_ROOT
+    PROJECT_ROOT="$(cd "${BATS_TEST_DIRNAME}/.." && pwd)"
+    export PROJECT_ROOT
 
-	ORIGINAL_HOME="${BATS_TMPDIR:-}" # Use BATS_TMPDIR as original HOME if set by bats
-	if [[ -z "$ORIGINAL_HOME" ]]; then
-		ORIGINAL_HOME="${HOME:-}"
-	fi
-	export ORIGINAL_HOME
+    ORIGINAL_HOME="${BATS_TMPDIR:-}" # Use BATS_TMPDIR as original HOME if set by bats
+    if [[ -z "$ORIGINAL_HOME" ]]; then
+        ORIGINAL_HOME="${HOME:-}"
+    fi
+    export ORIGINAL_HOME
 
-	HOME="$(mktemp -d "${BATS_TEST_DIRNAME}/tmp-uninstall-home.XXXXXX")"
-	export HOME
+    HOME="$(mktemp -d "${BATS_TEST_DIRNAME}/tmp-uninstall-home.XXXXXX")"
+    export HOME
 }
 
 teardown_file() {
-	if [[ "$HOME" == "${BATS_TEST_DIRNAME}/tmp-"* ]]; then
-		rm -rf "$HOME"
-	fi
-	if [[ -n "${ORIGINAL_HOME:-}" ]]; then
-		export HOME="$ORIGINAL_HOME"
-	fi
+    if [[ "$HOME" == "${BATS_TEST_DIRNAME}/tmp-"* ]]; then
+        rm -rf "$HOME"
+    fi
+    if [[ -n "${ORIGINAL_HOME:-}" ]]; then
+        export HOME="$ORIGINAL_HOME"
+    fi
 }
 
 setup() {
-	# Safety: refuse to operate on a real home directory.
-	if [[ "$HOME" != "${BATS_TEST_DIRNAME}/tmp-"* ]]; then
-		printf 'FATAL: HOME is not a test temp dir: %s\n' "$HOME" >&2
-		return 1
-	fi
-	export TERM="dumb"
-	rm -rf "${HOME:?}"/*
-	mkdir -p "$HOME"
+    # Safety: refuse to operate on a real home directory.
+    if [[ "$HOME" != "${BATS_TEST_DIRNAME}/tmp-"* ]]; then
+        printf 'FATAL: HOME is not a test temp dir: %s\n' "$HOME" >&2
+        return 1
+    fi
+    export TERM="dumb"
+    rm -rf "${HOME:?}"/*
+    mkdir -p "$HOME"
 }
 
 create_app_artifacts() {
-	mkdir -p "$HOME/Applications/TestApp.app"
-	mkdir -p "$HOME/Library/Application Support/TestApp"
-	mkdir -p "$HOME/Library/Caches/TestApp"
-	mkdir -p "$HOME/Library/Containers/com.example.TestApp"
-	mkdir -p "$HOME/Library/Preferences"
-	touch "$HOME/Library/Preferences/com.example.TestApp.plist"
-	touch "$HOME/Library/Preferences/TestApp.plist"
-	mkdir -p "$HOME/Library/Preferences/ByHost"
-	touch "$HOME/Library/Preferences/ByHost/com.example.TestApp.ABC123.plist"
-	mkdir -p "$HOME/Library/Saved Application State/com.example.TestApp.savedState"
-	mkdir -p "$HOME/Library/Saved Application State/TestApp.savedState"
-	mkdir -p "$HOME/Library/LaunchAgents"
-	touch "$HOME/Library/LaunchAgents/com.example.TestApp.plist"
-	mkdir -p "$HOME/.cache/testapp"
+    mkdir -p "$HOME/Applications/TestApp.app"
+    mkdir -p "$HOME/Library/Application Support/TestApp"
+    mkdir -p "$HOME/Library/Caches/TestApp"
+    mkdir -p "$HOME/Library/Containers/com.example.TestApp"
+    mkdir -p "$HOME/Library/Preferences"
+    touch "$HOME/Library/Preferences/com.example.TestApp.plist"
+    touch "$HOME/Library/Preferences/TestApp.plist"
+    mkdir -p "$HOME/Library/Preferences/ByHost"
+    touch "$HOME/Library/Preferences/ByHost/com.example.TestApp.ABC123.plist"
+    mkdir -p "$HOME/Library/Saved Application State/com.example.TestApp.savedState"
+    mkdir -p "$HOME/Library/Saved Application State/TestApp.savedState"
+    mkdir -p "$HOME/Library/LaunchAgents"
+    touch "$HOME/Library/LaunchAgents/com.example.TestApp.plist"
+    mkdir -p "$HOME/.cache/testapp"
 }
 
 @test "find_app_files discovers user-level leftovers" {
-	create_app_artifacts
+    create_app_artifacts
 
-	result="$(
-		HOME="$HOME" /bin/bash --noprofile --norc <<'EOF'
+    result="$(
+        HOME="$HOME" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 find_app_files "com.example.TestApp" "TestApp"
 EOF
-	)"
+    )"
 
-	[[ "$result" == *"Application Support/TestApp"* ]] || return 1
-	[[ "$result" == *"Caches/TestApp"* ]] || return 1
-	[[ "$result" == *"Preferences/com.example.TestApp.plist"* ]] || return 1
-	[[ "$result" == *"Preferences/TestApp.plist"* ]] || return 1
-	[[ "$result" == *"Saved Application State/com.example.TestApp.savedState"* ]] || return 1
-	[[ "$result" == *"Saved Application State/TestApp.savedState"* ]] || return 1
-	[[ "$result" == *"Containers/com.example.TestApp"* ]] || return 1
-	[[ "$result" == *"LaunchAgents/com.example.TestApp.plist"* ]] || return 1
-	[[ "$result" == *".cache/testapp"* ]]
+    [[ "$result" == *"Application Support/TestApp"* ]] || return 1
+    [[ "$result" == *"Caches/TestApp"* ]] || return 1
+    [[ "$result" == *"Preferences/com.example.TestApp.plist"* ]] || return 1
+    [[ "$result" == *"Preferences/TestApp.plist"* ]] || return 1
+    [[ "$result" == *"Saved Application State/com.example.TestApp.savedState"* ]] || return 1
+    [[ "$result" == *"Saved Application State/TestApp.savedState"* ]] || return 1
+    [[ "$result" == *"Containers/com.example.TestApp"* ]] || return 1
+    [[ "$result" == *"LaunchAgents/com.example.TestApp.plist"* ]] || return 1
+    [[ "$result" == *".cache/testapp"* ]]
 }
 
 @test "find_app_files discovers recent-document shared file lists by bundle id" {
-	mkdir -p "$HOME/Library/Application Support/com.apple.sharedfilelist/com.apple.LSSharedFileList.ApplicationRecentDocuments"
-	touch "$HOME/Library/Application Support/com.apple.sharedfilelist/com.apple.LSSharedFileList.ApplicationRecentDocuments/com.rogueamoeba.soundsource.sfl2"
-	touch "$HOME/Library/Application Support/com.apple.sharedfilelist/com.apple.LSSharedFileList.ApplicationRecentDocuments/com.rogueamoeba.soundsource.sfl3"
-	touch "$HOME/Library/Application Support/com.apple.sharedfilelist/com.apple.LSSharedFileList.ApplicationRecentDocuments/com.rogueamoeba.soundsource.sfl4"
-	touch "$HOME/Library/Application Support/com.apple.sharedfilelist/com.apple.LSSharedFileList.ApplicationRecentDocuments/com.apple.systemsettings.sfl3"
+    mkdir -p "$HOME/Library/Application Support/com.apple.sharedfilelist/com.apple.LSSharedFileList.ApplicationRecentDocuments"
+    touch "$HOME/Library/Application Support/com.apple.sharedfilelist/com.apple.LSSharedFileList.ApplicationRecentDocuments/com.rogueamoeba.soundsource.sfl2"
+    touch "$HOME/Library/Application Support/com.apple.sharedfilelist/com.apple.LSSharedFileList.ApplicationRecentDocuments/com.rogueamoeba.soundsource.sfl3"
+    touch "$HOME/Library/Application Support/com.apple.sharedfilelist/com.apple.LSSharedFileList.ApplicationRecentDocuments/com.rogueamoeba.soundsource.sfl4"
+    touch "$HOME/Library/Application Support/com.apple.sharedfilelist/com.apple.LSSharedFileList.ApplicationRecentDocuments/com.apple.systemsettings.sfl3"
 
-	result="$(
-		HOME="$HOME" /bin/bash --noprofile --norc <<'EOF'
+    result="$(
+        HOME="$HOME" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 find_app_files "com.rogueamoeba.soundsource" "SoundSource"
 EOF
-	)"
+    )"
 
-	[[ "$result" == *"com.rogueamoeba.soundsource.sfl2"* ]] || return 1
-	[[ "$result" == *"com.rogueamoeba.soundsource.sfl3"* ]] || return 1
-	[[ "$result" == *"com.rogueamoeba.soundsource.sfl4"* ]] || return 1
-	[[ "$result" != *"com.apple.systemsettings.sfl3"* ]]
+    [[ "$result" == *"com.rogueamoeba.soundsource.sfl2"* ]] || return 1
+    [[ "$result" == *"com.rogueamoeba.soundsource.sfl3"* ]] || return 1
+    [[ "$result" == *"com.rogueamoeba.soundsource.sfl4"* ]] || return 1
+    [[ "$result" != *"com.apple.systemsettings.sfl3"* ]]
 }
 
 @test "find_app_files discovers nested XPC helper preferences from selected app" {
-	app="$HOME/Applications/SoundSource.app"
-	mkdir -p "$app/Contents/Frameworks/RemoteAU.framework/Versions/A/XPCServices/RemoteAUHost.xpc/Contents"
-	mkdir -p "$app/Contents/Frameworks/Sparkle.framework/Versions/A/XPCServices/DownloaderService.xpc/Contents"
-	mkdir -p "$app/Contents/Frameworks/Sparkle.framework/Versions/A/Resources/Autoupdate.app/Contents"
-	mkdir -p "$HOME/Library/Caches/com.rogueamoeba.RemoteAUHost"
-	mkdir -p "$HOME/Library/Caches/com.rogueamoeba.RemoteAUHost.shared"
-	mkdir -p "$HOME/Library/HTTPStorages/org.sparkle-project.DownloaderService"
-	mkdir -p "$HOME/Library/Preferences"
-	cat > "$app/Contents/Frameworks/RemoteAU.framework/Versions/A/XPCServices/RemoteAUHost.xpc/Contents/Info.plist" <<'PLIST'
+    app="$HOME/Applications/SoundSource.app"
+    mkdir -p "$app/Contents/Frameworks/RemoteAU.framework/Versions/A/XPCServices/RemoteAUHost.xpc/Contents"
+    mkdir -p "$app/Contents/Frameworks/Sparkle.framework/Versions/A/XPCServices/DownloaderService.xpc/Contents"
+    mkdir -p "$app/Contents/Frameworks/Sparkle.framework/Versions/A/Resources/Autoupdate.app/Contents"
+    mkdir -p "$HOME/Library/Caches/com.rogueamoeba.RemoteAUHost"
+    mkdir -p "$HOME/Library/Caches/com.rogueamoeba.RemoteAUHost.shared"
+    mkdir -p "$HOME/Library/HTTPStorages/org.sparkle-project.DownloaderService"
+    mkdir -p "$HOME/Library/Preferences"
+    cat > "$app/Contents/Frameworks/RemoteAU.framework/Versions/A/XPCServices/RemoteAUHost.xpc/Contents/Info.plist" << 'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>CFBundleIdentifier</key><string>com.rogueamoeba.RemoteAUHost</string>
 </dict></plist>
 PLIST
-	cat > "$app/Contents/Frameworks/Sparkle.framework/Versions/A/XPCServices/DownloaderService.xpc/Contents/Info.plist" <<'PLIST'
+    cat > "$app/Contents/Frameworks/Sparkle.framework/Versions/A/XPCServices/DownloaderService.xpc/Contents/Info.plist" << 'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>CFBundleIdentifier</key><string>org.sparkle-project.DownloaderService</string>
 </dict></plist>
 PLIST
-	cat > "$app/Contents/Frameworks/Sparkle.framework/Versions/A/Resources/Autoupdate.app/Contents/Info.plist" <<'PLIST'
+    cat > "$app/Contents/Frameworks/Sparkle.framework/Versions/A/Resources/Autoupdate.app/Contents/Info.plist" << 'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>CFBundleIdentifier</key><string>org.sparkle-project.Sparkle.Autoupdate</string>
 </dict></plist>
 PLIST
-	touch "$HOME/Library/Preferences/com.rogueamoeba.RemoteAUHost.plist"
-	touch "$HOME/Library/Preferences/org.sparkle-project.Sparkle.Autoupdate.plist"
+    touch "$HOME/Library/Preferences/com.rogueamoeba.RemoteAUHost.plist"
+    touch "$HOME/Library/Preferences/org.sparkle-project.Sparkle.Autoupdate.plist"
 
-	result="$(
-		HOME="$HOME" APP="$app" /bin/bash --noprofile --norc <<'EOF'
+    result="$(
+        HOME="$HOME" APP="$app" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 find_app_files "com.rogueamoeba.soundsource" "SoundSource" "$APP"
 EOF
-	)"
+    )"
 
-	[[ "$result" == *"Library/Preferences/com.rogueamoeba.RemoteAUHost.plist"* ]] || return 1
-	[[ "$result" == *"Library/Caches/com.rogueamoeba.RemoteAUHost"* ]] || return 1
-	[[ "$result" != *"Library/Caches/com.rogueamoeba.RemoteAUHost.shared"* ]] || return 1
-	[[ "$result" != *"org.sparkle-project.Sparkle.Autoupdate.plist"* ]] || return 1
-	[[ "$result" != *"org.sparkle-project.DownloaderService"* ]]
+    [[ "$result" == *"Library/Preferences/com.rogueamoeba.RemoteAUHost.plist"* ]] || return 1
+    [[ "$result" == *"Library/Caches/com.rogueamoeba.RemoteAUHost"* ]] || return 1
+    [[ "$result" != *"Library/Caches/com.rogueamoeba.RemoteAUHost.shared"* ]] || return 1
+    [[ "$result" != *"org.sparkle-project.Sparkle.Autoupdate.plist"* ]] || return 1
+    [[ "$result" != *"org.sparkle-project.DownloaderService"* ]]
+}
+
+@test "find_app_files discards an incomplete root but propagates cancellation" {
+    local nested="$HOME/Library/Caches/examplevendor/ExampleProduct"
+    mkdir -p "$nested"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" NESTED="$nested" \
+        /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+
+run_with_timeout() {
+    local _duration="$1"
+    shift
+    if [[ "${1:-}" == "find" ]]; then
+        printf '%s\0' "$NESTED"
+        return "${SCAN_RC:?}"
+    fi
+    "$@"
+}
+
+SCAN_RC=1
+result=$(find_app_files "com.examplevendor.ExampleProduct" "ExampleProduct")
+[[ "$result" != *"$NESTED"* ]] || exit 1
+
+SCAN_RC=130
+rc=0
+result=$(find_app_files "com.examplevendor.ExampleProduct" "ExampleProduct") || rc=$?
+[[ $rc -eq 130 ]] || exit 1
+[[ "$result" != *"$NESTED"* ]]
+EOF
+
+    [ "$status" -eq 0 ]
 }
 
 @test "find_app_system_files discovers bundle-id-prefixed LaunchDaemons" {
-	fakebin="$HOME/fakebin"
-	mkdir -p "$fakebin"
+    fakebin="$HOME/fakebin"
+    mkdir -p "$fakebin"
 
-	# The new dot-anchored alternation invokes find with two -name patterns:
-	# "${bundle_id}.plist" and "${bundle_id}.*.plist". Match on either form.
-	cat > "$fakebin/find" <<'SCRIPT'
+    # The new dot-anchored alternation invokes find with two -name patterns:
+    # "${bundle_id}.plist" and "${bundle_id}.*.plist". Match on either form.
+    cat > "$fakebin/find" << 'SCRIPT'
 #!/bin/sh
 args="$*"
 
@@ -158,9 +191,9 @@ case "$args" in
     ;;
 esac
 SCRIPT
-	chmod +x "$fakebin/find"
+    chmod +x "$fakebin/find"
 
-	run env HOME="$HOME" PATH="$fakebin:$PATH" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PATH="$fakebin:$PATH" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 
@@ -168,38 +201,38 @@ result=$(find_app_system_files "com.west2online.ClashXPro" "ClashX Pro")
 [[ "$result" == *"/Library/LaunchDaemons/com.west2online.ClashXPro.ProxyConfigHelper.plist"* ]] || exit 1
 EOF
 
-	[ "$status" -eq 0 ]
+    [ "$status" -eq 0 ]
 }
 
 # The previous "${bundle_id}*.plist" glob over-matched: bundle "com.foo"
 # would harvest "com.foobar.plist" and "com.foobaz.plist" from unrelated
 # vendors. The dot-anchored alternation only matches at the dot boundary.
 @test "find_app_system_files does not over-match sibling-vendor LaunchDaemons" {
-	# Use a real /Library/LaunchDaemons-like fixture by isolating PATH so the
-	# function falls back to the system find binary, then assert only the
-	# expected files are surfaced.
-	fakebase="$HOME/fakebase"
-	mkdir -p "$fakebase/Library/LaunchAgents" "$fakebase/Library/LaunchDaemons"
-	: > "$fakebase/Library/LaunchDaemons/com.foo.plist"          # exact match - keep
-	: > "$fakebase/Library/LaunchDaemons/com.foo.helper.plist"   # dotted - keep
-	: > "$fakebase/Library/LaunchDaemons/com.foobar.plist"       # sibling - reject
-	: > "$fakebase/Library/LaunchDaemons/com.foobaz.helper.plist" # sibling - reject
+    # Use a real /Library/LaunchDaemons-like fixture by isolating PATH so the
+    # function falls back to the system find binary, then assert only the
+    # expected files are surfaced.
+    fakebase="$HOME/fakebase"
+    mkdir -p "$fakebase/Library/LaunchAgents" "$fakebase/Library/LaunchDaemons"
+    : > "$fakebase/Library/LaunchDaemons/com.foo.plist"           # exact match - keep
+    : > "$fakebase/Library/LaunchDaemons/com.foo.helper.plist"    # dotted - keep
+    : > "$fakebase/Library/LaunchDaemons/com.foobar.plist"        # sibling - reject
+    : > "$fakebase/Library/LaunchDaemons/com.foobaz.helper.plist" # sibling - reject
 
-	# Verify the find pattern itself, since the production find is hard-coded
-	# to /Library/* paths. This mirrors what app_protection.sh emits.
-	run /bin/bash --noprofile --norc -c "
+    # Verify the find pattern itself, since the production find is hard-coded
+    # to /Library/* paths. This mirrors what app_protection.sh emits.
+    run /bin/bash --noprofile --norc -c "
 		cd '$fakebase/Library/LaunchDaemons'
 		find . -maxdepth 1 \( -name 'com.foo.plist' -o -name 'com.foo.*.plist' \) | sort
 	"
-	[ "$status" -eq 0 ]
-	[[ "$output" == *"com.foo.plist"* ]] || return 1
-	[[ "$output" == *"com.foo.helper.plist"* ]] || return 1
-	[[ "$output" != *"com.foobar.plist"* ]] || return 1
-	[[ "$output" != *"com.foobaz.helper.plist"* ]]
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"com.foo.plist"* ]] || return 1
+    [[ "$output" == *"com.foo.helper.plist"* ]] || return 1
+    [[ "$output" != *"com.foobar.plist"* ]] || return 1
+    [[ "$output" != *"com.foobaz.helper.plist"* ]]
 }
 
 @test "get_diagnostic_report_paths_for_app avoids executable prefix collisions" {
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 
@@ -238,16 +271,16 @@ result=$(get_diagnostic_report_paths_for_app "$app_dir" "Foo" "$diag_dir")
 [[ "$result" != *"Foobar_2026-01-01-120001_host.ips"* ]] || exit 1
 EOF
 
-	[ "$status" -eq 0 ]
+    [ "$status" -eq 0 ]
 }
 
 @test "calculate_total_size returns aggregate kilobytes" {
-	mkdir -p "$HOME/sized"
-	dd if=/dev/zero of="$HOME/sized/file1" bs=1024 count=1 >/dev/null 2>&1
-	dd if=/dev/zero of="$HOME/sized/file2" bs=1024 count=2 >/dev/null 2>&1
+    mkdir -p "$HOME/sized"
+    dd if=/dev/zero of="$HOME/sized/file1" bs=1024 count=1 > /dev/null 2>&1
+    dd if=/dev/zero of="$HOME/sized/file2" bs=1024 count=2 > /dev/null 2>&1
 
-	result="$(
-		HOME="$HOME" /bin/bash --noprofile --norc <<'EOF'
+    result="$(
+        HOME="$HOME" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 files="$(printf '%s
@@ -255,17 +288,17 @@ files="$(printf '%s
 ' "$HOME/sized/file1" "$HOME/sized/file2")"
 calculate_total_size "$files"
 EOF
-	)"
+    )"
 
-	[ "$result" -ge 3 ]
+    [ "$result" -ge 3 ]
 }
 
 @test "calculate_total_size does not double-count nested paths" {
-	mkdir -p "$HOME/sized-parent/child"
-	dd if=/dev/zero of="$HOME/sized-parent/child/payload" bs=1024 count=2 >/dev/null 2>&1
+    mkdir -p "$HOME/sized-parent/child"
+    dd if=/dev/zero of="$HOME/sized-parent/child/payload" bs=1024 count=2 > /dev/null 2>&1
 
-	result="$(
-		HOME="$HOME" /bin/bash --noprofile --norc <<'EOF'
+    result="$(
+        HOME="$HOME" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 parent="$HOME/sized-parent"
@@ -274,34 +307,53 @@ parent_only=$(calculate_total_size "$parent")
 with_child=$(calculate_total_size "$(printf '%s\n%s\n' "$parent" "$child")")
 printf '%s|%s\n' "$parent_only" "$with_child"
 EOF
-	)"
+    )"
 
-	parent_only="${result%%|*}"
-	with_child="${result##*|}"
-	[ "$parent_only" -gt 0 ]
-	[ "$with_child" -eq "$parent_only" ]
+    parent_only="${result%%|*}"
+    with_child="${result##*|}"
+    [ "$parent_only" -gt 0 ]
+    [ "$with_child" -eq "$parent_only" ]
 }
 
 @test "format_uninstall_preview_path includes per-path size" {
-	dd if=/dev/zero of="$HOME/preview-size-file" bs=1024 count=1 >/dev/null 2>&1
+    dd if=/dev/zero of="$HOME/preview-size-file" bs=1024 count=1 > /dev/null 2>&1
+    expected_size_kb="$(du -skP "$HOME/preview-size-file" | awk '{print $1}')"
 
-	result="$(
-		HOME="$HOME" /bin/bash --noprofile --norc <<'EOF'
+    result="$(
+        HOME="$HOME" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/batch.sh"
 format_uninstall_preview_path "$HOME/preview-size-file"
 EOF
-	)"
+    )"
 
-	[[ "$result" == *"~/preview-size-file"* ]] || return 1
-	[[ "$result" == *"1KB"* ]]
+    [[ "$result" == *"~/preview-size-file"* ]] || return 1
+    [[ "$result" == *"${expected_size_kb}KB"* ]]
+}
+
+@test "format_uninstall_preview_path propagates timed out and interrupted size probes" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+get_path_size_kb() { return "$SIZE_RC"; }
+for SIZE_RC in 124 130; do
+    rc=0
+    format_uninstall_preview_path "$HOME/interrupted-preview" || rc=$?
+    printf 'SIZE_RC=%s RC=%s\n' "$SIZE_RC" "$rc"
+done
+EOF
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"SIZE_RC=124 RC=124"* ]] || return 1
+    [[ "$output" == *"SIZE_RC=130 RC=130"* ]]
 }
 
 @test "batch_uninstall_applications removes selected app data" {
-	create_app_artifacts
+    create_app_artifacts
 
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/batch.sh"
@@ -339,17 +391,61 @@ printf '\n' | batch_uninstall_applications
 [[ ! -f "$HOME/Library/LaunchAgents/com.example.TestApp.plist" ]] || exit 1
 EOF
 
-	[ "$status" -eq 0 ]
+    [ "$status" -eq 0 ]
 }
 
-@test "batch uninstall rejects privileged removal below a mutable parent before side effects (#1299)" {
-	mkdir -p "$HOME/Applications/RootOwned.app"
-	mkdir -p "$HOME/Library/Application Support/RootOwned"
+@test "batch uninstall routes a root-owned app through unprivileged Trash when its parent is writable (#1331)" {
+    mkdir -p "$HOME/Applications/RootOwned.app"
+    local trace="$HOME/root-owned-trash.log"
 
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+export MOLE_DELETE_MODE=trash
+
+start_inline_spinner() { :; }
+stop_inline_spinner() { :; }
+get_file_owner() { echo root; }
+pgrep() { return 1; }
+find_app_files() { return 0; }
+find_app_system_files() { return 0; }
+ensure_sudo_session() { echo "UNEXPECTED_SUDO"; return 1; }
+stop_launch_services() { :; }
+unregister_app_bundle() { :; }
+remove_login_item() { :; }
+force_kill_app() { return 0; }
+mole_delete() {
+	printf 'DELETE:%s:%s\n' "$1" "${2:-false}" >> "$HOME/root-owned-trash.log"
+	return 0
+}
+
+selected_apps=("0|$HOME/Applications/RootOwned.app|RootOwned|com.example.RootOwned|0|Never")
+files_cleaned=0
+total_items=0
+total_size_cleaned=0
+
+printf '\n' | batch_uninstall_applications
+EOF
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+    [[ "$(grep -c "^DELETE:$HOME/Applications/RootOwned.app:false$" "$trace" 2> /dev/null || true)" -eq 1 ]] || return 1
+    [[ "$output" != *"UNEXPECTED_SUDO"* ]] || return 1
+    [[ "$output" != *"cannot be removed safely by Mole"* ]]
+}
+
+@test "batch uninstall rejects privileged permanent removal below a mutable parent before side effects (#1299)" {
+    mkdir -p "$HOME/Applications/RootOwned.app"
+    mkdir -p "$HOME/Library/Application Support/RootOwned"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+export MOLE_DELETE_MODE=permanent
 
 start_inline_spinner() { :; }
 stop_inline_spinner() { :; }
@@ -377,19 +473,19 @@ batch_uninstall_applications || rc=$?
 [[ ! -e "$HOME/mutable-parent-side-effects.log" ]] || { echo "WRONG: discovery ran"; exit 1; }
 EOF
 
-	[ "$status" -eq 0 ] || return 1
-	[[ "$output" == *"cannot be removed safely by Mole from this location"* ]] || return 1
-	[[ "$output" == *"Move it to Trash in Finder"* ]] || return 1
-	[[ "$output" == *"protected containers and app data untouched"* ]] || return 1
-	[[ "$output" != *"UNEXPECTED_"* ]]
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"cannot be removed safely by Mole from this location"* ]] || return 1
+    [[ "$output" == *"Move it to Trash in Finder"* ]] || return 1
+    [[ "$output" == *"protected containers and app data untouched"* ]] || return 1
+    [[ "$output" != *"UNEXPECTED_"* ]]
 }
 
 @test "a foreign Caskroom-like symlink never selects a Homebrew cask (#1299)" {
-	local fake_target="$HOME/foreign/Caskroom/real-cask/1.0/Fake.app"
-	mkdir -p "$HOME/Applications" "$fake_target"
-	ln -s "$fake_target" "$HOME/Applications/Fake.app"
+    local fake_target="$HOME/foreign/Caskroom/real-cask/1.0/Fake.app"
+    mkdir -p "$HOME/Applications" "$fake_target"
+    ln -s "$fake_target" "$HOME/Applications/Fake.app"
 
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/batch.sh"
@@ -416,15 +512,18 @@ batch_uninstall_applications || rc=$?
 [[ ! -e "$HOME/foreign-cask-side-effects.log" ]] || { echo "WRONG: discovery ran"; exit 1; }
 EOF
 
-	[ "$status" -eq 0 ] || { echo "$output"; return 1; }
-	[[ "$output" == *"cannot be removed safely by Mole from this location"* ]] || return 1
-	[[ "$output" != *"UNEXPECTED_"* ]]
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+    [[ "$output" == *"cannot be removed safely by Mole from this location"* ]] || return 1
+    [[ "$output" != *"UNEXPECTED_"* ]]
 }
 
 @test "uninstall_bundle_id_has_surviving_sibling detects unselected same-bundle install" {
-	mkdir -p "$HOME/Applications/Shared.app" "$HOME/Applications/Shared-beta.app"
+    mkdir -p "$HOME/Applications/Shared.app" "$HOME/Applications/Shared-beta.app"
 
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/batch.sh"
@@ -458,20 +557,785 @@ if uninstall_bundle_id_has_surviving_sibling "unknown" "$HOME/Applications/Share
 fi
 EOF
 
-	[ "$status" -eq 0 ]
+    [ "$status" -eq 0 ]
+}
+
+@test "uninstall_bundle_id_has_surviving_sibling compares bundle ids case-insensitively" {
+    mkdir -p "$HOME/Applications/Shared.app" "$HOME/Applications/Shared-beta.app"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+
+# The survivor's id differs from the selected app's only in case. On a default
+# APFS volume both apps read and write the SAME ~/Library/Preferences plist, so
+# a literal comparison here would let the zap wipe the survivor's settings.
+apps_data=(
+	"0|$HOME/Applications/Shared.app|Shared|com.Example.Shared|0|Never|0"
+	"0|$HOME/Applications/Shared-beta.app|Shared-beta|com.example.shared|0|Never|0"
+)
+selected_apps=("0|$HOME/Applications/Shared-beta.app|Shared-beta|com.example.shared|0|Never")
+
+uninstall_bundle_id_has_surviving_sibling "com.example.shared" "$HOME/Applications/Shared-beta.app" || {
+	echo "WRONG: case-differing survivor was not detected"
+	exit 1
+}
+
+names=$(uninstall_surviving_sibling_names "com.example.shared" "$HOME/Applications/Shared-beta.app")
+case "$names" in
+*shared*) ;;
+*)
+	echo "WRONG: case-differing survivor contributed no protected names"
+	exit 1
+	;;
+esac
+
+# A genuinely different id must still not register as a sibling.
+if uninstall_bundle_id_has_surviving_sibling "com.example.other" "$HOME/Applications/Shared-beta.app"; then
+	echo "WRONG: unrelated bundle id reported a sibling"
+	exit 1
+fi
+EOF
+
+    [ "$status" -eq 0 ]
+}
+
+@test "live same-bundle scan finds a sibling that appeared after preview" {
+    local app_root="$HOME/live-apps"
+    mkdir -p "$app_root/Selected.app/Contents" \
+        "$app_root/Setapp/NewSibling.app/Contents"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" APP_ROOT="$app_root" \
+        /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+pkg_receipt_nonstandard_app_paths() { :; }
+
+printf '%s\n' \
+    '<?xml version="1.0" encoding="UTF-8"?>' \
+    '<plist version="1.0"><dict>' \
+    '<key>CFBundleIdentifier</key><string>com.example.live-shared</string>' \
+    '</dict></plist>' \
+    > "$APP_ROOT/Selected.app/Contents/Info.plist"
+cp "$APP_ROOT/Selected.app/Contents/Info.plist" \
+    "$APP_ROOT/Setapp/NewSibling.app/Contents/Info.plist"
+selected_apps=("0|$APP_ROOT/Selected.app|Selected|com.example.live-shared|0|Never")
+_MOLE_UNINSTALL_LIVE_APP_ROOTS=("$APP_ROOT")
+_MOLE_UNINSTALL_LIVE_VOLUMES_ROOT="$HOME/no-volumes"
+uninstall_live_bundle_has_other_install \
+    "com.example.live-shared" "$APP_ROOT/Selected.app"
+first_fingerprint="$_MOLE_UNINSTALL_LIVE_SIBLING_FINGERPRINT"
+[[ -n "$first_fingerprint" && ${#_MOLE_UNINSTALL_LIVE_SIBLING_PATHS[@]} -eq 1 ]]
+
+mkdir -p "$APP_ROOT/Utilities/AnotherSibling.app/Contents"
+cp "$APP_ROOT/Selected.app/Contents/Info.plist" \
+    "$APP_ROOT/Utilities/AnotherSibling.app/Contents/Info.plist"
+uninstall_live_bundle_has_other_install \
+    "com.example.live-shared" "$APP_ROOT/Selected.app"
+[[ ${#_MOLE_UNINSTALL_LIVE_SIBLING_PATHS[@]} -eq 2 ]] || exit 1
+[[ "$first_fingerprint" != "$_MOLE_UNINSTALL_LIVE_SIBLING_FINGERPRINT" ]] || exit 1
+
+mkdir -p "$HOME/external/LinkedSibling.app/Contents"
+cp "$APP_ROOT/Selected.app/Contents/Info.plist" \
+    "$HOME/external/LinkedSibling.app/Contents/Info.plist"
+ln -s "$HOME/external/LinkedSibling.app" "$APP_ROOT/LinkedSibling.app"
+uninstall_live_bundle_has_other_install \
+    "com.example.live-shared" "$APP_ROOT/Selected.app"
+[[ ${#_MOLE_UNINSTALL_LIVE_SIBLING_PATHS[@]} -eq 3 ]]
+EOF
+
+    [ "$status" -eq 0 ]
+}
+
+@test "live same-bundle guard finds mixed-case siblings but ignores nested and unrelated bundles" {
+    local app_root="$HOME/live-mixed-case-apps"
+    mkdir -p "$app_root/Selected.app/Contents" \
+        "$app_root/Unrelated.App/Contents"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" APP_ROOT="$app_root" \
+        /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+pkg_receipt_nonstandard_app_paths() { :; }
+
+write_bundle_id() {
+    local path="$1"
+    local bundle_id="$2"
+    mkdir -p "$path/Contents"
+    printf '%s\n' \
+        '<?xml version="1.0" encoding="UTF-8"?>' \
+        '<plist version="1.0"><dict>' \
+        "<key>CFBundleIdentifier</key><string>$bundle_id</string>" \
+        '</dict></plist>' \
+        > "$path/Contents/Info.plist"
+}
+
+write_bundle_id "$APP_ROOT/Selected.app" "com.example.live-mixed"
+write_bundle_id "$APP_ROOT/Unrelated.App" "com.example.unrelated"
+selected_apps=("0|$APP_ROOT/Selected.app|Selected|com.example.live-mixed|0|Never")
+_MOLE_UNINSTALL_LIVE_APP_ROOTS=("$APP_ROOT")
+_MOLE_UNINSTALL_LIVE_VOLUMES_ROOT="$HOME/no-volumes"
+
+# A case-variant app with another id must not block the selected app.
+if uninstall_live_bundle_has_other_install \
+    "com.example.live-mixed" "$APP_ROOT/Selected.app"; then
+    echo "WRONG: unrelated app reported as a sibling"
+    exit 1
+fi
+[[ ${#_MOLE_UNINSTALL_LIVE_SIBLING_PATHS[@]} -eq 0 ]] || exit 1
+
+# A nested helper belongs to Container.APP and is not another installation.
+write_bundle_id "$APP_ROOT/Container.APP/Nested.app" "com.example.live-mixed"
+if uninstall_live_bundle_has_other_install \
+    "com.example.live-mixed" "$APP_ROOT/Selected.app"; then
+    echo "WRONG: nested app reported as a sibling"
+    exit 1
+fi
+[[ ${#_MOLE_UNINSTALL_LIVE_SIBLING_PATHS[@]} -eq 0 ]] || exit 1
+
+# A top-level surviving .APP with the same id must trip the destructive guard.
+write_bundle_id "$APP_ROOT/Survivor.APP" "com.example.live-mixed"
+uninstall_live_bundle_has_other_install \
+    "com.example.live-mixed" "$APP_ROOT/Selected.app"
+[[ ${#_MOLE_UNINSTALL_LIVE_SIBLING_PATHS[@]} -eq 1 ]] || exit 1
+[[ "${_MOLE_UNINSTALL_LIVE_SIBLING_PATHS[0]}" == "$APP_ROOT/Survivor.APP" ]]
+EOF
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+}
+
+@test "live same-bundle scan accepts dot-app text in a volume ancestor" {
+    local app_root="$HOME/Backup.app-data/Applications"
+    mkdir -p "$app_root/Survivor.app/Contents" "$HOME/Selected.app"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" APP_ROOT="$app_root" \
+        /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+pkg_receipt_nonstandard_app_paths() { :; }
+
+printf '%s\n' \
+    '<?xml version="1.0" encoding="UTF-8"?>' \
+    '<plist version="1.0"><dict>' \
+    '<key>CFBundleIdentifier</key><string>com.example.volume-shared</string>' \
+    '</dict></plist>' \
+    > "$APP_ROOT/Survivor.app/Contents/Info.plist"
+selected_apps=("0|$HOME/Selected.app|Selected|com.example.volume-shared|0|Never")
+_MOLE_UNINSTALL_LIVE_APP_ROOTS=("$APP_ROOT")
+_MOLE_UNINSTALL_LIVE_VOLUMES_ROOT="$HOME/no-volumes"
+uninstall_live_bundle_has_other_install \
+    "com.example.volume-shared" "$HOME/Selected.app"
+[[ ${#_MOLE_UNINSTALL_LIVE_SIBLING_PATHS[@]} -eq 1 ]]
+EOF
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+}
+
+@test "live same-bundle scan finds an app at a mounted volume root" {
+    local volumes_root="$HOME/Volumes"
+    local survivor="$volumes_root/Example/Survivor.app"
+    mkdir -p "$survivor/Contents" "$HOME/Selected.app"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" \
+        VOLUMES_ROOT="$volumes_root" SURVIVOR="$survivor" \
+        /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+pkg_receipt_nonstandard_app_paths() { :; }
+
+printf '%s\n' \
+    '<?xml version="1.0" encoding="UTF-8"?>' \
+    '<plist version="1.0"><dict>' \
+    '<key>CFBundleIdentifier</key><string>com.example.volume-root</string>' \
+    '</dict></plist>' \
+    > "$SURVIVOR/Contents/Info.plist"
+selected_apps=("0|$HOME/Selected.app|Selected|com.example.volume-root|0|Never")
+_MOLE_UNINSTALL_LIVE_APP_ROOTS=()
+_MOLE_UNINSTALL_LIVE_VOLUMES_ROOT="$VOLUMES_ROOT"
+live_rc=0
+uninstall_live_bundle_has_other_install \
+    "com.example.volume-root" "$HOME/Selected.app" || live_rc=$?
+printf 'LIVE_RC=%s PATHS=%s\n' "$live_rc" "${#_MOLE_UNINSTALL_LIVE_SIBLING_PATHS[@]}"
+[[ $live_rc -eq 0 ]] || exit 1
+[[ ${#_MOLE_UNINSTALL_LIVE_SIBLING_PATHS[@]} -eq 1 ]] || exit 1
+[[ "${_MOLE_UNINSTALL_LIVE_SIBLING_PATHS[0]}" == "$SURVIVOR" ]]
+EOF
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+}
+
+@test "live same-bundle scan covers exact package receipt apps" {
+    local app_root="$HOME/pkg-root"
+    mkdir -p "$app_root/one/two/three/four/Deep.app/Contents" "$HOME/Selected.app"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" APP_ROOT="$app_root" \
+        /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+
+printf '%s\n' \
+    '<?xml version="1.0" encoding="UTF-8"?>' \
+    '<plist version="1.0"><dict>' \
+    '<key>CFBundleIdentifier</key><string>com.example.pkg-shared</string>' \
+    '</dict></plist>' \
+    > "$APP_ROOT/one/two/three/four/Deep.app/Contents/Info.plist"
+selected_apps=("0|$HOME/Selected.app|Selected|com.example.pkg-shared|0|Never")
+pkg_receipt_nonstandard_app_paths() {
+    printf '%s\n' "$APP_ROOT/one/two/three/four/Deep.app"
+}
+_MOLE_UNINSTALL_LIVE_APP_ROOTS=()
+_MOLE_UNINSTALL_LIVE_VOLUMES_ROOT="$HOME/no-volumes"
+uninstall_live_bundle_has_other_install \
+    "com.example.pkg-shared" "$HOME/Selected.app"
+[[ ${#_MOLE_UNINSTALL_LIVE_SIBLING_PATHS[@]} -eq 1 ]]
+EOF
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+}
+
+@test "strict package receipt discovery rejects partial output" {
+    run env HOME="$HOME/pkg-partial" PROJECT_ROOT="$PROJECT_ROOT" \
+        /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+
+pkgutil() {
+    case "$1" in
+        --pkgs) printf 'com.example.one\ncom.example.two\n' ;;
+        --files)
+            if [[ "$2" == "com.example.one" ]]; then
+                printf 'opt/example/One.app/Contents/Info.plist\n'
+            else
+                return 124
+            fi
+            ;;
+    esac
+}
+run_with_timeout() {
+    shift
+    "$@"
+}
+
+rc=0
+output=$(MOLE_PKG_RECEIPT_CACHE_DISABLE=1 \
+    pkg_receipt_nonstandard_app_paths --require-complete) || rc=$?
+printf 'RC=%s OUTPUT=%s\n' "$rc" "$output"
+[[ $rc -eq 124 && -z "$output" ]]
+EOF
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+    [[ "$output" == *"RC=124 OUTPUT="* ]]
+}
+
+@test "non-strict receipt discovery bounds each pkgutil file listing" {
+	local mock_bin="$HOME/mock-pkgutil-bin"
+	mkdir -p "$mock_bin"
+	cat > "$mock_bin/pkgutil" <<'MOCK'
+#!/bin/bash
+case "$1" in
+    --pkgs) printf 'com.example.big\ncom.example.after\n' ;;
+    --files) exec sleep 30 ;;
+esac
+MOCK
+	chmod +x "$mock_bin/pkgutil"
+
+	run env HOME="$HOME/pkg-bound" PROJECT_ROOT="$PROJECT_ROOT" \
+		PATH="$mock_bin:/usr/bin:/bin" \
+		MOLE_PKG_RECEIPT_CACHE_DISABLE=1 \
+		MOLE_PKG_RECEIPT_SCAN_TIMEOUT=1 \
+		MOLE_PKG_RECEIPT_LIST_TIMEOUT=1 /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+
+started=$(date +%s)
+rc=0
+output=$(pkg_receipt_nonstandard_app_paths) || rc=$?
+elapsed=$(( $(date +%s) - started ))
+printf 'RC=%s ELAPSED=%s OUTPUT=%s\n' "$rc" "$elapsed" "$output"
+[[ $elapsed -lt 8 ]]
+EOF
+
+	[ "$status" -eq 0 ] || {
+		echo "$output"
+		return 1
+	}
+	[[ "$output" == *"RC=0 "* ]] || return 1
+	[[ "$output" == *" OUTPUT=" ]]
+}
+
+@test "live same-bundle scan discards partial find output" {
+    local app_root="$HOME/partial-live-apps"
+    mkdir -p "$app_root/Selected.app" "$app_root/Partial.app/Contents"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" APP_ROOT="$app_root" \
+        /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+pkg_receipt_nonstandard_app_paths() { :; }
+
+selected_apps=("0|$APP_ROOT/Selected.app|Selected|com.example.partial|0|Never")
+_MOLE_UNINSTALL_LIVE_APP_ROOTS=("$APP_ROOT")
+_MOLE_UNINSTALL_LIVE_VOLUMES_ROOT="$HOME/no-volumes"
+run_with_timeout() {
+    shift
+    if [[ "${1:-}" == "find" ]]; then
+        printf '%s\0' "$APP_ROOT/Partial.app"
+        return 73
+    fi
+    "$@"
+}
+rc=0
+uninstall_live_bundle_has_other_install \
+    "com.example.partial" "$APP_ROOT/Selected.app" || rc=$?
+printf 'RC=%s\n' "$rc"
+[[ $rc -eq 2 ]]
+EOF
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+    [[ "$output" == *"RC=2"* ]]
+}
+
+@test "batch execution rejects a changed same-bundle app set before teardown" {
+    run env HOME="$HOME/live-set-race" PROJECT_ROOT="$PROJECT_ROOT" \
+        /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+pkg_receipt_nonstandard_app_paths() { :; }
+
+app_path="$HOME/Applications/Race.app"
+mkdir -p "$app_path"
+expected_identity=$(_batch_selected_app_identity "$app_path")
+preview_fingerprint=$(printf '%s' 'old-sibling-set' | base64 | tr -d '\n')
+fields=(
+    "Race" "$app_path" "unknown" "0" "" "" "false" "false" "false"
+    "" "" "" "" "guard" "$expected_identity" "com.example.race"
+    "$preview_fingerprint" "missing"
+)
+old_ifs="$IFS"
+IFS='|'
+detail="${fields[*]}"
+IFS="$old_ifs"
+
+uninstall_live_bundle_has_other_install() {
+    _MOLE_UNINSTALL_LIVE_SIBLING_FINGERPRINT="new-sibling-set"
+    _MOLE_UNINSTALL_LIVE_SIBLING_PATHS=("$HOME/Applications/New.app")
+    return 0
+}
+stop_launch_services() { : > "$HOME/teardown-ran"; }
+
+app_details=("$detail")
+success_count=0
+failed_count=0
+brew_apps_removed=0
+failed_items=()
+success_items=()
+success_dock_targets=()
+system_extension_warning_apps=()
+review_only_system_leftovers=()
+review_only_system_leftover_keys=()
+running_at_uninstall_apps=()
+total_size_freed=0
+files_cleaned=0
+total_items=0
+
+_batch_execute_removals
+[[ $success_count -eq 0 && $failed_count -eq 1 ]]
+[[ "${failed_items[0]}" == *"app installation set changed after preview"* ]] || exit 1
+[[ ! -e "$HOME/teardown-ran" ]]
+EOF
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+}
+
+@test "batch execution rejects a selected Info.plist changed after preview" {
+    run env HOME="$HOME/selected-info-race" PROJECT_ROOT="$PROJECT_ROOT" \
+        /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+
+app_path="$HOME/Applications/Race.app"
+mkdir -p "$app_path/Contents"
+printf 'old bundle metadata\n' > "$app_path/Contents/Info.plist"
+touch -t 202001010000 "$app_path/Contents/Info.plist"
+expected_identity=$(_batch_selected_app_identity "$app_path")
+expected_info_identity=$(_batch_selected_app_info_identity "$app_path")
+
+fields=(
+    "Race" "$app_path" "com.example.race" "0" "" "" "false" "false" "false"
+    "" "" "" "" "none" "$expected_identity" "com.example.race" ""
+    "$expected_info_identity"
+)
+old_ifs="$IFS"
+IFS='|'
+detail="${fields[*]}"
+IFS="$old_ifs"
+
+printf 'new bundle metadata\n' > "$app_path/Contents/Info.plist"
+touch -t 202101010000 "$app_path/Contents/Info.plist"
+[[ "$(_batch_selected_app_identity "$app_path")" == "$expected_identity" ]] || exit 1
+[[ "$(_batch_selected_app_info_identity "$app_path")" != "$expected_info_identity" ]] || exit 1
+
+uninstall_live_bundle_has_other_install() {
+    _MOLE_UNINSTALL_LIVE_SIBLING_FINGERPRINT=""
+    _MOLE_UNINSTALL_LIVE_SIBLING_PATHS=()
+    return 1
+}
+stop_launch_services() { : > "$HOME/teardown-ran"; }
+
+app_details=("$detail")
+success_count=0
+failed_count=0
+brew_apps_removed=0
+failed_items=()
+success_items=()
+success_dock_targets=()
+system_extension_warning_apps=()
+review_only_system_leftovers=()
+review_only_system_leftover_keys=()
+running_at_uninstall_apps=()
+total_size_freed=0
+files_cleaned=0
+total_items=0
+
+_batch_execute_removals
+[[ $success_count -eq 0 && $failed_count -eq 1 ]]
+[[ "${failed_items[0]}" == *"selected app changed after preview"* ]] || exit 1
+[[ ! -e "$HOME/teardown-ran" ]]
+EOF
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+}
+
+@test "batch scan narrows a live same-bundle plan to the selected app bundle" {
+    run env HOME="$HOME/live-bundle-only" PROJECT_ROOT="$PROJECT_ROOT" \
+        /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+pkg_receipt_nonstandard_app_paths() { :; }
+
+selected="$HOME/Applications/Selected.app"
+survivor="$HOME/Applications/Survivor.app"
+mkdir -p "$selected/Contents" "$survivor/Contents"
+for app in "$selected" "$survivor"; do
+    printf '%s\n' \
+        '<?xml version="1.0" encoding="UTF-8"?>' \
+        '<plist version="1.0"><dict>' \
+        '<key>CFBundleIdentifier</key><string>com.example.shared</string>' \
+        '</dict></plist>' > "$app/Contents/Info.plist"
+done
+
+start_inline_spinner() { :; }
+stop_inline_spinner() { :; }
+_batch_refresh_selected_app_bundle_id() { printf 'com.example.shared\n'; }
+official_uninstaller_vendor() { return 1; }
+pgrep() { return 1; }
+get_brew_cask_name() { return 1; }
+get_file_owner() { whoami; }
+get_path_size_kb() { printf '1\n'; }
+find_app_files() { : > "$HOME/unexpected-discovery"; return 99; }
+calculate_total_size() { printf '0\n'; }
+has_sensitive_data() { return 1; }
+discover_login_item_helper_bundle_ids() { return 0; }
+
+_MOLE_UNINSTALL_LIVE_APP_ROOTS=("$HOME/Applications")
+_MOLE_UNINSTALL_LIVE_VOLUMES_ROOT="$HOME/no-volumes"
+apps_data=(
+    "0|$selected|Selected|com.example.shared|0|Never|0"
+    "0|$survivor|Changed Current Name|com.example.shared|0|Never|0"
+)
+selected_apps=("0|$selected|Selected|com.example.shared|0|Never")
+running_apps=()
+sudo_apps=()
+brew_cask_apps=()
+blocked_apps=()
+manual_removal_apps=()
+app_details=()
+total_estimated_size=0
+
+_batch_scan_app_details
+IFS='|' read -r _ _ stored_bundle _ _ _ _ _ _ _ _ _ _ stored_guard _ \
+    stored_original stored_fingerprint _ <<< "${app_details[0]}"
+[[ "$stored_bundle" == "unknown" ]] || exit 1
+[[ "$stored_guard" == "guard_login" ]] || exit 1
+[[ "$stored_original" == "com.example.shared" ]] || exit 1
+[[ -n "$stored_fingerprint" ]] || exit 1
+[[ ! -e "$HOME/unexpected-discovery" ]]
+EOF
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+}
+
+@test "batch execution protects an earlier app when a later same-bundle selection changes" {
+    run env HOME="$HOME/multi-selected-race" PROJECT_ROOT="$PROJECT_ROOT" \
+        /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+pkg_receipt_nonstandard_app_paths() { :; }
+
+first="$HOME/Applications/First.app"
+second="$HOME/Applications/Second.app"
+mkdir -p "$first/Contents" "$second/Contents"
+for app in "$first" "$second"; do
+    printf '%s\n' \
+        '<?xml version="1.0" encoding="UTF-8"?>' \
+        '<plist version="1.0"><dict>' \
+        '<key>CFBundleIdentifier</key><string>com.example.shared</string>' \
+        '</dict></plist>' > "$app/Contents/Info.plist"
+    touch -t 202001010000 "$app/Contents/Info.plist"
+done
+
+start_inline_spinner() { :; }
+stop_inline_spinner() { :; }
+_batch_refresh_selected_app_bundle_id() { printf 'com.example.shared\n'; }
+official_uninstaller_vendor() { return 1; }
+pgrep() { return 1; }
+get_brew_cask_name() { return 1; }
+get_file_owner() { whoami; }
+get_path_size_kb() { printf '1\n'; }
+find_app_files() { : > "$HOME/unexpected-discovery"; return 99; }
+calculate_total_size() { printf '0\n'; }
+has_sensitive_data() { return 1; }
+discover_login_item_helper_bundle_ids() { return 0; }
+
+_MOLE_UNINSTALL_LIVE_APP_ROOTS=("$HOME/Applications")
+_MOLE_UNINSTALL_LIVE_VOLUMES_ROOT="$HOME/no-volumes"
+apps_data=(
+    "0|$first|First|com.example.shared|0|Never|0"
+    "0|$second|Second|com.example.shared|0|Never|0"
+)
+selected_apps=(
+    "0|$first|First|com.example.shared|0|Never"
+    "0|$second|Second|com.example.shared|0|Never"
+)
+running_apps=()
+sudo_apps=()
+brew_cask_apps=()
+blocked_apps=()
+manual_removal_apps=()
+app_details=()
+total_estimated_size=0
+
+_batch_scan_app_details
+[[ ${#app_details[@]} -eq 2 ]] || exit 1
+[[ ! -e "$HOME/unexpected-discovery" ]] || exit 1
+
+printf '%s\n' \
+    '<?xml version="1.0" encoding="UTF-8"?>' \
+    '<plist version="1.0"><dict>' \
+    '<key>CFBundleIdentifier</key><string>com.example.replaced</string>' \
+    '</dict></plist>' > "$second/Contents/Info.plist"
+touch -t 202101010000 "$second/Contents/Info.plist"
+stop_launch_services() { : > "$HOME/teardown-ran"; }
+
+success_count=0
+failed_count=0
+brew_apps_removed=0
+failed_items=()
+success_items=()
+success_dock_targets=()
+system_extension_warning_apps=()
+review_only_system_leftovers=()
+review_only_system_leftover_keys=()
+running_at_uninstall_apps=()
+total_size_freed=0
+files_cleaned=0
+total_items=0
+
+_batch_execute_removals
+[[ $success_count -eq 0 && $failed_count -eq 2 ]]
+[[ "${failed_items[0]}" == *"app installation set changed after preview"* ]] || exit 1
+[[ "${failed_items[1]}" == *"selected app changed after preview"* ]] || exit 1
+[[ ! -e "$HOME/teardown-ran" ]]
+EOF
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+}
+
+@test "batch execution removes stable same-bundle multi-selections" {
+    run env HOME="$HOME/multi-selected-stable" PROJECT_ROOT="$PROJECT_ROOT" \
+        /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+pkg_receipt_nonstandard_app_paths() { :; }
+
+first="$HOME/Applications/First.app"
+second="$HOME/Applications/Second.app"
+mkdir -p "$first/Contents" "$second/Contents"
+for app in "$first" "$second"; do
+    printf '%s\n' \
+        '<?xml version="1.0" encoding="UTF-8"?>' \
+        '<plist version="1.0"><dict>' \
+        '<key>CFBundleIdentifier</key><string>com.example.shared</string>' \
+        '</dict></plist>' > "$app/Contents/Info.plist"
+done
+
+start_inline_spinner() { :; }
+stop_inline_spinner() { :; }
+_batch_refresh_selected_app_bundle_id() { printf '%s\n' "$2"; }
+official_uninstaller_vendor() { return 1; }
+pgrep() { return 1; }
+get_brew_cask_name() { return 1; }
+get_file_owner() { whoami; }
+get_path_size_kb() { printf '1\n'; }
+find_app_files() { : > "$HOME/unexpected-discovery"; return 99; }
+calculate_total_size() { printf '0\n'; }
+has_sensitive_data() { return 1; }
+discover_login_item_helper_bundle_ids() { return 0; }
+stop_launch_services() { :; }
+unregister_app_bundle() { :; }
+
+_MOLE_UNINSTALL_LIVE_APP_ROOTS=("$HOME/Applications")
+_MOLE_UNINSTALL_LIVE_VOLUMES_ROOT="$HOME/no-volumes"
+apps_data=(
+    "0|$first|First|com.example.shared|0|Never|0"
+    "0|$second|Second|com.example.shared|0|Never|0"
+)
+selected_apps=(
+    "0|$first|First|com.example.shared|0|Never"
+    "0|$second|Second|com.example.shared|0|Never"
+)
+running_apps=()
+sudo_apps=()
+brew_cask_apps=()
+blocked_apps=()
+manual_removal_apps=()
+app_details=()
+total_estimated_size=0
+
+_batch_scan_app_details
+[[ ${#app_details[@]} -eq 2 ]] || exit 1
+[[ ! -e "$HOME/unexpected-discovery" ]] || exit 1
+
+success_count=0
+failed_count=0
+brew_apps_removed=0
+failed_items=()
+success_items=()
+success_dock_targets=()
+system_extension_warning_apps=()
+review_only_system_leftovers=()
+review_only_system_leftover_keys=()
+running_at_uninstall_apps=()
+total_size_freed=0
+files_cleaned=0
+total_items=0
+
+_batch_execute_removals
+[[ $success_count -eq 2 && $failed_count -eq 0 ]]
+[[ ! -e "$first" && ! -e "$second" ]]
+
+# Dry-run records simulated success but leaves both paths in place. Those
+# still-live paths must remain in the expected fingerprint for the second app.
+export MOLE_DRY_RUN=1
+first="$HOME/Applications/DryFirst.app"
+second="$HOME/Applications/DrySecond.app"
+mkdir -p "$first/Contents" "$second/Contents"
+for app in "$first" "$second"; do
+    printf '%s\n' \
+        '<?xml version="1.0" encoding="UTF-8"?>' \
+        '<plist version="1.0"><dict>' \
+        '<key>CFBundleIdentifier</key><string>com.example.dryshared</string>' \
+        '</dict></plist>' > "$app/Contents/Info.plist"
+done
+apps_data=(
+    "0|$first|DryFirst|com.example.dryshared|0|Never|0"
+    "0|$second|DrySecond|com.example.dryshared|0|Never|0"
+)
+selected_apps=(
+    "0|$first|DryFirst|com.example.dryshared|0|Never"
+    "0|$second|DrySecond|com.example.dryshared|0|Never"
+)
+running_apps=()
+sudo_apps=()
+brew_cask_apps=()
+blocked_apps=()
+manual_removal_apps=()
+app_details=()
+total_estimated_size=0
+dry_scan_rc=0
+_batch_scan_app_details || dry_scan_rc=$?
+[[ $dry_scan_rc -eq 0 ]] || exit 1
+[[ ${#app_details[@]} -eq 2 ]] || exit 1
+
+success_count=0
+failed_count=0
+brew_apps_removed=0
+failed_items=()
+success_items=()
+success_dock_targets=()
+system_extension_warning_apps=()
+review_only_system_leftovers=()
+review_only_system_leftover_keys=()
+running_at_uninstall_apps=()
+total_size_freed=0
+files_cleaned=0
+total_items=0
+dry_execute_rc=0
+_batch_execute_removals || dry_execute_rc=$?
+[[ $dry_execute_rc -eq 0 ]] || exit 1
+[[ $success_count -eq 2 && $failed_count -eq 0 ]]
+[[ -e "$first" && -e "$second" ]]
+EOF
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
 }
 
 @test "batch_uninstall_applications keeps shared bundle-id leftovers when a sibling install survives" {
-	# Xcode.app and Xcode-beta.app both use com.apple.dt.Xcode. Uninstalling
-	# only the beta must not delete bundle-id-keyed files still owned by the
-	# surviving stable install.
-	mkdir -p "$HOME/Applications/Shared.app" "$HOME/Applications/Shared-beta.app"
-	mkdir -p "$HOME/Library/Caches/com.example.Shared"
-	mkdir -p "$HOME/Library/Preferences"
-	touch "$HOME/Library/Preferences/com.example.Shared.plist"
-	mkdir -p "$HOME/Library/Caches/Shared-beta"
+    # Xcode.app and Xcode-beta.app both use com.apple.dt.Xcode. Uninstalling
+    # only the beta must not delete bundle-id-keyed files still owned by the
+    # surviving stable install.
+    mkdir -p "$HOME/Applications/Shared.app" "$HOME/Applications/Shared-beta.app"
+    mkdir -p "$HOME/Library/Caches/com.example.Shared"
+    mkdir -p "$HOME/Library/Preferences"
+    touch "$HOME/Library/Preferences/com.example.Shared.plist"
+    mkdir -p "$HOME/Library/Caches/Shared-beta"
 
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/batch.sh"
@@ -509,37 +1373,37 @@ printf '\n' | batch_uninstall_applications
 [[ -f "$HOME/Library/Preferences/com.example.Shared.plist" ]] || { echo "WRONG: shared bundle-id prefs removed"; exit 1; }
 EOF
 
-	[ "$status" -eq 0 ]
+    [ "$status" -eq 0 ]
 }
 
 @test "batch_uninstall_applications keeps name-keyed leftovers when sibling installs share a display name" {
-	# On unindexed volumes mdls returns (null) and CFBundleName collapses both
-	# installs to one display name ("Xcode" for Xcode-beta.app). Discovery must
-	# fall back to the .app basename; when even that collides with the
-	# survivor, name cleanup and login-item removal must be suppressed.
-	mkdir -p "$HOME/Applications/SharedName-beta.app" "$HOME/Applications/SharedName.app"
-	mkdir -p "$HOME/OtherApps/SharedName.app"
-	mkdir -p "$HOME/Library/Application Support/SharedName"
-	mkdir -p "$HOME/Library/Caches/SharedName"
-	mkdir -p "$HOME/Library/Preferences"
-	touch "$HOME/Library/Preferences/SharedName.plist"
-	mkdir -p "$HOME/Library/Caches/SharedName-beta"
-	# Same-bundle siblings ship the same CFBundleExecutable (Xcode-beta.app
-	# ships "Xcode"); diagnostic-report discovery keys on it, so the beta's
-	# Info.plist points at the shared executable name.
-	mkdir -p "$HOME/Applications/SharedName-beta.app/Contents"
-	printf '%s' '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleExecutable</key><string>SharedName</string></dict></plist>' > "$HOME/Applications/SharedName-beta.app/Contents/Info.plist"
-	mkdir -p "$HOME/Library/Logs/DiagnosticReports"
-	touch "$HOME/Library/Logs/DiagnosticReports/SharedName-2026-07-03-101010.ips"
-	# LaunchAgents referencing an install by exact path: the one pointing at
-	# the selected beta must still be unloaded under the guard (the bundle id
-	# is demoted to "unknown", but the path scan is exact evidence), while the
-	# one pointing at the survivor must stay loaded.
-	mkdir -p "$HOME/Library/LaunchAgents"
-	printf '%s' "$HOME/Applications/SharedName-beta.app/Contents/MacOS/SharedName" > "$HOME/Library/LaunchAgents/com.thirdparty.betahelper.plist"
-	printf '%s' "$HOME/Applications/SharedName.app/Contents/MacOS/SharedName" > "$HOME/Library/LaunchAgents/com.thirdparty.stablehelper.plist"
+    # On unindexed volumes mdls returns (null) and CFBundleName collapses both
+    # installs to one display name ("Xcode" for Xcode-beta.app). Discovery must
+    # fall back to the .app basename; when even that collides with the
+    # survivor, name cleanup and login-item removal must be suppressed.
+    mkdir -p "$HOME/Applications/SharedName-beta.app" "$HOME/Applications/SharedName.app"
+    mkdir -p "$HOME/OtherApps/SharedName.app"
+    mkdir -p "$HOME/Library/Application Support/SharedName"
+    mkdir -p "$HOME/Library/Caches/SharedName"
+    mkdir -p "$HOME/Library/Preferences"
+    touch "$HOME/Library/Preferences/SharedName.plist"
+    mkdir -p "$HOME/Library/Caches/SharedName-beta"
+    # Same-bundle siblings ship the same CFBundleExecutable (Xcode-beta.app
+    # ships "Xcode"); diagnostic-report discovery keys on it, so the beta's
+    # Info.plist points at the shared executable name.
+    mkdir -p "$HOME/Applications/SharedName-beta.app/Contents"
+    printf '%s' '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.example.sharedname</string><key>CFBundleExecutable</key><string>SharedName</string></dict></plist>' > "$HOME/Applications/SharedName-beta.app/Contents/Info.plist"
+    mkdir -p "$HOME/Library/Logs/DiagnosticReports"
+    touch "$HOME/Library/Logs/DiagnosticReports/SharedName-2026-07-03-101010.ips"
+    # LaunchAgents referencing an install by exact path: the one pointing at
+    # the selected beta must still be unloaded under the guard (the bundle id
+    # is demoted to "unknown", but the path scan is exact evidence), while the
+    # one pointing at the survivor must stay loaded.
+    mkdir -p "$HOME/Library/LaunchAgents"
+    printf '%s' "$HOME/Applications/SharedName-beta.app/Contents/MacOS/SharedName" > "$HOME/Library/LaunchAgents/com.thirdparty.betahelper.plist"
+    printf '%s' "$HOME/Applications/SharedName.app/Contents/MacOS/SharedName" > "$HOME/Library/LaunchAgents/com.thirdparty.stablehelper.plist"
 
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/batch.sh"
@@ -663,13 +1527,13 @@ grep -q "KILL:SoloApp" "$HOME/kill.log" 2> /dev/null || { echo "WRONG: terminati
 [[ ! -f "$HOME/Library/Logs/DiagnosticReports/SoloApp-2026-07-03-101010.ips" ]] || { echo "WRONG: diagnostic reports not collected without sibling guard (case 5)"; exit 1; }
 EOF
 
-	[ "$status" -eq 0 ]
+    [ "$status" -eq 0 ]
 }
 
 @test "batch_uninstall_applications blocks official-uninstaller apps" {
-	mkdir -p "$HOME/Applications/Falcon.app"
+    mkdir -p "$HOME/Applications/Falcon.app"
 
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/batch.sh"
@@ -688,16 +1552,16 @@ if batch_uninstall_applications; then
 fi
 EOF
 
-	[ "$status" -eq 0 ]
-	[[ "$output" == *"requires the official CrowdStrike uninstaller"* ]] || return 1
-	[[ "$output" != *"MOLE_DELETE"* ]]
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"requires the official CrowdStrike uninstaller"* ]] || return 1
+    [[ "$output" != *"MOLE_DELETE"* ]]
 }
 
 @test "batch_uninstall_applications keeps system remnants review-only" {
-	mkdir -p "$HOME/Applications/ReviewOnly.app" "$HOME/system"
-	touch "$HOME/system/com.example.review.helper"
+    mkdir -p "$HOME/Applications/ReviewOnly.app" "$HOME/system"
+    touch "$HOME/system/com.example.review.helper"
 
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/batch.sh"
@@ -736,20 +1600,25 @@ total_size_cleaned=0
 printf '\n' | batch_uninstall_applications > "$HOME/output.log" 2>&1
 
 grep -q "Review only: ~/system/com.example.review.helper" "$HOME/output.log"
-grep -q "System files left untouched after removal:" "$HOME/output.log"
-[[ "$(grep -cF "~/system/com.example.review.helper" "$HOME/output.log")" -eq 2 ]]
-grep -q "Review these paths before removing them manually; prefer the app's official uninstaller when available" "$HOME/output.log"
+# The summary states the count, not the paths: they were already listed above
+# the confirmation prompt, so the path must appear exactly once in the run.
+[[ "$(grep -cF "~/system/com.example.review.helper" "$HOME/output.log")" -eq 1 ]] || exit 1
+grep -q "Kept 1 system-level path, which Mole never removes" "$HOME/output.log"
+# Keeping system paths is the designed outcome, so the run is not "incomplete".
+! grep -q "Uninstall incomplete" "$HOME/output.log"
+grep -q "Uninstall complete" "$HOME/output.log"
+# The point of the whole case: the file is reported, never deleted.
 ! grep -q "$HOME/system/com.example.review.helper" "$HOME/remove.log"
 [[ -e "$HOME/system/com.example.review.helper" ]]
 EOF
 
-	[ "$status" -eq 0 ]
+    [ "$status" -eq 0 ]
 }
 
 @test "batch_uninstall_applications dry-run does not report expected leftovers as failures" {
-	create_app_artifacts
+    create_app_artifacts
 
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/batch.sh"
@@ -795,31 +1664,31 @@ output=$(cat "$output_file")
 [[ "$output" == *"Uninstall dry run complete"* ]] || { echo "WRONG: missing dry-run summary"; cat "$output_file"; exit 1; }
 [[ "$output" == *"Would remove 1 app"* ]] || { echo "WRONG: missing would-remove summary"; cat "$output_file"; exit 1; }
 [[ "$output" != *"Could not remove"* ]] || { echo "WRONG: dry-run reported expected leftovers"; cat "$output_file"; exit 1; }
-[[ "$output" != *"System files left untouched after removal"* ]] || { echo "WRONG: dry-run reported post-removal system leftovers"; cat "$output_file"; exit 1; }
+[[ "$output" != *"system-level path"* ]] || { echo "WRONG: dry-run reported post-removal system leftovers"; cat "$output_file"; exit 1; }
 [[ "$output" != *"Uninstall incomplete"* ]] || { echo "WRONG: dry-run marked incomplete"; cat "$output_file"; exit 1; }
 EOF
 
-	[ "$status" -eq 0 ]
+    [ "$status" -eq 0 ]
 }
 
 @test "force_kill_app skips the kill ladder when Quit succeeds" {
-	# run_with_timeout invokes its argv via gtimeout/timeout, which exec the
-	# real binary and bypass bash functions, so we shadow osascript via a
-	# real script on PATH and read the trace it writes.
-	stubdir="$HOME/stubs"
-	mkdir -p "$stubdir"
-	trace="$HOME/kill_trace.log"
-	: > "$trace"
+    # run_with_timeout invokes its argv via gtimeout/timeout, which exec the
+    # real binary and bypass bash functions, so we shadow osascript via a
+    # real script on PATH and read the trace it writes.
+    stubdir="$HOME/stubs"
+    mkdir -p "$stubdir"
+    trace="$HOME/kill_trace.log"
+    : > "$trace"
 
-	cat > "$stubdir/osascript" <<STUB
+    cat > "$stubdir/osascript" << STUB
 #!/bin/bash
 printf 'osascript %s\n' "\$*" >> "$trace"
 exit 0
 STUB
-	chmod +x "$stubdir/osascript"
+    chmod +x "$stubdir/osascript"
 
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" PATH="$stubdir:$PATH" \
-		TRACE_PATH="$trace" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" PATH="$stubdir:$PATH" \
+        TRACE_PATH="$trace" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 
@@ -871,31 +1740,37 @@ unset MOLE_TEST_MODE MOLE_TEST_NO_AUTH
 force_kill_app "TestApp" "$app_path"
 EOF
 
-	[ "$status" -eq 0 ]
-	grep -q 'osascript .*tell application id .*com\.example\.TestApp.* to quit' "$trace" \
-		|| { echo "WRONG: missing AppleScript Quit"; cat "$trace"; return 1; }
-	if grep -q '^pkill ' "$trace"; then
-		echo "WRONG: pkill ran even though Quit succeeded"; cat "$trace"; return 1
-	fi
+    [ "$status" -eq 0 ]
+    grep -q 'osascript .*tell application id .*com\.example\.TestApp.* to quit' "$trace" ||
+        {
+            echo "WRONG: missing AppleScript Quit"
+            cat "$trace"
+            return 1
+        }
+    if grep -q '^pkill ' "$trace"; then
+        echo "WRONG: pkill ran even though Quit succeeded"
+        cat "$trace"
+        return 1
+    fi
 }
 
 @test "force_kill_app escalates to pkill when Quit does not land" {
-	# Process keeps showing up in pgrep until pkill -9 fires, exercising the
-	# SIGTERM and SIGKILL rungs of the escalation ladder.
-	stubdir="$HOME/stubs"
-	mkdir -p "$stubdir"
-	trace="$HOME/kill_escalate_trace.log"
-	: > "$trace"
+    # Process keeps showing up in pgrep until pkill -9 fires, exercising the
+    # SIGTERM and SIGKILL rungs of the escalation ladder.
+    stubdir="$HOME/stubs"
+    mkdir -p "$stubdir"
+    trace="$HOME/kill_escalate_trace.log"
+    : > "$trace"
 
-	cat > "$stubdir/osascript" <<STUB
+    cat > "$stubdir/osascript" << STUB
 #!/bin/bash
 printf 'osascript %s\n' "\$*" >> "$trace"
 exit 0
 STUB
-	chmod +x "$stubdir/osascript"
+    chmod +x "$stubdir/osascript"
 
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" PATH="$stubdir:$PATH" \
-		TRACE_PATH="$trace" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" PATH="$stubdir:$PATH" \
+        TRACE_PATH="$trace" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 
@@ -944,28 +1819,36 @@ unset MOLE_TEST_MODE MOLE_TEST_NO_AUTH
 force_kill_app "StubbornApp" "$app_path"
 EOF
 
-	[ "$status" -eq 0 ]
-	grep -q '^pkill -x StubbornApp' "$trace" \
-		|| { echo "WRONG: SIGTERM rung did not fire"; cat "$trace"; return 1; }
-	grep -q '^pkill -9 -x StubbornApp' "$trace" \
-		|| { echo "WRONG: SIGKILL rung did not fire"; cat "$trace"; return 1; }
+    [ "$status" -eq 0 ]
+    grep -q '^pkill -x StubbornApp' "$trace" ||
+        {
+            echo "WRONG: SIGTERM rung did not fire"
+            cat "$trace"
+            return 1
+        }
+    grep -q '^pkill -9 -x StubbornApp' "$trace" ||
+        {
+            echo "WRONG: SIGKILL rung did not fire"
+            cat "$trace"
+            return 1
+        }
 }
 
 @test "force_kill_app rejects unsafe bundle id in AppleScript Quit target" {
-	stubdir="$HOME/stubs"
-	mkdir -p "$stubdir"
-	trace="$HOME/unsafe_kill_trace.log"
-	: > "$trace"
+    stubdir="$HOME/stubs"
+    mkdir -p "$stubdir"
+    trace="$HOME/unsafe_kill_trace.log"
+    : > "$trace"
 
-	cat > "$stubdir/osascript" <<STUB
+    cat > "$stubdir/osascript" << STUB
 #!/bin/bash
 printf 'osascript %s\n' "\$*" >> "$trace"
 exit 0
 STUB
-	chmod +x "$stubdir/osascript"
+    chmod +x "$stubdir/osascript"
 
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" PATH="$stubdir:$PATH" \
-		TRACE_PATH="$trace" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" PATH="$stubdir:$PATH" \
+        TRACE_PATH="$trace" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 
@@ -1005,36 +1888,42 @@ unset MOLE_TEST_MODE MOLE_TEST_NO_AUTH
 force_kill_app "TestApp" "$app_path"
 EOF
 
-	[ "$status" -eq 0 ]
-	if grep -q 'display dialog' "$trace"; then
-		echo "WRONG: unsafe bundle id reached AppleScript"; cat "$trace"; return 1
-	fi
-	grep -q 'osascript .*tell application "TestApp" to quit' "$trace" \
-		|| { echo "WRONG: unsafe id did not fall back to app name"; cat "$trace"; return 1; }
+    [ "$status" -eq 0 ]
+    if grep -q 'display dialog' "$trace"; then
+        echo "WRONG: unsafe bundle id reached AppleScript"
+        cat "$trace"
+        return 1
+    fi
+    grep -q 'osascript .*tell application "TestApp" to quit' "$trace" ||
+        {
+            echo "WRONG: unsafe id did not fall back to app name"
+            cat "$trace"
+            return 1
+        }
 }
 
 @test "force_kill_app refuses to operate on system process names" {
-	# Defensive guard: a third-party .app could set CFBundleExecutable to a
-	# system process name (Finder, Dock, loginwindow, etc.). Even though the
-	# uninstall selection layer filters out protected bundle IDs, force_kill_app
-	# is a public function and must hold its own boundary. Verify it returns 1
-	# without invoking pkill or osascript for these names.
-	stubdir="$HOME/stubs"
-	mkdir -p "$stubdir"
-	trace="$HOME/system_proc_trace.log"
-	: > "$trace"
+    # Defensive guard: a third-party .app could set CFBundleExecutable to a
+    # system process name (Finder, Dock, loginwindow, etc.). Even though the
+    # uninstall selection layer filters out protected bundle IDs, force_kill_app
+    # is a public function and must hold its own boundary. Verify it returns 1
+    # without invoking pkill or osascript for these names.
+    stubdir="$HOME/stubs"
+    mkdir -p "$stubdir"
+    trace="$HOME/system_proc_trace.log"
+    : > "$trace"
 
-	cat > "$stubdir/osascript" <<STUB
+    cat > "$stubdir/osascript" << STUB
 #!/bin/bash
 printf 'osascript %s\n' "\$*" >> "$trace"
 exit 0
 STUB
-	chmod +x "$stubdir/osascript"
+    chmod +x "$stubdir/osascript"
 
-	for spoofed in Finder Dock loginwindow WindowServer SystemUIServer; do
-		: > "$trace"
-		run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" PATH="$stubdir:$PATH" \
-			TRACE_PATH="$trace" SPOOFED="$spoofed" /bin/bash --noprofile --norc <<'EOF'
+    for spoofed in Finder Dock loginwindow WindowServer SystemUIServer; do
+        : > "$trace"
+        run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" PATH="$stubdir:$PATH" \
+            TRACE_PATH="$trace" SPOOFED="$spoofed" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 
@@ -1070,22 +1959,28 @@ unset MOLE_TEST_MODE MOLE_TEST_NO_AUTH
 force_kill_app "Evil-$SPOOFED" "$app_path"
 EOF
 
-		[ "$status" -eq 1 ] \
-			|| { echo "WRONG: spoofed $spoofed did not return 1 (got $status)"; cat "$trace"; return 1; }
-		if [[ -s "$trace" ]]; then
-			echo "WRONG: spoofed $spoofed reached pkill/pgrep/osascript"; cat "$trace"; return 1
-		fi
-	done
+        [ "$status" -eq 1 ] ||
+            {
+                echo "WRONG: spoofed $spoofed did not return 1 (got $status)"
+                cat "$trace"
+                return 1
+            }
+        if [[ -s "$trace" ]]; then
+            echo "WRONG: spoofed $spoofed reached pkill/pgrep/osascript"
+            cat "$trace"
+            return 1
+        fi
+    done
 }
 
 @test "batch_uninstall_applications proceeds with deletion when force_kill_app fails" {
-	# Reproduces the issue where uninstalling a still-running app (e.g. Mole.app
-	# with a watchdog or XPC helper that ignores SIGKILL) used to abort with
-	# "still running" and leave the bundle on disk. macOS allows deleting a
-	# running app's bundle; we should warn the user but proceed.
-	create_app_artifacts
+    # Reproduces the issue where uninstalling a still-running app (e.g. Mole.app
+    # with a watchdog or XPC helper that ignores SIGKILL) used to abort with
+    # "still running" and leave the bundle on disk. macOS allows deleting a
+    # running app's bundle; we should warn the user but proceed.
+    create_app_artifacts
 
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/batch.sh"
@@ -1135,16 +2030,16 @@ output=$(cat "$output_file")
 [[ "$output" == *TestApp* ]] || { echo "WRONG: warning omits app name"; exit 1; }
 EOF
 
-	[ "$status" -eq 0 ]
+    [ "$status" -eq 0 ]
 }
 
 @test "stop_launch_services unloads launch agents without deleting plists" {
-	mkdir -p "$HOME/Library/LaunchAgents"
-	touch "$HOME/Library/LaunchAgents/com.example.TestApp.plist"
-	touch "$HOME/Library/LaunchAgents/com.example.TestApp.helper.plist"
-	touch "$HOME/Library/LaunchAgents/com.example.TestApplication.plist"
+    mkdir -p "$HOME/Library/LaunchAgents"
+    touch "$HOME/Library/LaunchAgents/com.example.TestApp.plist"
+    touch "$HOME/Library/LaunchAgents/com.example.TestApp.helper.plist"
+    touch "$HOME/Library/LaunchAgents/com.example.TestApplication.plist"
 
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/batch.sh"
@@ -1177,114 +2072,22 @@ stop_launch_services "com.example.TestApp" "false" ""
 	[[ -f "$HOME/Library/LaunchAgents/com.example.TestApplication.plist" ]] || exit 1
 EOF
 
-	[ "$status" -eq 0 ]
-}
-
-@test "batch_uninstall_applications warns when removed app declares Local Network usage" {
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/uninstall/batch.sh"
-
-request_sudo_access() { return 0; }
-start_inline_spinner() { :; }
-stop_inline_spinner() { :; }
-enter_alt_screen() { :; }
-leave_alt_screen() { :; }
-hide_cursor() { :; }
-show_cursor() { :; }
-remove_apps_from_dock() { :; }
-pgrep() { return 1; }
-pkill() { return 0; }
-sudo() { return 0; }
-
-app_bundle="$HOME/Applications/NetworkApp.app"
-mkdir -p "$app_bundle/Contents"
-cat > "$app_bundle/Contents/Info.plist" <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleIdentifier</key>
-    <string>com.example.NetworkApp</string>
-    <key>NSLocalNetworkUsageDescription</key>
-    <string>Discover devices on the local network</string>
-</dict>
-</plist>
-PLIST
-
-selected_apps=()
-selected_apps+=("0|$app_bundle|NetworkApp|com.example.NetworkApp|0|Never")
-files_cleaned=0
-total_items=0
-total_size_cleaned=0
-
-printf '\n' | batch_uninstall_applications
-EOF
-
-	[ "$status" -eq 0 ]
-	[[ "$output" == *"Local Network permissions"* ]] || return 1
-	[[ "$output" == *"NetworkApp"* ]] || return 1
-	[[ "$output" == *"Recovery mode"* ]]
-}
-
-@test "batch_uninstall_applications skips Local Network warning for regular apps" {
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/uninstall/batch.sh"
-
-request_sudo_access() { return 0; }
-start_inline_spinner() { :; }
-stop_inline_spinner() { :; }
-enter_alt_screen() { :; }
-leave_alt_screen() { :; }
-hide_cursor() { :; }
-show_cursor() { :; }
-remove_apps_from_dock() { :; }
-pgrep() { return 1; }
-pkill() { return 0; }
-sudo() { return 0; }
-
-app_bundle="$HOME/Applications/PlainApp.app"
-mkdir -p "$app_bundle/Contents"
-cat > "$app_bundle/Contents/Info.plist" <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleIdentifier</key>
-    <string>com.example.PlainApp</string>
-</dict>
-</plist>
-PLIST
-
-selected_apps=()
-selected_apps+=("0|$app_bundle|PlainApp|com.example.PlainApp|0|Never")
-files_cleaned=0
-total_items=0
-total_size_cleaned=0
-
-printf '\n' | batch_uninstall_applications
-EOF
-
-	[ "$status" -eq 0 ]
-	[[ "$output" != *"Local Network permissions"* ]]
+    [ "$status" -eq 0 ]
 }
 
 @test "batch_uninstall_applications preview shows full related file list" {
-	mkdir -p "$HOME/Applications/TestApp.app"
-	mkdir -p "$HOME/Library/Application Support/TestApp"
-	mkdir -p "$HOME/Library/Caches/TestApp"
-	mkdir -p "$HOME/Library/Logs/TestApp"
-	touch "$HOME/Library/Logs/TestApp/log1.log"
-	touch "$HOME/Library/Logs/TestApp/log2.log"
-	touch "$HOME/Library/Logs/TestApp/log3.log"
-	touch "$HOME/Library/Logs/TestApp/log4.log"
-	touch "$HOME/Library/Logs/TestApp/log5.log"
-	touch "$HOME/Library/Logs/TestApp/log6.log"
+    mkdir -p "$HOME/Applications/TestApp.app"
+    mkdir -p "$HOME/Library/Application Support/TestApp"
+    mkdir -p "$HOME/Library/Caches/TestApp"
+    mkdir -p "$HOME/Library/Logs/TestApp"
+    touch "$HOME/Library/Logs/TestApp/log1.log"
+    touch "$HOME/Library/Logs/TestApp/log2.log"
+    touch "$HOME/Library/Logs/TestApp/log3.log"
+    touch "$HOME/Library/Logs/TestApp/log4.log"
+    touch "$HOME/Library/Logs/TestApp/log5.log"
+    touch "$HOME/Library/Logs/TestApp/log6.log"
 
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/batch.sh"
@@ -1324,13 +2127,13 @@ total_size_cleaned=0
 printf '\nq' | batch_uninstall_applications
 EOF
 
-	[ "$status" -eq 0 ]
-	[[ "$output" == *"~/Library/Logs/TestApp/log6.log"* ]] || return 1
-	[[ "$output" != *"more files"* ]]
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"~/Library/Logs/TestApp/log6.log"* ]] || return 1
+    [[ "$output" != *"more files"* ]]
 }
 
 @test "uninstall_persist_cache_file heals non-writable destination" {
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 
 # Source only the helper by evaluating its function definition.
@@ -1350,18 +2153,18 @@ uninstall_persist_cache_file "$src" "$dst"
 grep -q 'fresh-data' "$dst" || { echo "dst not updated"; exit 1; }
 EOF
 
-	[ "$status" -eq 0 ]
+    [ "$status" -eq 0 ]
 }
 
 @test "uninstall_persist_cache_file does not hang when mv would prompt (stdin closed)" {
-	# Regression for #722: BSD mv without -f prompts on non-writable dst and
-	# blocks reading stdin. The helper must close stdin and use -f.
-	#
-	# The hang detector uses a marker file rather than a PID-based watchdog:
-	# PIDs get recycled quickly on CI and a stale `kill -9 $pid` can succeed
-	# against an unrelated process, producing a false HANG. The marker
-	# approach only cares about whether the helper itself completed.
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    # Regression for #722: BSD mv without -f prompts on non-writable dst and
+    # blocks reading stdin. The helper must close stdin and use -f.
+    #
+    # The hang detector uses a marker file rather than a PID-based watchdog:
+    # PIDs get recycled quickly on CI and a stale `kill -9 $pid` can succeed
+    # against an unrelated process, producing a false HANG. The marker
+    # approach only cares about whether the helper itself completed.
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 eval "$(sed -n '/^uninstall_persist_cache_file()/,/^}$/p' "$PROJECT_ROOT/bin/uninstall.sh")"
 
@@ -1391,12 +2194,12 @@ fi
 wait "$bgpid" 2>/dev/null || true
 EOF
 
-	[ "$status" -eq 0 ]
-	[[ "$output" != *"HANG"* ]]
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"HANG"* ]]
 }
 
 @test "uninstall_persist_cache_file is a no-op when source is empty" {
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 eval "$(sed -n '/^uninstall_persist_cache_file()/,/^}$/p' "$PROJECT_ROOT/bin/uninstall.sh")"
 
@@ -1411,11 +2214,11 @@ uninstall_persist_cache_file "$src" "$dst"
 grep -q 'untouched' "$dst" || exit 1
 EOF
 
-	[ "$status" -eq 0 ]
+    [ "$status" -eq 0 ]
 }
 
 @test "cached uninstall metadata is rejected when the current bundle is protected" {
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 eval "$(sed -n '/^uninstall_resolve_bundle_id()/,/^uninstall_app_inventory_fingerprint()/p' "$PROJECT_ROOT/bin/uninstall.sh" | sed '$d')"
@@ -1439,11 +2242,11 @@ if uninstall_resolve_eligible_bundle_id "$app_path" "com.example.cached" > /dev/
 fi
 EOF
 
-	[ "$status" -eq 0 ]
+    [ "$status" -eq 0 ]
 }
 
 @test "cached uninstall metadata is rejected when the app is background-only" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 eval "$(sed -n '/^uninstall_resolve_bundle_id()/,/^uninstall_app_inventory_fingerprint()/p' "$PROJECT_ROOT/bin/uninstall.sh" | sed '$d')"
@@ -1470,11 +2273,11 @@ if uninstall_resolve_eligible_bundle_id "$app_path" "com.example.Helper" > /dev/
 fi
 EOF
 
-	[ "$status" -eq 0 ]
+    [ "$status" -eq 0 ]
 }
 
 @test "OneDrive Mac App Store bundle is eligible even when marked background-only" {
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 eval "$(sed -n '/^uninstall_resolve_bundle_id()/,/^uninstall_app_inventory_fingerprint()/p' "$PROJECT_ROOT/bin/uninstall.sh" | sed '$d')"
@@ -1502,11 +2305,11 @@ result=$(uninstall_resolve_eligible_bundle_id "$app_path" "")
 }
 EOF
 
-	[ "$status" -eq 0 ]
+    [ "$status" -eq 0 ]
 }
 
 @test "eligible uninstall metadata uses the current bundle id over stale cache" {
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 eval "$(sed -n '/^uninstall_resolve_bundle_id()/,/^uninstall_app_inventory_fingerprint()/p' "$PROJECT_ROOT/bin/uninstall.sh" | sed '$d')"
@@ -1531,25 +2334,25 @@ result=$(uninstall_resolve_eligible_bundle_id "$app_path" "com.example.Stale")
 }
 EOF
 
-	[ "$status" -eq 0 ]
+    [ "$status" -eq 0 ]
 }
 
 @test "safe_remove can remove a simple directory" {
-	mkdir -p "$HOME/test_dir"
-	touch "$HOME/test_dir/file.txt"
+    mkdir -p "$HOME/test_dir"
+    touch "$HOME/test_dir/file.txt"
 
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 
 safe_remove "$HOME/test_dir"
 [[ ! -d "$HOME/test_dir" ]] || exit 1
 EOF
-	[ "$status" -eq 0 ]
+    [ "$status" -eq 0 ]
 }
 
 @test "decode_file_list validates base64 encoding" {
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/batch.sh"
@@ -1560,11 +2363,11 @@ result=$(decode_file_list "$valid_data" "TestApp")
 [[ -n "$result" ]] || exit 1
 EOF
 
-	[ "$status" -eq 0 ]
+    [ "$status" -eq 0 ]
 }
 
 @test "decode_file_list rejects invalid base64" {
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/batch.sh"
@@ -1576,11 +2379,47 @@ else
 fi
 EOF
 
-	[ "$status" -eq 0 ]
+    [ "$status" -eq 0 ]
+}
+
+@test "login item helper discovery discards partial results and preserves cancellation" {
+    local app="$HOME/Applications/PartialHelpers.app"
+    local helper="$app/Contents/Library/LoginItems/Partial.app"
+    mkdir -p "$helper/Contents"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" APP="$app" HELPER="$helper" \
+        /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+
+run_with_timeout() {
+    shift
+    if [[ "${1:-}" == "find" ]]; then
+        printf '%s\0' "$HELPER"
+        return 73
+    fi
+    "$@"
+}
+result=$(discover_login_item_helper_bundle_ids "$APP")
+[[ -z "$result" ]] || exit 1
+
+run_with_timeout() { return 130; }
+rc=0
+discover_login_item_helper_bundle_ids "$APP" > /dev/null || rc=$?
+printf 'RC=%s\n' "$rc"
+[[ $rc -eq 130 ]]
+EOF
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+    [[ "$output" == *"RC=130"* ]]
 }
 
 @test "bootout_login_item_helpers never touches the com.apple namespace" {
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_MODE=0 MOLE_TEST_NO_AUTH=0 /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_MODE=0 MOLE_TEST_NO_AUTH=0 /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/batch.sh"
@@ -1600,13 +2439,13 @@ com.vendor.App-Helper"
 cat "$TRACE"
 EOF
 
-	[ "$status" -eq 0 ]
-	[[ "$output" == *"BOOTOUT:gui/$(id -u)/com.vendor.App-Helper"* ]] || return 1
-	[[ "$output" != *"com.apple.Safari.helper"* ]] || return 1
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"BOOTOUT:gui/$(id -u)/com.vendor.App-Helper"* ]] || return 1
+    [[ "$output" != *"com.apple.Safari.helper"* ]] || return 1
 }
 
 @test "decode_bundle_id_list preserves login item helper ids" {
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/batch.sh"
@@ -1630,11 +2469,113 @@ fi
 exit 0
 EOF
 
-	[ "$status" -eq 0 ]
+    [ "$status" -eq 0 ]
+}
+
+# A bundle whose folder name is not its product name reaches the user as an
+# unrecognizable string: #1520 reported almost uninstalling CapCut because Mole
+# listed it as "VideoFusion-macOS" while Finder showed the Chinese name. The
+# name Finder shows comes from Contents/Resources/<lang>.lproj/InfoPlist.strings.
+_write_display_name_fixture() {
+    local app_path="$1" dev_region="$2" base_name="$3"
+    shift 3
+
+    mkdir -p "$app_path/Contents/Resources"
+    cat > "$app_path/Contents/Info.plist" << PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>com.example.fixture</string>
+<key>CFBundleDevelopmentRegion</key><string>$dev_region</string>
+<key>CFBundleDisplayName</key><string>$base_name</string>
+<key>CFBundleName</key><string>$base_name</string>
+</dict></plist>
+PLIST
+
+    local spec lproj value
+    for spec in "$@"; do
+        lproj="${spec%%=*}"
+        value="${spec#*=}"
+        mkdir -p "$app_path/Contents/Resources/$lproj.lproj"
+        if [[ "$value" != "-" ]]; then
+            printf '"CFBundleDisplayName" = "%s";\n' "$value" \
+                > "$app_path/Contents/Resources/$lproj.lproj/InfoPlist.strings"
+        fi
+    done
+}
+
+_run_display_name_case() {
+    local languages="$1" app_path="$2" app_name="$3"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" LANGS="$languages" \
+        APP_PATH="$app_path" APP_NAME="$app_name" \
+        /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+
+# mdls only ever reports the on-disk file name for an app bundle, which is the
+# string this behavior exists to replace. Stub it so the case cannot pass by
+# accidentally agreeing with Spotlight.
+run_with_timeout() {
+    shift
+    "$@"
+}
+mdls() { printf '%s\n' "$(basename "$APP_PATH")"; }
+
+for _fn in _uninstall_lproj_candidates _uninstall_localized_bundle_name uninstall_resolve_display_name; do
+    eval "$(sed -n "/^${_fn}()/,/^}/p" "$PROJECT_ROOT/bin/uninstall.sh")"
+done
+
+MOLE_UNINSTALL_USER_LC_ALL=""
+MOLE_UNINSTALL_USER_LANG=""
+MOLE_UNINSTALL_INLINE_MDLS_DISPLAY_TIMEOUT_SEC=3
+MOLE_UNINSTALL_PREFERRED_LANGS="$LANGS"
+
+uninstall_resolve_display_name "$APP_PATH" "$APP_NAME"
+EOF
+}
+
+@test "uninstall_resolve_display_name uses the bundle's localized name for the user's language (#1520)" {
+    local app_path="$HOME/Applications/VideoFusion-macOS.app"
+    _write_display_name_fixture "$app_path" "en" "VideoFusion-macOS" \
+        "en=VideoFusion" "zh-Hans=剪映专业版"
+
+    _run_display_name_case "$(printf 'zh-Hans-CN\nen-CN')" "$app_path" "VideoFusion-macOS.app"
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [ "$output" = "剪映专业版" ] || { echo "$output"; return 1; }
+
+    _run_display_name_case "$(printf 'en-CN\nzh-Hans-CN')" "$app_path" "VideoFusion-macOS.app"
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [ "$output" = "VideoFusion" ] || { echo "$output"; return 1; }
+}
+
+# The stop condition matters as much as the lookup. MiaoYan.app ships a Chinese
+# override and no English one, so a search that kept walking the preference list
+# would show a Chinese name to a user who asked for English.
+@test "uninstall_resolve_display_name never falls through to an unrequested language (#1520)" {
+    local app_path="$HOME/Applications/MiaoYan.app"
+    _write_display_name_fixture "$app_path" "en" "MiaoYan" "Base=-" "zh-Hans=妙言"
+
+    _run_display_name_case "$(printf 'en-CN\nzh-Hans-CN')" "$app_path" "MiaoYan.app"
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [ "$output" = "MiaoYan" ] || { echo "$output"; return 1; }
+
+    _run_display_name_case "$(printf 'zh-Hans-CN\nen-CN')" "$app_path" "MiaoYan.app"
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [ "$output" = "妙言" ] || { echo "$output"; return 1; }
+}
+
+@test "uninstall_resolve_display_name keeps the unlocalized name without a language list (#1520)" {
+    local app_path="$HOME/Applications/NoPrefs.app"
+    _write_display_name_fixture "$app_path" "en" "NoPrefs Base" "zh-Hans=中文名"
+
+    _run_display_name_case "" "$app_path" "NoPrefs.app"
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [ "$output" = "NoPrefs Base" ] || { echo "$output"; return 1; }
 }
 
 @test "uninstall_resolve_display_name keeps versioned app names when metadata is generic" {
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 
@@ -1658,7 +2599,10 @@ function plutil() {
 MOLE_UNINSTALL_USER_LC_ALL=""
 MOLE_UNINSTALL_USER_LANG=""
 
-eval "$(sed -n '/^uninstall_resolve_display_name()/,/^}/p' "$PROJECT_ROOT/bin/uninstall.sh")"
+for _fn in _uninstall_lproj_candidates _uninstall_localized_bundle_name uninstall_resolve_display_name; do
+    eval "$(sed -n "/^${_fn}()/,/^}/p" "$PROJECT_ROOT/bin/uninstall.sh")"
+done
+MOLE_UNINSTALL_PREFERRED_LANGS="${MOLE_UNINSTALL_PREFERRED_LANGS:-}"
 
 app_path="$HOME/Applications/Xcode 16.4.app"
 mkdir -p "$app_path/Contents"
@@ -1668,11 +2612,11 @@ result=$(uninstall_resolve_display_name "$app_path" "Xcode 16.4.app")
 [[ "$result" == "Xcode 16.4" ]] || exit 1
 EOF
 
-	[ "$status" -eq 0 ]
+    [ "$status" -eq 0 ]
 }
 
 @test "decode_file_list handles empty input" {
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/batch.sh"
@@ -1682,11 +2626,11 @@ result=$(decode_file_list "$empty_data" "TestApp" 2>/dev/null) || true
 [[ -z "$result" ]] || exit 1
 EOF
 
-	[ "$status" -eq 0 ]
+    [ "$status" -eq 0 ]
 }
 
 @test "decode_file_list rejects non-absolute paths" {
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/batch.sh"
@@ -1699,11 +2643,11 @@ else
 fi
 EOF
 
-	[ "$status" -eq 0 ]
+    [ "$status" -eq 0 ]
 }
 
 @test "decode_file_list handles both BSD and GNU base64 formats" {
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/batch.sh"
@@ -1721,34 +2665,26 @@ result=$(decode_file_list "$encoded_data" "TestApp")
 [[ -n "$result" ]] || exit 1
 EOF
 
-	[ "$status" -eq 0 ]
+    [ "$status" -eq 0 ]
 }
 
-@test "refresh_launch_services_after_uninstall falls back after timeout" {
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+@test "refresh_launch_services_after_uninstall compacts without forcing a domain re-registration" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/batch.sh"
 
-log_file="$HOME/lsregister-timeout.log"
+test_home="$HOME/launchservices-refresh-home"
+mkdir -p "$test_home"
+log_file="$test_home/lsregister-calls.log"
 : > "$log_file"
-call_index=0
 
 get_lsregister_path() { echo "/bin/echo"; }
-debug_log() { echo "DEBUG:$*" >> "$log_file"; }
 run_with_timeout() {
     local duration="$1"
     shift
-    call_index=$((call_index + 1))
-    echo "CALL${call_index}:$duration:$*" >> "$log_file"
-
-    if [[ "$call_index" -eq 2 ]]; then
-        return 124
-    fi
-    if [[ "$call_index" -eq 3 ]]; then
-        return 124
-    fi
-    return 0
+    echo "CALL:$duration:$*" >> "$log_file"
+    return 124
 }
 
 if refresh_launch_services_after_uninstall; then
@@ -1760,20 +2696,52 @@ fi
 cat "$log_file"
 EOF
 
-	[ "$status" -eq 0 ]
-	[[ "$output" == *"RESULT:ok"* ]] || return 1
-	[[ "$output" == *"CALL2:15:/bin/echo -r -f -domain local -domain user -domain system"* ]] || return 1
-	[[ "$output" == *"CALL3:10:/bin/echo -r -f -domain local -domain user"* ]] || return 1
-	[[ "$output" == *"DEBUG:LaunchServices rebuild timed out, trying lighter version"* ]]
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"RESULT:ok"* ]] || return 1
+    [[ "$output" == *"CALL:10:/bin/echo -gc"* ]] || return 1
+    [[ "$output" != *" -r "* ]] || return 1
+    [[ "$output" != *" -f "* ]] || return 1
+    [[ "$output" != *" -domain "* ]] || return 1
+    [ "$(printf '%s\n' "$output" | grep -c '^CALL:')" -eq 1 ] || return 1
+}
+
+@test "unregister_app_bundle accepts mixed-case app suffixes only in real mode" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+
+test_home="$HOME/launchservices-unregister-home"
+mkdir -p "$test_home/Upper.APP" "$test_home/Plain.bundle"
+log_file="$test_home/lsregister-calls.log"
+: > "$log_file"
+
+get_lsregister_path() { echo "/bin/echo"; }
+run_with_timeout() {
+    local duration="$1"
+    shift
+    echo "CALL:$duration:$*" >> "$log_file"
+}
+
+MOLE_DRY_RUN=0 unregister_app_bundle "$test_home/Upper.APP"
+MOLE_DRY_RUN=0 unregister_app_bundle "$test_home/Plain.bundle"
+MOLE_DRY_RUN=1 unregister_app_bundle "$test_home/Upper.APP"
+cat "$log_file"
+EOF
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"CALL:5:/bin/echo -u $HOME/launchservices-unregister-home/Upper.APP"* ]] || return 1
+    [ "$(printf '%s\n' "$output" | grep -c '^CALL:')" -eq 1 ]
 }
 
 @test "remove_mole deletes manual binaries and caches" {
-	mkdir -p "$HOME/.local/bin"
-	touch "$HOME/.local/bin/mole"
-	touch "$HOME/.local/bin/mo"
-	mkdir -p "$HOME/.config/mole" "$HOME/.cache/mole" "$HOME/Library/Logs/mole"
+    mkdir -p "$HOME/.local/bin"
+    touch "$HOME/.local/bin/mole"
+    touch "$HOME/.local/bin/mo"
+    mkdir -p "$HOME/.config/mole" "$HOME/.cache/mole" "$HOME/Library/Logs/mole"
+    echo "protected-entry" > "$HOME/.config/mole/whitelist"
 
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" PATH="/usr/bin:/bin" MOLE_TEST_MODE=1 /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" PATH="/usr/bin:/bin" MOLE_TEST_MODE=1 /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 start_inline_spinner() { :; }
 stop_inline_spinner() { :; }
@@ -1808,21 +2776,23 @@ export -f start_inline_spinner stop_inline_spinner rm sudo
 printf '\n' | "$PROJECT_ROOT/mole" remove
 EOF
 
-	[ "$status" -eq 0 ]
-	[ ! -f "$HOME/.local/bin/mole" ]
-	[ ! -f "$HOME/.local/bin/mo" ]
-	[ ! -d "$HOME/.config/mole" ]
-	[ ! -d "$HOME/.cache/mole" ]
-	[ ! -d "$HOME/Library/Logs/mole" ]
+    [ "$status" -eq 0 ]
+    [ ! -f "$HOME/.local/bin/mole" ] || return 1
+    [ ! -f "$HOME/.local/bin/mo" ] || return 1
+    [ ! -d "$HOME/.config/mole" ] || return 1
+    [ ! -d "$HOME/.cache/mole" ] || return 1
+    [ ! -d "$HOME/Library/Logs/mole" ] || return 1
+    # Config is user-authored state and must survive in the Trash (#1346).
+    [ -f "$HOME/.Trash/mole-config/whitelist" ] || return 1
 }
 
 @test "remove_mole dry-run keeps manual binaries and caches" {
-	mkdir -p "$HOME/.local/bin"
-	touch "$HOME/.local/bin/mole"
-	touch "$HOME/.local/bin/mo"
-	mkdir -p "$HOME/.config/mole" "$HOME/.cache/mole" "$HOME/Library/Logs/mole"
+    mkdir -p "$HOME/.local/bin"
+    touch "$HOME/.local/bin/mole"
+    touch "$HOME/.local/bin/mo"
+    mkdir -p "$HOME/.config/mole" "$HOME/.cache/mole" "$HOME/Library/Logs/mole"
 
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" PATH="/usr/bin:/bin" MOLE_TEST_MODE=1 /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" PATH="/usr/bin:/bin" MOLE_TEST_MODE=1 /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 start_inline_spinner() { :; }
 stop_inline_spinner() { :; }
@@ -1830,30 +2800,30 @@ export -f start_inline_spinner stop_inline_spinner
 printf '\n' | "$PROJECT_ROOT/mole" remove --dry-run
 EOF
 
-	[ "$status" -eq 0 ]
-	[[ "$output" == *"DRY RUN MODE"* ]] || return 1
-	[ -f "$HOME/.local/bin/mole" ]
-	[ -f "$HOME/.local/bin/mo" ]
-	[ -d "$HOME/.config/mole" ]
-	[ -d "$HOME/.cache/mole" ]
-	[ -d "$HOME/Library/Logs/mole" ]
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"DRY RUN MODE"* ]] || return 1
+    [ -f "$HOME/.local/bin/mole" ]
+    [ -f "$HOME/.local/bin/mo" ]
+    [ -d "$HOME/.config/mole" ]
+    [ -d "$HOME/.cache/mole" ]
+    [ -d "$HOME/Library/Logs/mole" ]
 }
 
 @test "remove_mole test mode ignores PATH installs outside test HOME" {
-	mkdir -p "$HOME/.local/bin" "$HOME/.config/mole" "$HOME/.cache/mole" "$HOME/Library/Logs/mole"
-	touch "$HOME/.local/bin/mole"
-	touch "$HOME/.local/bin/mo"
+    mkdir -p "$HOME/.local/bin" "$HOME/.config/mole" "$HOME/.cache/mole" "$HOME/Library/Logs/mole"
+    touch "$HOME/.local/bin/mole"
+    touch "$HOME/.local/bin/mo"
 
-	fake_global_bin="$(mktemp -d "${BATS_TEST_DIRNAME}/tmp-remove-path.XXXXXX")"
-	touch "$fake_global_bin/mole"
-	touch "$fake_global_bin/mo"
-	cat > "$fake_global_bin/brew" <<'EOF'
+    fake_global_bin="$(mktemp -d "${BATS_TEST_DIRNAME}/tmp-remove-path.XXXXXX")"
+    touch "$fake_global_bin/mole"
+    touch "$fake_global_bin/mo"
+    cat > "$fake_global_bin/brew" << 'EOF'
 #!/bin/bash
 exit 0
 EOF
-	chmod +x "$fake_global_bin/brew"
+    chmod +x "$fake_global_bin/brew"
 
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" PATH="$fake_global_bin:/usr/bin:/bin" MOLE_TEST_MODE=1 /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" PATH="$fake_global_bin:/usr/bin:/bin" MOLE_TEST_MODE=1 /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 start_inline_spinner() { :; }
 stop_inline_spinner() { :; }
@@ -1861,17 +2831,17 @@ export -f start_inline_spinner stop_inline_spinner
 printf '\n' | "$PROJECT_ROOT/mole" remove --dry-run
 EOF
 
-	rm -rf "$fake_global_bin"
+    rm -rf "$fake_global_bin"
 
-	[ "$status" -eq 0 ]
-	[[ "$output" == *"$HOME/.local/bin/mole"* ]] || return 1
-	[[ "$output" == *"$HOME/.local/bin/mo"* ]] || return 1
-	[[ "$output" != *"$fake_global_bin/mole"* ]] || return 1
-	[[ "$output" != *"$fake_global_bin/mo"* ]] || return 1
-	[[ "$output" != *"brew uninstall --force mole"* ]]
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"$HOME/.local/bin/mole"* ]] || return 1
+    [[ "$output" == *"$HOME/.local/bin/mo"* ]] || return 1
+    [[ "$output" != *"$fake_global_bin/mole"* ]] || return 1
+    [[ "$output" != *"$fake_global_bin/mo"* ]] || return 1
+    [[ "$output" != *"brew uninstall --force mole"* ]]
 }
 @test "match_apps_by_name finds exact match case-insensitively" {
-	run /bin/bash --noprofile --norc <<'EOF'
+    run /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 selected_apps=()
 apps_data=(
@@ -1885,13 +2855,13 @@ echo "count=${#selected_apps[@]}"
 echo "match=${selected_apps[0]}"
 EOF
 
-	[ "$status" -eq 0 ]
-	[[ "$output" == *"count=1"* ]] || return 1
-	[[ "$output" == *"TestApp"* ]]
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"count=1"* ]] || return 1
+    [[ "$output" == *"TestApp"* ]]
 }
 
 @test "match_apps_by_name finds by directory name" {
-	run /bin/bash --noprofile --norc <<'EOF'
+    run /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 selected_apps=()
 apps_data=(
@@ -1903,13 +2873,33 @@ echo "count=${#selected_apps[@]}"
 echo "match=${selected_apps[0]}"
 EOF
 
-	[ "$status" -eq 0 ]
-	[[ "$output" == *"count=1"* ]] || return 1
-	[[ "$output" == *"Test Application"* ]]
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"count=1"* ]] || return 1
+    [[ "$output" == *"Test Application"* ]]
+}
+
+@test "match_apps_by_name prefers an exact mixed-case bundle basename" {
+    run /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+selected_apps=()
+apps_data=(
+	"1000|$HOME/Applications/Foo.APP|Different Display Name|com.example.Foo|1 MB|1000000|1024"
+	"1001|$HOME/Applications/Foo Bar.app|Foo Bar|com.example.FooBar|1 MB|1000001|1024"
+)
+source "$PROJECT_ROOT/tests/test_match_apps_helper.sh"
+match_apps_by_name "Foo"
+echo "count=${#selected_apps[@]}"
+echo "match=${selected_apps[0]}"
+EOF
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"count=1"* ]] || return 1
+    [[ "$output" == *"/Foo.APP|"* ]] || return 1
+    [[ "$output" != *"/Foo Bar.app|"* ]]
 }
 
 @test "match_apps_by_name warns on no match" {
-	run /bin/bash --noprofile --norc <<'EOF'
+    run /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 selected_apps=()
 apps_data=(
@@ -1920,13 +2910,13 @@ match_apps_by_name "nonexistent"
 echo "count=${#selected_apps[@]}"
 EOF
 
-	[ "$status" -eq 0 ]
-	[[ "$output" == *"Warning: No application found matching 'nonexistent'"* ]] || return 1
-	[[ "$output" == *"count=0"* ]]
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Warning: No application found matching 'nonexistent'"* ]] || return 1
+    [[ "$output" == *"count=0"* ]]
 }
 
 @test "match_apps_by_name handles multiple app names" {
-	run /bin/bash --noprofile --norc <<'EOF'
+    run /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 selected_apps=()
 apps_data=(
@@ -1943,14 +2933,14 @@ for app in "${selected_apps[@]}"; do
 done
 EOF
 
-	[ "$status" -eq 0 ]
-	[[ "$output" == *"count=2"* ]] || return 1
-	[[ "$output" == *"matched=TestApp2"* ]] || return 1
-	[[ "$output" == *"matched=TestApp3"* ]]
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"count=2"* ]] || return 1
+    [[ "$output" == *"matched=TestApp2"* ]] || return 1
+    [[ "$output" == *"matched=TestApp3"* ]]
 }
 
 @test "match_apps_by_name falls back to substring match" {
-	run /bin/bash --noprofile --norc <<'EOF'
+    run /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 selected_apps=()
 apps_data=(
@@ -1966,13 +2956,13 @@ for app in "${selected_apps[@]}"; do
 done
 EOF
 
-	[ "$status" -eq 0 ]
-	[[ "$output" == *"count=1"* ]] || return 1
-	[[ "$output" == *"matched=TestApp"* ]]
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"count=1"* ]] || return 1
+    [[ "$output" == *"matched=TestApp"* ]]
 }
 
 @test "match_apps_by_name does not duplicate when same name given twice" {
-	run /bin/bash --noprofile --norc <<'EOF'
+    run /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 selected_apps=()
 apps_data=(
@@ -1983,12 +2973,12 @@ match_apps_by_name "testapp" "testapp"
 echo "count=${#selected_apps[@]}"
 EOF
 
-	[ "$status" -eq 0 ]
-	[[ "$output" == *"count=1"* ]]
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"count=1"* ]]
 }
 
 @test "main clears pending input before app selection after scan (#726)" {
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'INNER'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'INNER'
 set -euo pipefail
 
 trace_file="$HOME/uninstall-trace.log"
@@ -2012,10 +3002,11 @@ drain_pending_input() {
 }
 select_apps_for_uninstall() {
     printf 'select\n' >> "$trace_file"
+    _MOLE_MENU_USER_QUIT=1
     return 1
 }
 
-eval "$(sed -n '/^main()/,/^main "\$@"/p' "$PROJECT_ROOT/bin/uninstall.sh" | sed '$d')"
+eval "$(sed -n '/^main()/,/main "\$@"/p' "$PROJECT_ROOT/bin/uninstall.sh" | sed '$d')"
 
 main
 
@@ -2027,11 +3018,11 @@ actual=$(cat "$trace_file")
 }
 INNER
 
-	[ "$status" -eq 0 ]
+    [ "$status" -eq 0 ]
 }
 
 @test "main keeps scan and selector on one alternate screen until cancel (#1194)" {
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'INNER'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'INNER'
 set -euo pipefail
 
 trace_file="$HOME/uninstall-screen-trace.log"
@@ -2066,10 +3057,11 @@ select_apps_for_uninstall() {
     [[ "${MOLE_ALT_SCREEN_ACTIVE:-}" == "1" ]]
     [[ "${MOLE_MANAGED_ALT_SCREEN:-}" == "1" ]]
     printf 'select\n' >> "$trace_file"
+    _MOLE_MENU_USER_QUIT=1
     return 1
 }
 
-eval "$(sed -n '/^main()/,/^main "\$@"/p' "$PROJECT_ROOT/bin/uninstall.sh" | sed '$d')"
+eval "$(sed -n '/^main()/,/main "\$@"/p' "$PROJECT_ROOT/bin/uninstall.sh" | sed '$d')"
 
 main
 
@@ -2081,18 +3073,18 @@ actual=$(cat "$trace_file")
 }
 INNER
 
-	[ "$status" -eq 0 ]
+    [ "$status" -eq 0 ]
 }
 
 @test "scan_applications starts feedback before discovery and cleans no-app state" {
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_FORCE_SCAN_SPINNER=1 /bin/bash --noprofile --norc <<'INNER'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_FORCE_SCAN_SPINNER=1 /bin/bash --noprofile --norc << 'INNER'
 set -euo pipefail
 
 trace_file="$HOME/scan-feedback-trace.log"
 scan_temp="$HOME/scan-feedback-temp"
 
 MOLE_UNINSTALL_META_CACHE_DIR="$HOME/.cache/mole"
-MOLE_UNINSTALL_META_CACHE_FILE="$MOLE_UNINSTALL_META_CACHE_DIR/uninstall_app_metadata_v1"
+MOLE_UNINSTALL_META_CACHE_FILE="$MOLE_UNINSTALL_META_CACHE_DIR/uninstall_app_metadata_v2"
 MOLE_UNINSTALL_META_CACHE_LOCK="${MOLE_UNINSTALL_META_CACHE_FILE}.lock"
 
 create_temp_file() { printf '%s\n' "$scan_temp"; }
@@ -2131,17 +3123,17 @@ actual=$(cat "$trace_file")
     exit 1
 }
 
-[[ ! -e "${scan_temp}.spinner_shown" ]]
+[[ ! -e "${scan_temp}.spinner_shown" ]] || exit 1
 [[ ! -e "${scan_temp}.scan_status" ]]
 INNER
 
-	[ "$status" -eq 0 ]
+    [ "$status" -eq 0 ]
 }
 
 @test "select_apps_for_uninstall drains pending input before opening paginated menu" {
-	mkdir -p "$HOME/Applications/TraceApp.app"
+    mkdir -p "$HOME/Applications/TraceApp.app"
 
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" TERM="xterm-256color" /bin/bash --noprofile --norc <<'INNER'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" TERM="xterm-256color" /bin/bash --noprofile --norc << 'INNER'
 set -euo pipefail
 
 trace_file="$HOME/selector-drain-trace.log"
@@ -2165,8 +3157,8 @@ paginated_multi_select() {
 }
 
 select_apps_for_uninstall
-[[ ${#selected_apps[@]} -eq 1 ]]
-[[ -z "${MOLE_MENU_IGNORE_INITIAL_ENTER:-}" ]]
+[[ ${#selected_apps[@]} -eq 1 ]] || exit 1
+[[ -z "${MOLE_MENU_IGNORE_INITIAL_ENTER:-}" ]] || exit 1
 
 expected=$(printf 'format\ndrain\nguard:1\npaginated\n')
 actual=$(cat "$trace_file")
@@ -2176,11 +3168,11 @@ actual=$(cat "$trace_file")
 }
 INNER
 
-	[ "$status" -eq 0 ]
+    [ "$status" -eq 0 ]
 }
 
 @test "paginated menu can ignore one initial Enter for uninstall launch guard" {
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" TERM="xterm-256color" /bin/bash --noprofile --norc <<'INNER'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" TERM="xterm-256color" /bin/bash --noprofile --norc << 'INNER'
 set -euo pipefail
 
 source "$PROJECT_ROOT/lib/core/common.sh"
@@ -2206,14 +3198,14 @@ echo "rc=$rc"
 echo "result=${MOLE_SELECTION_RESULT:-}"
 INNER
 
-	[ "$status" -eq 0 ]
-	[[ "$output" == *"rc=1"* ]] || return 1
-	[[ "$output" == *"result="* ]] || return 1
-	[[ "$output" != *"result=0"* ]]
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"rc=1"* ]] || return 1
+    [[ "$output" == *"result="* ]] || return 1
+    [[ "$output" != *"result=0"* ]]
 }
 
 @test "paginated menu skips Size sort when size metadata is unavailable (#1126)" {
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" TERM="xterm-256color" /bin/bash --noprofile --norc <<'INNER'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" TERM="xterm-256color" /bin/bash --noprofile --norc << 'INNER'
 set -euo pipefail
 
 source "$PROJECT_ROOT/lib/core/common.sh"
@@ -2243,14 +3235,14 @@ echo "result=${MOLE_SELECTION_RESULT:-}"
 [[ $rc -eq 0 ]] || exit 1
 INNER
 
-	[ "$status" -eq 0 ]
-	[[ "$output" == *"rc=0"* ]] || return 1
-	[[ "$output" == *"mode=date"* ]] || return 1
-	[[ "$output" == *"result=0"* ]]
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"rc=0"* ]] || return 1
+    [[ "$output" == *"mode=date"* ]] || return 1
+    [[ "$output" == *"result=0"* ]]
 }
 
 @test "paginated menu reverses Size order when size metadata is available (#1126)" {
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" TERM="xterm-256color" /bin/bash --noprofile --norc <<'INNER'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" TERM="xterm-256color" /bin/bash --noprofile --norc << 'INNER'
 set -euo pipefail
 
 source "$PROJECT_ROOT/lib/core/common.sh"
@@ -2288,25 +3280,25 @@ echo "reverse=${MOLE_SELECTION_RESULT:-}"
 [[ $reverse_rc -eq 0 ]] || exit 1
 INNER
 
-	[ "$status" -eq 0 ]
-	[[ "$output" == *"default_rc=0"* ]] || return 1
-	[[ "$output" == *"reverse_rc=0"* ]] || return 1
-	[[ "$output" == *"default=1"* ]] || return 1
-	[[ "$output" == *"reverse=0"* ]]
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"default_rc=0"* ]] || return 1
+    [[ "$output" == *"reverse_rc=0"* ]] || return 1
+    [[ "$output" == *"default=1"* ]] || return 1
+    [[ "$output" == *"reverse=0"* ]]
 }
 
 @test "main reuses the app list after a removal-only uninstall (#866, #1315)" {
-	local first_cache
-	first_cache="$(mktemp "${BATS_TEST_TMPDIR:-$BATS_RUN_TMPDIR:-$HOME}/tmp-866-first.XXXXXX")"
+    local first_cache
+    first_cache="$(mktemp "${BATS_TEST_TMPDIR:-$BATS_RUN_TMPDIR:-$HOME}/tmp-866-first.XXXXXX")"
 
-	mkdir -p "$HOME/Applications/FirstApp.app" "$HOME/Applications/SecondApp.app"
-	cat > "$first_cache" <<CACHE
+    mkdir -p "$HOME/Applications/FirstApp.app" "$HOME/Applications/SecondApp.app"
+    cat > "$first_cache" << CACHE
 1700000000|$HOME/Applications/FirstApp.app|FirstApp|com.example.FirstApp|10MB|Today|10240
 1700000001|$HOME/Applications/SecondApp.app|SecondApp|com.example.SecondApp|11MB|Today|11264
 CACHE
 
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" FIRST_CACHE="$first_cache" \
-		/bin/bash --noprofile --norc <<'INNER'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" FIRST_CACHE="$first_cache" \
+        /bin/bash --noprofile --norc << 'INNER'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 
@@ -2365,11 +3357,12 @@ select_apps_for_uninstall() {
         selected_apps=("${apps_data[0]}")
         return 0
     fi
+    _MOLE_MENU_USER_QUIT=1
     return 1
 }
 
 eval "$(sed -n '/^uninstall_inventory_can_reuse_cached_apps()/,/^}/p' "$PROJECT_ROOT/bin/uninstall.sh")"
-eval "$(sed -n '/^main()/,/^main "\$@"/p' "$PROJECT_ROOT/bin/uninstall.sh" | sed '$d')"
+eval "$(sed -n '/^main()/,/main "\$@"/p' "$PROJECT_ROOT/bin/uninstall.sh" | sed '$d')"
 
 printf '\n' | main
 
@@ -2381,46 +3374,392 @@ actual=$(cat "$trace_file")
 }
 INNER
 
-	rm -f "$first_cache"
-	[ "$status" -eq 0 ]
+    rm -f "$first_cache"
+    [ "$status" -eq 0 ]
+}
+
+@test "completed uninstall suppresses dead-terminal countdown read errors (#1503)" {
+    local apps_cache
+    apps_cache="$(mktemp "${BATS_TEST_TMPDIR:-$BATS_RUN_TMPDIR:-$HOME}/tmp-1503-countdown.XXXXXX")"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" APPS_CACHE_FILE="$apps_cache" \
+        /bin/bash --noprofile --norc << 'INNER'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+
+log_operation_session_start() { :; }
+hide_cursor() { :; }
+show_cursor() { :; }
+clear_screen() { :; }
+start_uninstall_interactive_screen() { :; }
+stop_uninstall_interactive_screen() { :; }
+scan_applications() { printf '%s\n' "$APPS_CACHE_FILE"; }
+load_applications() { :; }
+select_apps_for_uninstall() {
+    selected_apps=("0|$HOME/Applications/TestApp.app|TestApp|com.example.TestApp|1KB|Today|1")
+}
+batch_uninstall_applications() { :; }
+uninstall_app_inventory_fingerprint() { printf 'stable\n'; }
+uninstall_normalize_size_display() { printf '%s\n' "$1"; }
+uninstall_normalize_last_used_display() { printf '%s\n' "$1"; }
+get_display_width() { printf '%s\n' "${#1}"; }
+truncate_by_display_width() { printf '%s\n' "$1"; }
+mole_tty_is_foreground() { return 0; }
+drain_pending_input() { :; }
+read() {
+    local arg
+    for arg in "$@"; do
+        if [[ "$arg" == -t || "$arg" == -t* ]]; then
+            printf 'read error: 0: Input/output error\n' >&2
+            return 1
+        fi
+    done
+    builtin read "$@"
+}
+
+eval "$(sed -n '/^main()/,/main \"\$@\"/p' "$PROJECT_ROOT/bin/uninstall.sh" | sed '$d')"
+main > "$HOME/countdown.out" 2> "$HOME/countdown.err"
+
+[[ "$(cat "$HOME/countdown.err")" != *'Input/output error'* ]] || {
+    cat "$HOME/countdown.err" >&2
+    exit 1
+}
+[[ "$(grep -o 'Press Enter to return to the app list' "$HOME/countdown.out" | wc -l | tr -d ' ')" -eq 5 ]]
+INNER
+
+    rm -f "$apps_cache"
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
 }
 
 @test "inventory cache reuse accepts removals only and rejects stale changes (#1315)" {
-	run env PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'INNER'
+    run env HOME="$HOME/inventory-reuse" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'INNER'
 set -euo pipefail
 eval "$(sed -n '/^uninstall_inventory_can_reuse_cached_apps()/,/^}/p' "$PROJECT_ROOT/bin/uninstall.sh")"
 
-old=$(printf '/Applications/First.app|1\n/Applications/Second.app|1\n')
-removed=$(printf '/Applications/Second.app|1\n')
-changed=$(printf '/Applications/Second.app|2\n')
-added=$(printf '/Applications/Second.app|1\n/Applications/Third.app|1\n')
+mkdir -p "$HOME/Applications/First.app" "$HOME/Applications/Second.app"
+mkdir -p "$HOME/Applications/With|Pipe.app"
+old=$(printf '%s|1|1\n%s|1|1\n' "$HOME/Applications/First.app" "$HOME/Applications/Second.app")
+removed=$(printf '%s|1|1\n' "$HOME/Applications/Second.app")
+changed=$(printf '%s|2|1\n' "$HOME/Applications/Second.app")
+added=$(printf '%s|1|1\n%s|1|1\n' "$HOME/Applications/Second.app" "$HOME/Applications/Third.app")
+pipe_old=$(printf '%s|1|1\n%s|1|1\n' "$HOME/Applications/Second.app" "$HOME/Applications/With|Pipe.app")
 
-uninstall_inventory_can_reuse_cached_apps "$old" "$removed" || exit 1
-if uninstall_inventory_can_reuse_cached_apps "$old" "$changed"; then
+if uninstall_inventory_can_reuse_cached_apps "$old" "$removed"; then
+    exit 1
+fi
+if uninstall_inventory_can_reuse_cached_apps "$pipe_old" "$removed"; then
     exit 2
 fi
+rmdir "$HOME/Applications/With|Pipe.app"
+uninstall_inventory_can_reuse_cached_apps "$pipe_old" "$removed" || exit 3
+rmdir "$HOME/Applications/First.app"
+uninstall_inventory_can_reuse_cached_apps "$old" "$removed" || exit 4
+if uninstall_inventory_can_reuse_cached_apps "$old" "$changed"; then
+    exit 5
+fi
 if uninstall_inventory_can_reuse_cached_apps "$old" "$added"; then
-    exit 3
+    exit 6
 fi
 if uninstall_inventory_can_reuse_cached_apps "$old" ""; then
-    exit 4
+    exit 7
 fi
 INNER
 
-	[ "$status" -eq 0 ] || return 1
+    [ "$status" -eq 0 ] || return 1
 }
 
+@test "inventory fingerprint changes when only Info.plist changes" {
+    run env HOME="$HOME/inventory-plist-mtime" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'INNER'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+eval "$(sed -n '/^uninstall_print_app_paths_with_mtime()/,/^}/p' "$PROJECT_ROOT/bin/uninstall.sh")"
+eval "$(sed -n '/^uninstall_app_inventory_fingerprint()/,/^}/p' "$PROJECT_ROOT/bin/uninstall.sh")"
+
+app_path="$HOME/Applications/Mutable.app"
+mkdir -p "$app_path/Contents"
+touch -t 202001010000 "$app_path/Contents/Info.plist"
+uninstall_print_app_search_dirs() { printf '%s\n' "$HOME/Applications"; }
+pkg_receipt_nonstandard_app_paths() { :; }
+uninstall_should_skip_app_path() { return 1; }
+
+before=$(uninstall_app_inventory_fingerprint)
+touch -t 202101010000 "$app_path/Contents/Info.plist"
+after=$(uninstall_app_inventory_fingerprint)
+[[ "$before" != "$after" ]] || exit 1
+INNER
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+}
+
+@test "batch scan refreshes selected app identity before leftover discovery" {
+    run env HOME="$HOME/batch-refresh-identity" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'INNER'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+
+app_path="$HOME/Applications/Current.app"
+mkdir -p "$app_path"
+start_inline_spinner() { :; }
+stop_inline_spinner() { :; }
+uninstall_resolve_eligible_bundle_id() { printf 'com.example.Current\n'; }
+official_uninstaller_vendor() { return 1; }
+uninstall_bundle_id_has_surviving_sibling() { return 1; }
+uninstall_live_bundle_has_other_install() {
+    _MOLE_UNINSTALL_LIVE_SIBLING_FINGERPRINT=""
+    _MOLE_UNINSTALL_LIVE_SIBLING_PATHS=()
+    return 1
+}
+pgrep() { return 1; }
+get_brew_cask_name() { return 1; }
+get_file_owner() { whoami; }
+get_path_size_kb() { printf '1\n'; }
+find_app_files() { printf '%s|%s\n' "$1" "$2" > "$HOME/discovery-identity"; }
+get_diagnostic_report_paths_for_app() { return 0; }
+find_app_system_files() { return 0; }
+calculate_total_size() { printf '0\n'; }
+has_sensitive_data() { return 1; }
+discover_login_item_helper_bundle_ids() { return 0; }
+
+selected_apps=("0|$app_path|Stale Display|com.example.Stale|0|Never")
+running_apps=()
+sudo_apps=()
+brew_cask_apps=()
+blocked_apps=()
+manual_removal_apps=()
+app_details=()
+total_estimated_size=0
+_batch_scan_app_details
+
+[[ "$(cat "$HOME/discovery-identity")" == "com.example.Current|Current" ]] || exit 1
+[[ "${app_details[0]}" == "Stale Display|$app_path|com.example.Current|"* ]] || exit 1
+INNER
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+}
+
+@test "batch scan stops before discovery when app sizing is interrupted" {
+    run env HOME="$HOME/batch-size-interrupt" PROJECT_ROOT="$PROJECT_ROOT" \
+        /bin/bash --noprofile --norc <<'INNER'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+
+app_path="$HOME/Applications/Interrupted.app"
+mkdir -p "$app_path"
+start_inline_spinner() { :; }
+stop_inline_spinner() { :; }
+_batch_refresh_selected_app_bundle_id() { printf 'com.example.Interrupted\n'; }
+official_uninstaller_vendor() { return 1; }
+uninstall_bundle_id_has_surviving_sibling() { return 1; }
+uninstall_live_bundle_has_other_install() {
+    _MOLE_UNINSTALL_LIVE_SIBLING_FINGERPRINT=""
+    _MOLE_UNINSTALL_LIVE_SIBLING_PATHS=()
+    return 1
+}
+pgrep() { return 1; }
+get_brew_cask_name() { return 1; }
+get_file_owner() { whoami; }
+get_path_size_kb() { return 130; }
+find_app_files() { printf 'UNEXPECTED_DISCOVERY\n'; return 99; }
+
+selected_apps=("0|$app_path|Interrupted|com.example.Interrupted|0|Never")
+running_apps=()
+sudo_apps=()
+brew_cask_apps=()
+blocked_apps=()
+manual_removal_apps=()
+app_details=()
+total_estimated_size=0
+rc=0
+_batch_scan_app_details || rc=$?
+printf 'RC=%s DETAILS=%s\n' "$rc" "${#app_details[@]}"
+INNER
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"RC=130 DETAILS=0"* ]] || return 1
+    [[ "$output" != *"UNEXPECTED_DISCOVERY"* ]]
+}
+
+@test "batch uninstall stops before discovery and teardown when app sizing times out" {
+    run env HOME="$HOME/batch-size-timeout" PROJECT_ROOT="$PROJECT_ROOT" \
+        /bin/bash --noprofile --norc <<'INNER'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+
+app_path="$HOME/Applications/TimedOut.app"
+mkdir -p "$app_path"
+start_inline_spinner() { :; }
+stop_inline_spinner() { :; }
+_batch_refresh_selected_app_bundle_id() { printf 'com.example.TimedOut\n'; }
+official_uninstaller_vendor() { return 1; }
+uninstall_bundle_id_has_surviving_sibling() { return 1; }
+uninstall_live_bundle_has_other_install() {
+    _MOLE_UNINSTALL_LIVE_SIBLING_FINGERPRINT=""
+    _MOLE_UNINSTALL_LIVE_SIBLING_PATHS=()
+    return 1
+}
+pgrep() { return 1; }
+get_brew_cask_name() { return 1; }
+get_file_owner() { whoami; }
+get_path_size_kb() { return 124; }
+find_app_files() { echo "UNEXPECTED_DISCOVERY"; return 99; }
+stop_launch_services() { echo "UNEXPECTED_TEARDOWN"; }
+unregister_app_bundle() { echo "UNEXPECTED_TEARDOWN"; }
+remove_login_item() { echo "UNEXPECTED_TEARDOWN"; }
+force_kill_app() { echo "UNEXPECTED_TEARDOWN"; }
+mole_delete() { echo "UNEXPECTED_DELETE"; }
+
+selected_apps=("0|$app_path|TimedOut|com.example.TimedOut|0|Never")
+files_cleaned=0
+total_items=0
+total_size_cleaned=0
+rc=0
+batch_uninstall_applications || rc=$?
+printf 'RC=%s\n' "$rc"
+[[ $rc -eq 124 ]]
+INNER
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"RC=124"* ]] || return 1
+    [[ "$output" != *"UNEXPECTED_DISCOVERY"* ]] || return 1
+    [[ "$output" != *"UNEXPECTED_TEARDOWN"* ]] || return 1
+    [[ "$output" != *"UNEXPECTED_DELETE"* ]]
+}
+
+@test "batch scan keeps the app plan when related-file sizing times out" {
+    # Related size is display-only (#1383). A stalled du on leftovers must not
+    # abort the batch; the leftover paths stay in the plan with size 0.
+    run env HOME="$HOME/batch-related-size-timeout" PROJECT_ROOT="$PROJECT_ROOT" \
+        /bin/bash --noprofile --norc <<'INNER'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+
+app_path="$HOME/Applications/TimedOut.app"
+related_path="$HOME/Library/Caches/com.example.TimedOut"
+mkdir -p "$app_path" "$related_path"
+start_inline_spinner() { :; }
+stop_inline_spinner() { :; }
+_batch_refresh_selected_app_bundle_id() { printf 'com.example.TimedOut\n'; }
+official_uninstaller_vendor() { return 1; }
+uninstall_bundle_id_has_surviving_sibling() { return 1; }
+uninstall_live_bundle_has_other_install() {
+    _MOLE_UNINSTALL_LIVE_SIBLING_FINGERPRINT=""
+    _MOLE_UNINSTALL_LIVE_SIBLING_PATHS=()
+    return 1
+}
+pgrep() { return 1; }
+get_brew_cask_name() { return 1; }
+get_file_owner() { whoami; }
+get_path_size_kb() {
+    if [[ "$1" == "$app_path" ]]; then
+        printf '1\n'
+        return 0
+    fi
+    return 124
+}
+find_app_files() { printf '%s\n' "$related_path"; }
+get_diagnostic_report_paths_for_app() { return 0; }
+find_app_system_files() { return 0; }
+discover_login_item_helper_bundle_ids() { return 0; }
+has_sensitive_data() { return 1; }
+
+selected_apps=("0|$app_path|TimedOut|com.example.TimedOut|0|Never")
+running_apps=()
+sudo_apps=()
+brew_cask_apps=()
+blocked_apps=()
+manual_removal_apps=()
+app_details=()
+total_estimated_size=0
+rc=0
+_batch_scan_app_details || rc=$?
+printf 'RC=%s DETAILS=%s\n' "$rc" "${#app_details[@]}"
+[[ $rc -eq 0 && ${#app_details[@]} -eq 1 ]]
+INNER
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"RC=0 DETAILS=1"* ]]
+}
+
+@test "batch scan keeps the app when leftover discovery times out after receipt work (#1383)" {
+    # Machine-wide receipt walks can exhaust the shared deadline; leftover
+    # discovery then returns 124. That must narrow to the selected app, not
+    # abort with "nothing was removed".
+    run env HOME="$HOME/batch-leftover-timeout" PROJECT_ROOT="$PROJECT_ROOT" \
+        /bin/bash --noprofile --norc <<'INNER'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+
+app_path="$HOME/Applications/UniFi-Discover.app"
+mkdir -p "$app_path"
+start_inline_spinner() { :; }
+stop_inline_spinner() { :; }
+_batch_refresh_selected_app_bundle_id() { printf 'com.example.unifi\n'; }
+official_uninstaller_vendor() { return 1; }
+uninstall_bundle_id_has_surviving_sibling() { return 1; }
+uninstall_live_bundle_has_other_install() {
+    # Sibling scan finished with a complete "no sibling" proof, but burned
+    # the shared wall clock so leftover discovery has no budget left.
+    _MOLE_UNINSTALL_DISCOVERY_DEADLINE=$SECONDS
+    _MOLE_UNINSTALL_LIVE_SIBLING_FINGERPRINT=""
+    _MOLE_UNINSTALL_LIVE_SIBLING_PATHS=()
+    return 1
+}
+pgrep() { return 1; }
+get_brew_cask_name() { return 1; }
+get_file_owner() { whoami; }
+get_path_size_kb() { printf '4\n'; }
+find_app_files() { return 124; }
+get_diagnostic_report_paths_for_app() { echo "UNEXPECTED_DIAG"; return 99; }
+find_app_system_files() { echo "UNEXPECTED_SYSTEM"; return 99; }
+discover_login_item_helper_bundle_ids() { return 0; }
+has_sensitive_data() { return 1; }
+
+selected_apps=("0|$app_path|UniFi Discover|com.example.unifi|0|Never")
+running_apps=()
+sudo_apps=()
+brew_cask_apps=()
+blocked_apps=()
+manual_removal_apps=()
+app_details=()
+total_estimated_size=0
+rc=0
+_batch_scan_app_details || rc=$?
+printf 'RC=%s DETAILS=%s\n' "$rc" "${#app_details[@]}"
+# Plan must exist: one detail row, app-only (no leftover encoding of UNEXPECTED_*)
+[[ $rc -eq 0 && ${#app_details[@]} -eq 1 ]]
+printf 'DETAIL=%s\n' "${app_details[0]}"
+INNER
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"RC=0 DETAILS=1"* ]] || return 1
+    [[ "$output" == *"leftover scan timed out; only the app bundle will be removed"* ]] || return 1
+    [[ "$output" != *"UNEXPECTED_DIAG"* ]] || return 1
+    [[ "$output" != *"UNEXPECTED_SYSTEM"* ]] || return 1
+}
 
 # ---------------------------------------------------------------------------
 # #723: Trash routing default and --permanent flag
 # ---------------------------------------------------------------------------
 
 @test "uninstall main sets MOLE_DELETE_MODE=trash by default" {
-	local apps_cache
-	apps_cache="$(mktemp "${BATS_TEST_TMPDIR:-$BATS_RUN_TMPDIR:-$HOME}/tmp-723-trash.XXXXXX")"
+    local apps_cache
+    apps_cache="$(mktemp "${BATS_TEST_TMPDIR:-$BATS_RUN_TMPDIR:-$HOME}/tmp-723-trash.XXXXXX")"
 
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_NO_AUTH=1 \
-		APPS_CACHE_FILE="$apps_cache" /bin/bash --noprofile --norc <<'INNER'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_NO_AUTH=1 \
+        APPS_CACHE_FILE="$apps_cache" /bin/bash --noprofile --norc << 'INNER'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 
@@ -2436,24 +3775,25 @@ load_applications() { return 0; }
 drain_pending_input() { :; }
 select_apps_for_uninstall() {
     printf 'delete_mode=%s\n' "${MOLE_DELETE_MODE:-unset}"
+    _MOLE_MENU_USER_QUIT=1
     return 1
 }
 
-eval "$(sed -n '/^main()/,/^main "\$@"/p' "$PROJECT_ROOT/bin/uninstall.sh" | sed '$d')"
+eval "$(sed -n '/^main()/,/main "\$@"/p' "$PROJECT_ROOT/bin/uninstall.sh" | sed '$d')"
 main
 INNER
 
-	rm -f "$apps_cache"
-	[ "$status" -eq 0 ]
-	[[ "$output" == *"delete_mode=trash"* ]]
+    rm -f "$apps_cache"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"delete_mode=trash"* ]]
 }
 
 @test "uninstall main sets MOLE_DELETE_MODE=permanent with --permanent flag" {
-	local apps_cache
-	apps_cache="$(mktemp "${BATS_TEST_TMPDIR:-$BATS_RUN_TMPDIR:-$HOME}/tmp-723-perm.XXXXXX")"
+    local apps_cache
+    apps_cache="$(mktemp "${BATS_TEST_TMPDIR:-$BATS_RUN_TMPDIR:-$HOME}/tmp-723-perm.XXXXXX")"
 
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_NO_AUTH=1 \
-		APPS_CACHE_FILE="$apps_cache" /bin/bash --noprofile --norc <<'INNER'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_NO_AUTH=1 \
+        APPS_CACHE_FILE="$apps_cache" /bin/bash --noprofile --norc << 'INNER'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 
@@ -2469,16 +3809,17 @@ load_applications() { return 0; }
 drain_pending_input() { :; }
 select_apps_for_uninstall() {
     printf 'delete_mode=%s\n' "${MOLE_DELETE_MODE:-unset}"
+    _MOLE_MENU_USER_QUIT=1
     return 1
 }
 
-eval "$(sed -n '/^main()/,/^main "\$@"/p' "$PROJECT_ROOT/bin/uninstall.sh" | sed '$d')"
+eval "$(sed -n '/^main()/,/main "\$@"/p' "$PROJECT_ROOT/bin/uninstall.sh" | sed '$d')"
 main --permanent
 INNER
 
-	rm -f "$apps_cache"
-	[ "$status" -eq 0 ]
-	[[ "$output" == *"delete_mode=permanent"* ]]
+    rm -f "$apps_cache"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"delete_mode=permanent"* ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -2486,16 +3827,16 @@ INNER
 # ---------------------------------------------------------------------------
 
 @test "uninstall --list prints table with NAME, BUNDLE ID, UNINSTALL NAME, SIZE" {
-	local apps_cache
-	apps_cache="$(mktemp "${BATS_TEST_TMPDIR:-$BATS_RUN_TMPDIR:-$HOME}/tmp-list-text.XXXXXX")"
-	# Format matches load_applications: epoch|app_path|app_name|bundle_id|size|last_used|size_kb
-	cat > "$apps_cache" <<'CACHE'
+    local apps_cache
+    apps_cache="$(mktemp "${BATS_TEST_TMPDIR:-$BATS_RUN_TMPDIR:-$HOME}/tmp-list-text.XXXXXX")"
+    # Format matches load_applications: epoch|app_path|app_name|bundle_id|size|last_used|size_kb
+    cat > "$apps_cache" << 'CACHE'
 1700000000|/Applications/Slack.app|Slack|com.tinyspeck.slackmacgap|180MB|Today|184320
 1700000000|/Applications/Zoom.app|Zoom|us.zoom.xos|140MB|Yesterday|143360
 CACHE
 
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_NO_AUTH=1 \
-		APPS_CACHE_FILE="$apps_cache" /bin/bash --noprofile --norc <<'INNER'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_NO_AUTH=1 \
+        APPS_CACHE_FILE="$apps_cache" /bin/bash --noprofile --norc << 'INNER'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 
@@ -2518,7 +3859,7 @@ get_brew_cask_name() { return 1; }
 # and our sed slice only pulls list-related helpers + main().
 uninstall_normalize_size_display() { local s="${1:-}"; [[ -z "$s" || "$s" == "0" || "$s" == "Unknown" ]] && echo "N/A" || echo "$s"; }
 
-eval "$(sed -n '/^uninstall_list_json_escape()/,/^main "\$@"/p' "$PROJECT_ROOT/bin/uninstall.sh" | sed '$d')"
+eval "$(sed -n '/^uninstall_list_json_escape()/,/main "\$@"/p' "$PROJECT_ROOT/bin/uninstall.sh" | sed '$d')"
 # Force text mode by simulating a TTY for stdout via /dev/tty redirect not
 # available in bats; instead pipe through a wrapper that fakes -t 1. Simplest:
 # call the function directly so [[ -t 1 ]] uses bash's stdout (the bats pipe).
@@ -2526,25 +3867,25 @@ eval "$(sed -n '/^uninstall_list_json_escape()/,/^main "\$@"/p' "$PROJECT_ROOT/b
 main --list
 INNER
 
-	rm -f "$apps_cache"
-	[ "$status" -eq 0 ]
-	# Bats pipes stdout, so output is JSON. Assert both apps and uninstall_name.
-	[[ "$output" == *'"name": "Slack"'* ]] || return 1
-	[[ "$output" == *'"name": "Zoom"'* ]] || return 1
-	[[ "$output" == *'"uninstall_name": "Slack"'* ]] || return 1
-	[[ "$output" == *'"bundle_id": "com.tinyspeck.slackmacgap"'* ]] || return 1
-	[[ "$output" == *'"source": "App"'* ]]
+    rm -f "$apps_cache"
+    [ "$status" -eq 0 ]
+    # Bats pipes stdout, so output is JSON. Assert both apps and uninstall_name.
+    [[ "$output" == *'"name": "Slack"'* ]] || return 1
+    [[ "$output" == *'"name": "Zoom"'* ]] || return 1
+    [[ "$output" == *'"uninstall_name": "Slack"'* ]] || return 1
+    [[ "$output" == *'"bundle_id": "com.tinyspeck.slackmacgap"'* ]] || return 1
+    [[ "$output" == *'"source": "App"'* ]]
 }
 
 @test "uninstall --list emits JSON array when stdout is piped" {
-	local apps_cache
-	apps_cache="$(mktemp "${BATS_TEST_TMPDIR:-$BATS_RUN_TMPDIR:-$HOME}/tmp-list-json.XXXXXX")"
-	cat > "$apps_cache" <<'CACHE'
+    local apps_cache
+    apps_cache="$(mktemp "${BATS_TEST_TMPDIR:-$BATS_RUN_TMPDIR:-$HOME}/tmp-list-json.XXXXXX")"
+    cat > "$apps_cache" << 'CACHE'
 1700000000|/Applications/Slack.app|Slack|com.tinyspeck.slackmacgap|180MB|Today|184320
 CACHE
 
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_NO_AUTH=1 \
-		APPS_CACHE_FILE="$apps_cache" /bin/bash --noprofile --norc <<'INNER'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_NO_AUTH=1 \
+        APPS_CACHE_FILE="$apps_cache" /bin/bash --noprofile --norc << 'INNER'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 
@@ -2566,29 +3907,29 @@ get_brew_cask_name() { return 1; }
 # and our sed slice only pulls list-related helpers + main().
 uninstall_normalize_size_display() { local s="${1:-}"; [[ -z "$s" || "$s" == "0" || "$s" == "Unknown" ]] && echo "N/A" || echo "$s"; }
 
-eval "$(sed -n '/^uninstall_list_json_escape()/,/^main "\$@"/p' "$PROJECT_ROOT/bin/uninstall.sh" | sed '$d')"
+eval "$(sed -n '/^uninstall_list_json_escape()/,/main "\$@"/p' "$PROJECT_ROOT/bin/uninstall.sh" | sed '$d')"
 main --list
 INNER
 
-	rm -f "$apps_cache"
-	[ "$status" -eq 0 ]
-	# Output should start with '[' and end with ']' to be a valid JSON array.
-	[[ "${output:0:1}" == "[" ]] || return 1
-	[[ "${output: -1}" == "]" ]] || return 1
-	# Round-trip via python to confirm it parses as JSON.
-	if command -v python3 > /dev/null; then
-		printf '%s\n' "$output" | python3 -c 'import sys, json; d=json.load(sys.stdin); assert isinstance(d, list) and len(d)==1 and d[0]["name"]=="Slack"'
-	fi
+    rm -f "$apps_cache"
+    [ "$status" -eq 0 ]
+    # Output should start with '[' and end with ']' to be a valid JSON array.
+    [[ "${output:0:1}" == "[" ]] || return 1
+    [[ "${output: -1}" == "]" ]] || return 1
+    # Round-trip via python to confirm it parses as JSON.
+    if command -v python3 > /dev/null; then
+        printf '%s\n' "$output" | python3 -c 'import sys, json; d=json.load(sys.stdin); assert isinstance(d, list) and len(d)==1 and d[0]["name"]=="Slack"'
+    fi
 }
 
 @test "uninstall --list with empty scan returns empty JSON array" {
-	local apps_cache
-	apps_cache="$(mktemp "${BATS_TEST_TMPDIR:-$BATS_RUN_TMPDIR:-$HOME}/tmp-list-empty.XXXXXX")"
-	# Non-empty file so load_applications doesn't bail early on size check.
-	echo "" > "$apps_cache"
+    local apps_cache
+    apps_cache="$(mktemp "${BATS_TEST_TMPDIR:-$BATS_RUN_TMPDIR:-$HOME}/tmp-list-empty.XXXXXX")"
+    # Non-empty file so load_applications doesn't bail early on size check.
+    echo "" > "$apps_cache"
 
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_NO_AUTH=1 \
-		APPS_CACHE_FILE="$apps_cache" /bin/bash --noprofile --norc <<'INNER'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_NO_AUTH=1 \
+        APPS_CACHE_FILE="$apps_cache" /bin/bash --noprofile --norc << 'INNER'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 
@@ -2608,24 +3949,24 @@ get_brew_cask_name() { return 1; }
 # and our sed slice only pulls list-related helpers + main().
 uninstall_normalize_size_display() { local s="${1:-}"; [[ -z "$s" || "$s" == "0" || "$s" == "Unknown" ]] && echo "N/A" || echo "$s"; }
 
-eval "$(sed -n '/^uninstall_list_json_escape()/,/^main "\$@"/p' "$PROJECT_ROOT/bin/uninstall.sh" | sed '$d')"
+eval "$(sed -n '/^uninstall_list_json_escape()/,/main "\$@"/p' "$PROJECT_ROOT/bin/uninstall.sh" | sed '$d')"
 main --list
 INNER
 
-	rm -f "$apps_cache"
-	[ "$status" -eq 0 ]
-	[[ "$output" == "[]" ]]
+    rm -f "$apps_cache"
+    [ "$status" -eq 0 ]
+    [[ "$output" == "[]" ]]
 }
 
 @test "uninstall --list flags brew-managed apps with cask uninstall_name" {
-	local apps_cache
-	apps_cache="$(mktemp "${BATS_TEST_TMPDIR:-$BATS_RUN_TMPDIR:-$HOME}/tmp-list-brew.XXXXXX")"
-	cat > "$apps_cache" <<'CACHE'
+    local apps_cache
+    apps_cache="$(mktemp "${BATS_TEST_TMPDIR:-$BATS_RUN_TMPDIR:-$HOME}/tmp-list-brew.XXXXXX")"
+    cat > "$apps_cache" << 'CACHE'
 1700000000|/Applications/Visual Studio Code.app|Visual Studio Code|com.microsoft.VSCode|420MB|Today|430080
 CACHE
 
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_NO_AUTH=1 \
-		APPS_CACHE_FILE="$apps_cache" /bin/bash --noprofile --norc <<'INNER'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_NO_AUTH=1 \
+        APPS_CACHE_FILE="$apps_cache" /bin/bash --noprofile --norc << 'INNER'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 
@@ -2646,14 +3987,14 @@ is_homebrew_available() { return 0; }
 get_brew_cask_name() { printf '%s' "visual-studio-code"; return 0; }
 uninstall_normalize_size_display() { local s="${1:-}"; [[ -z "$s" || "$s" == "0" || "$s" == "Unknown" ]] && echo "N/A" || echo "$s"; }
 
-eval "$(sed -n '/^uninstall_list_json_escape()/,/^main "\$@"/p' "$PROJECT_ROOT/bin/uninstall.sh" | sed '$d')"
+eval "$(sed -n '/^uninstall_list_json_escape()/,/main "\$@"/p' "$PROJECT_ROOT/bin/uninstall.sh" | sed '$d')"
 main --list
 INNER
 
-	rm -f "$apps_cache"
-	[ "$status" -eq 0 ]
-	[[ "$output" == *'"uninstall_name": "visual-studio-code"'* ]] || return 1
-	[[ "$output" == *'"source": "Homebrew"'* ]]
+    rm -f "$apps_cache"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *'"uninstall_name": "visual-studio-code"'* ]] || return 1
+    [[ "$output" == *'"source": "Homebrew"'* ]]
 }
 
 # Regression tests for #940: warn about background jobs that survive uninstall.
@@ -2661,10 +4002,10 @@ INNER
 # unprivileged dumpbtm pops the macOS "sfltool wants to make changes"
 # admin-password dialog on every uninstall batch.
 _bg_items_runner() {
-	HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" \
-		DETAIL="$1" SUCCESS_PATH="$2" LAUNCHCTL_RC="${3:-113}" \
-		MOLE_TEST_MODE=0 MOLE_TEST_NO_AUTH=0 \
-		/bin/bash --noprofile --norc <<'EOF'
+    HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" \
+        DETAIL="$1" SUCCESS_PATH="$2" LAUNCHCTL_RC="${3:-113}" \
+        MOLE_TEST_MODE=0 MOLE_TEST_NO_AUTH=0 \
+        /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/batch.sh"
@@ -2674,32 +4015,32 @@ EOF
 }
 
 @test "_uninstall_match_loaded_background_items reports app whose job is still loaded" {
-	local detail="Paste|/Applications/Paste.app|com.wiheads.paste|0|||false|false|false||||"
+    local detail="Paste|/Applications/Paste.app|com.wiheads.paste|0|||false|false|false||||"
 
-	result="$(_bg_items_runner "$detail" "/Applications/Paste.app" 0)"
+    result="$(_bg_items_runner "$detail" "/Applications/Paste.app" 0)"
 
-	[ "$result" = "Paste" ]
+    [ "$result" = "Paste" ]
 }
 
 @test "_uninstall_match_loaded_background_items stays silent when no job is loaded" {
-	local detail="Paste|/Applications/Paste.app|com.wiheads.paste|0|||false|false|false||||"
+    local detail="Paste|/Applications/Paste.app|com.wiheads.paste|0|||false|false|false||||"
 
-	result="$(_bg_items_runner "$detail" "/Applications/Paste.app" 113)"
+    result="$(_bg_items_runner "$detail" "/Applications/Paste.app" 113)"
 
-	[ -z "$result" ]
+    [ -z "$result" ]
 }
 
 @test "_uninstall_match_loaded_background_items checks helper ids under the sibling guard" {
-	# Sibling guard demotes bundle_id to "unknown" while helper ids stay
-	# valid; a loaded helper job must still be reported.
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_MODE=0 MOLE_TEST_NO_AUTH=0 \
-		/bin/bash --noprofile --norc <<'EOF'
+    # Sibling guard demotes bundle_id to "unknown" while helper ids stay
+    # valid; a loaded helper job must still be reported.
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_MODE=0 MOLE_TEST_NO_AUTH=0 \
+        /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/batch.sh"
 
 helpers=$(printf 'com.wiheads.paste.helper' | base64)
-detail="Paste|/Applications/Paste.app|unknown|0|||false|false|false||||false|$helpers|guard"
+detail="Paste|/Applications/Paste.app|unknown|0|||false|false|false||||$helpers|guard"
 
 launchctl() { [[ "$2" == *"com.wiheads.paste.helper"* ]] && return 0 || return 113; }
 result=$(_uninstall_match_loaded_background_items "$detail" -- "/Applications/Paste.app")
@@ -2710,14 +4051,14 @@ result=$(_uninstall_match_loaded_background_items "$detail" -- "/Applications/Pa
 [[ -z "$result" ]] || exit 1
 EOF
 
-	[ "$status" -eq 0 ]
+    [ "$status" -eq 0 ]
 }
 
 @test "_uninstall_match_loaded_background_items stays quiet in test mode" {
-	# Test mode must not probe launchctl at all; summaries stay silent so
-	# end-to-end uninstall tests never see a background-item warning.
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_NO_AUTH=1 \
-		/bin/bash --noprofile --norc <<'EOF'
+    # Test mode must not probe launchctl at all; summaries stay silent so
+    # end-to-end uninstall tests never see a background-item warning.
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_NO_AUTH=1 \
+        /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/batch.sh"
@@ -2727,21 +4068,167 @@ result=$(_uninstall_match_loaded_background_items "$detail" -- "/Applications/Pa
 [[ -z "$result" ]] || exit 1
 EOF
 
-	[ "$status" -eq 0 ]
+    [ "$status" -eq 0 ]
 }
 
 @test "_uninstall_match_loaded_background_items skips apps that were not successfully removed" {
-	local detail="Paste|/Applications/Paste.app|com.wiheads.paste|0|||false|false|false||||"
+    local detail="Paste|/Applications/Paste.app|com.wiheads.paste|0|||false|false|false||||"
 
-	result="$(_bg_items_runner "$detail" "/Applications/OtherApp.app" 0)"
+    result="$(_bg_items_runner "$detail" "/Applications/OtherApp.app" 0)"
 
-	[ -z "$result" ]
+    [ -z "$result" ]
 }
 
 @test "_uninstall_match_loaded_background_items ignores unknown bundle id without helpers" {
-	local detail="Paste|/Applications/Paste.app|unknown|0|||false|false|false||||"
+    local detail="Paste|/Applications/Paste.app|unknown|0|||false|false|false||||"
 
-	result="$(_bg_items_runner "$detail" "/Applications/Paste.app" 0)"
+    result="$(_bg_items_runner "$detail" "/Applications/Paste.app" 0)"
 
-	[ -z "$result" ]
+    [ -z "$result" ]
+}
+
+@test "execution spinner starts before the same-bundle re-scan (#1340 family)" {
+    # The pre-teardown re-scan can burn tens of seconds on a large receipt
+    # set. When the spinner started after it, the Enter confirm was followed
+    # by dead silence and users read the prompt as hung. Pin the order
+    # inside _batch_execute_removals.
+    local body spin_line scan_line
+    body=$(awk '/^_batch_execute_removals\(\)/{f=1} f{n++; print n": "$0} f && /^\}/{exit}' \
+        "$PROJECT_ROOT/lib/uninstall/batch.sh")
+    spin_line=$(printf '%s\n' "$body" | command grep -m1 'start_inline_spinner' | cut -d: -f1)
+    scan_line=$(printf '%s\n' "$body" | command grep -m1 'uninstall_live_bundle_has_other_install' | cut -d: -f1)
+    [[ -n "$spin_line" && -n "$scan_line" ]] || {
+        echo "expected both calls inside _batch_execute_removals"
+        return 1
+    }
+    [[ "$spin_line" -lt "$scan_line" ]] || {
+        echo "spinner starts at line $spin_line, after the re-scan at $scan_line"
+        return 1
+    }
+}
+
+@test "match_apps_by_name joins multi-word args into one exact app name (#1365)" {
+    # `mo uninstall Tor Browser` arrives as two words; "Tor" alone
+    # substring-matched WebSTORm. The joined words exactly name an
+    # installed app, so that must be the single match.
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+selected_apps=()
+apps_data=(
+	"1000|$HOME/Applications/WebStorm.app|WebStorm|com.jetbrains.WebStorm|3.06 GB|1000000|3208960"
+	"1001|$HOME/Applications/Tor Browser.app|Tor Browser|org.torproject.torbrowser|501.8 MB|1000001|513843"
+)
+source "$PROJECT_ROOT/tests/test_match_apps_helper.sh"
+match_apps_by_name "Tor" "Browser"
+echo "count=${#selected_apps[@]}"
+echo "match=${selected_apps[0]}"
+EOF
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+    [[ "$output" == *"count=1"* ]] || return 1
+    [[ "$output" == *"Tor Browser"* ]] || return 1
+    [[ "$output" != *"WebStorm"* ]] || return 1
+}
+
+@test "match_apps_by_name keeps per-word matching when the joined form names nothing" {
+    # Two genuinely separate app queries must keep working after the
+    # joined-form check: "TestApp2 TestApp3" names no single app.
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+selected_apps=()
+apps_data=(
+	"1000|$HOME/Applications/TestApp2.app|TestApp2|com.example.TestApp2|500 MB|1000001|512000"
+	"1001|$HOME/Applications/TestApp3.app|TestApp3|com.example.TestApp3|300 MB|1000002|307200"
+)
+source "$PROJECT_ROOT/tests/test_match_apps_helper.sh"
+match_apps_by_name "TestApp2" "TestApp3"
+echo "count=${#selected_apps[@]}"
+EOF
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+    [[ "$output" == *"count=2"* ]] || return 1
+}
+
+@test "match_apps_by_name keeps two-app meaning when every word exactly names its own app" {
+    # With Foo.app, Bar.app, and "Foo Bar.app" all installed, the joined
+    # interpretation must not silently swallow the original two-app query.
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+selected_apps=()
+apps_data=(
+	"1000|$HOME/Applications/Foo.app|Foo|com.example.foo|100 MB|1000000|102400"
+	"1001|$HOME/Applications/Bar.app|Bar|com.example.bar|100 MB|1000001|102400"
+	"1002|$HOME/Applications/Foo Bar.app|Foo Bar|com.example.foobar|100 MB|1000002|102400"
+)
+source "$PROJECT_ROOT/tests/test_match_apps_helper.sh"
+match_apps_by_name "Foo" "Bar"
+echo "count=${#selected_apps[@]}"
+printf 'sel=%s\n' "${selected_apps[@]}"
+EOF
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+    [[ "$output" == *"count=2"* ]] || return 1
+    [[ "$output" == *"|Foo|"* ]] || return 1
+    [[ "$output" == *"|Bar|"* ]] || return 1
+    [[ "$output" != *"Foo Bar"* ]] || return 1
+}
+
+@test "batch uninstall reports an inconclusive Homebrew scan before any removal" {
+    run env HOME="$HOME/batch-brew-failure" PROJECT_ROOT="$PROJECT_ROOT" \
+        /bin/bash --noprofile --norc <<'INNER'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+
+app_path="$HOME/Applications/TimedOut.app"
+mkdir -p "$app_path"
+start_inline_spinner() { :; }
+stop_inline_spinner() { :; }
+_batch_refresh_selected_app_bundle_id() { printf 'com.example.TimedOut\n'; }
+official_uninstaller_vendor() { return 1; }
+uninstall_bundle_id_has_surviving_sibling() { return 1; }
+uninstall_live_bundle_has_other_install() {
+    _MOLE_UNINSTALL_LIVE_SIBLING_FINGERPRINT=""
+    _MOLE_UNINSTALL_LIVE_SIBLING_PATHS=()
+    return 1
+}
+pgrep() { return 1; }
+get_brew_cask_name() { return 2; }
+get_file_owner() { whoami; }
+get_path_size_kb() { echo "UNEXPECTED_SIZE"; }
+find_app_files() { echo "UNEXPECTED_DISCOVERY"; return 99; }
+stop_launch_services() { echo "UNEXPECTED_TEARDOWN"; }
+unregister_app_bundle() { echo "UNEXPECTED_TEARDOWN"; }
+remove_login_item() { echo "UNEXPECTED_TEARDOWN"; }
+force_kill_app() { echo "UNEXPECTED_TEARDOWN"; }
+mole_delete() { echo "UNEXPECTED_DELETE"; }
+
+selected_apps=("0|$app_path|TimedOut|com.example.TimedOut|0|Never")
+files_cleaned=0
+total_items=0
+total_size_cleaned=0
+rc=0
+batch_uninstall_applications || rc=$?
+printf 'RC=%s\n' "$rc"
+[[ $rc -eq 1 ]]
+INNER
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"RC=1"* ]] || return 1
+    [[ "$output" == *"Homebrew ownership check"* ]] || return 1
+    [[ "$output" == *"nothing was removed"* ]] || return 1
+    [[ "$output" == *"brew list --cask"* ]] || return 1
+    [[ "$output" != *"UNEXPECTED_SIZE"* ]] || return 1
+    [[ "$output" != *"UNEXPECTED_DISCOVERY"* ]] || return 1
+    [[ "$output" != *"UNEXPECTED_TEARDOWN"* ]] || return 1
+    [[ "$output" != *"UNEXPECTED_DELETE"* ]]
 }

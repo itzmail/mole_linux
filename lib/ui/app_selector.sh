@@ -130,8 +130,13 @@ select_apps_for_uninstall() {
     local has_size_metadata=false
     local idx=0
     for app_data in "${apps_data[@]}"; do
-        IFS='|' read -r epoch _ display_name _ size last_used size_kb <<< "$app_data"
-        menu_options+=("$(format_app_display "$display_name" "$size" "$last_used" "$terminal_width" "$max_name_width")")
+        local app_path size_display
+        IFS='|' read -r epoch app_path display_name _ size last_used size_kb <<< "$app_data"
+        size_display="$size"
+        if declare -f uninstall_normalize_size_display > /dev/null 2>&1; then
+            size_display=$(uninstall_normalize_size_display "$size" "$app_path")
+        fi
+        menu_options+=("$(format_app_display "$display_name" "$size_display" "$last_used" "$terminal_width" "$max_name_width")")
         [[ "${epoch:-0}" =~ ^[0-9]+$ && "${epoch:-0}" -gt 0 ]] && has_epoch_metadata=true
         [[ "${size_kb:-0}" =~ ^[0-9]+$ && "${size_kb:-0}" -gt 0 ]] && has_size_metadata=true
         if [[ $idx -eq 0 ]]; then

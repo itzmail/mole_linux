@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/gob"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,6 +18,10 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+// Navigation starts a replacement scan immediately, so abandoned scan work
+// must release its subprocesses and workers before it can compete for I/O.
+const liveScanCancellationBudget = 250 * time.Millisecond
 
 func resetOverviewSnapshotForTest() {
 	overviewSnapshotMu.Lock()
@@ -76,8 +81,6 @@ func drainLiveScanToResultMsg(t *testing.T, start liveScanStartMsg) scanResultMs
 				return scanResultMsg{path: start.path, result: event.result}
 			case liveScanFailed:
 				return scanResultMsg{path: start.path, err: event.err}
-			case liveScanCanceled:
-				return scanResultMsg{path: start.path, err: event.err}
 			}
 		case <-deadline:
 			if start.cancel != nil {
@@ -93,6 +96,50 @@ func cancelAndDrainLiveScan(start liveScanStartMsg) {
 		start.cancel()
 	}
 	for range start.events {
+	}
+}
+
+func installBlockingDuProbe(t *testing.T) string {
+	t.Helper()
+
+	binDir := t.TempDir()
+	started := filepath.Join(binDir, "du-started")
+	duStub := filepath.Join(binDir, "du")
+	stub := "#!/bin/sh\n" +
+		"printf started > \"$MOLE_TEST_DU_STARTED\"\n" +
+		"exec /usr/bin/tail -f /dev/null\n"
+	if err := os.WriteFile(duStub, []byte(stub), 0o755); err != nil {
+		t.Fatalf("write du stub: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("MOLE_TEST_DU_STARTED", started)
+	return started
+}
+
+func waitForTestPath(t *testing.T, path string) {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", path)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func waitForTestCondition(t *testing.T, description string, condition func() bool) {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for !condition() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", description)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -140,7 +187,7 @@ func TestScanPathConcurrentBasic(t *testing.T) {
 	current := &atomic.Value{}
 	current.Store("")
 
-	result, err := scanPathConcurrent(root, &filesScanned, &dirsScanned, &bytesScanned, current)
+	result, err := scanPathConcurrent(context.Background(), root, &filesScanned, &dirsScanned, &bytesScanned, current)
 	if err != nil {
 		t.Fatalf("scanPathConcurrent returned error: %v", err)
 	}
@@ -220,7 +267,7 @@ func TestScanPathConcurrentDedupsHardlinks(t *testing.T) {
 	current := &atomic.Value{}
 	current.Store("")
 
-	result, err := scanPathConcurrent(root, &filesScanned, &dirsScanned, &bytesScanned, current)
+	result, err := scanPathConcurrent(context.Background(), root, &filesScanned, &dirsScanned, &bytesScanned, current)
 	if err != nil {
 		t.Fatalf("scanPathConcurrent returned error: %v", err)
 	}
@@ -372,6 +419,105 @@ func TestUpdateKeyCtrlCQuits(t *testing.T) {
 	}
 	if _, ok := cmd().(tea.QuitMsg); !ok {
 		t.Fatalf("expected tea.QuitMsg from quit command")
+	}
+}
+
+func TestIsAppBundleEntry(t *testing.T) {
+	tests := []struct {
+		name  string
+		entry dirEntry
+		want  bool
+	}{
+		{name: "lowercase bundle", entry: dirEntry{Name: "Safari.app", IsDir: true}, want: true},
+		{name: "uppercase extension", entry: dirEntry{Name: "Safari.APP", IsDir: true}, want: true},
+		{name: "file", entry: dirEntry{Name: "report.app", IsDir: false}, want: false},
+		{name: "longer extension", entry: dirEntry{Name: "Notes.application", IsDir: true}, want: false},
+		{name: "no extension", entry: dirEntry{Name: "Safari", IsDir: true}, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isAppBundleEntry(tt.entry); got != tt.want {
+				t.Errorf("isAppBundleEntry(%+v) = %v, want %v", tt.entry, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestUninstallCommandForApp(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "simple", input: "Safari.app", want: "mo uninstall Safari"},
+		{name: "space", input: "Google Chrome.app", want: "mo uninstall 'Google Chrome'"},
+		{name: "dollar", input: "My$App.app", want: "mo uninstall 'My$App'"},
+		{name: "command substitution", input: "Unsafe$(printf HACKED).app", want: "mo uninstall 'Unsafe$(printf HACKED)'"},
+		{name: "semicolon", input: "Foo;Bar.app", want: "mo uninstall 'Foo;Bar'"},
+		{name: "backtick", input: "My`App.app", want: "mo uninstall 'My`App'"},
+		{name: "single quote", input: "Bob's App.app", want: `mo uninstall 'Bob'\''s App'`},
+		{name: "leading dash", input: "-Example.app", want: "mo uninstall <App>"},
+		{name: "tab", input: "Tabbed\tApp.app", want: "mo uninstall <App>"},
+		{name: "newline", input: "Split\nApp.app", want: "mo uninstall <App>"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := uninstallCommandForApp(tt.input); got != tt.want {
+				t.Errorf("uninstallCommandForApp(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestViewDeleteConfirmShowsUninstallHintForAppBundle(t *testing.T) {
+	entry := dirEntry{Name: "Safari.app", Path: "/Applications/Safari.app", Size: 1, IsDir: true}
+	m := model{
+		path:          "/Applications",
+		entries:       []dirEntry{entry},
+		deleteConfirm: true,
+		deleteTarget:  &entry,
+	}
+
+	view := m.View()
+	if !strings.Contains(view, "mo uninstall Safari") {
+		t.Fatalf("expected app-specific uninstall command, got:\n%s", view)
+	}
+	if !strings.Contains(view, "bundle only") {
+		t.Fatalf("expected bundle-only warning, got:\n%s", view)
+	}
+}
+
+func TestViewDeleteConfirmNoHintForRegularDirectory(t *testing.T) {
+	entry := dirEntry{Name: "cache", Path: "/tmp/cache", Size: 1, IsDir: true}
+	m := model{
+		path:          "/tmp",
+		entries:       []dirEntry{entry},
+		deleteConfirm: true,
+		deleteTarget:  &entry,
+	}
+
+	view := m.View()
+	if strings.Contains(view, "mo uninstall") {
+		t.Fatalf("did not expect uninstall hint for a regular directory, got:\n%s", view)
+	}
+}
+
+func TestViewDeleteConfirmMultiSelectShowsGenericHint(t *testing.T) {
+	app := dirEntry{Name: "Safari.app", Path: "/Applications/Safari.app", Size: 1, IsDir: true}
+	cache := dirEntry{Name: "cache", Path: "/Applications/cache", Size: 1, IsDir: true}
+	m := model{
+		path:          "/Applications",
+		entries:       []dirEntry{app, cache},
+		multiSelected: map[string]bool{app.Path: true, cache.Path: true},
+		deleteConfirm: true,
+		deleteTarget:  &cache,
+	}
+
+	view := m.View()
+	if !strings.Contains(view, "mo uninstall <App>") {
+		t.Fatalf("expected generic uninstall hint for multi-select containing an app bundle, got:\n%s", view)
 	}
 }
 
@@ -957,7 +1103,7 @@ func TestStoreOverviewSizeSkipsWriteWhenValueUnchanged(t *testing.T) {
 	}
 }
 
-func TestEnsureOverviewSnapshotCacheDropsExpiredEntries(t *testing.T) {
+func TestEnsureOverviewSnapshotCacheDropsExpiredAndLegacyEntries(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	resetOverviewSnapshotForTest()
@@ -967,9 +1113,10 @@ func TestEnsureOverviewSnapshotCacheDropsExpiredEntries(t *testing.T) {
 		t.Fatalf("getOverviewSizeStorePath: %v", err)
 	}
 	seeded := map[string]overviewSizeSnapshot{
-		"/fresh":   {Size: 1 << 20, Updated: time.Now().Add(-time.Hour)},
-		"/expired": {Size: 1 << 20, Updated: time.Now().Add(-overviewCacheTTL - time.Hour)},
-		"/empty":   {Size: 0, Updated: time.Now()},
+		"/fresh":   {Size: 1 << 20, Updated: time.Now().Add(-time.Hour), SchemaVersion: cacheSchemaVersion},
+		"/expired": {Size: 1 << 20, Updated: time.Now().Add(-overviewCacheTTL - time.Hour), SchemaVersion: cacheSchemaVersion},
+		"/empty":   {Size: 0, Updated: time.Now(), SchemaVersion: cacheSchemaVersion},
+		"/legacy":  {Size: 1 << 20, Updated: time.Now()},
 	}
 	data, err := json.Marshal(seeded)
 	if err != nil {
@@ -986,11 +1133,12 @@ func TestEnsureOverviewSnapshotCacheDropsExpiredEntries(t *testing.T) {
 	overviewSnapshotMu.Lock()
 	_, hasExpired := overviewSnapshotCache["/expired"]
 	_, hasEmpty := overviewSnapshotCache["/empty"]
+	_, hasLegacy := overviewSnapshotCache["/legacy"]
 	_, hasFresh := overviewSnapshotCache["/fresh"]
 	overviewSnapshotMu.Unlock()
 
-	if hasExpired || hasEmpty {
-		t.Fatalf("expected expired and empty snapshots to be dropped on load")
+	if hasExpired || hasEmpty || hasLegacy {
+		t.Fatalf("expected expired, empty, and legacy snapshots to be dropped on load")
 	}
 	if !hasFresh {
 		t.Fatalf("expected fresh snapshot to survive load")
@@ -1008,8 +1156,9 @@ func TestEvictOverviewSnapshotsKeepsNewest(t *testing.T) {
 	overviewSnapshotLoaded = true
 	for i := range overviewCacheMaxEntries + 1 {
 		overviewSnapshotCache[fmt.Sprintf("/dir-%04d", i)] = overviewSizeSnapshot{
-			Size:    int64(i + 1),
-			Updated: base.Add(time.Duration(i) * time.Minute),
+			Size:          int64(i + 1),
+			Updated:       base.Add(time.Duration(i) * time.Minute),
+			SchemaVersion: cacheSchemaVersion,
 		}
 	}
 	evictOverviewSnapshotsLocked()
@@ -1228,7 +1377,7 @@ func TestScanPathConcurrentWarmsChildDirectoryCache(t *testing.T) {
 	current := &atomic.Value{}
 	current.Store("")
 
-	if _, err := scanPathConcurrent(root, &filesScanned, &dirsScanned, &bytesScanned, current); err != nil {
+	if _, err := scanPathConcurrent(context.Background(), root, &filesScanned, &dirsScanned, &bytesScanned, current); err != nil {
 		t.Fatalf("scanPathConcurrent(root): %v", err)
 	}
 
@@ -1273,7 +1422,7 @@ func TestScanPathConcurrentSkipsCacheForCheapSubdir(t *testing.T) {
 	current := &atomic.Value{}
 	current.Store("")
 
-	result, err := scanPathConcurrent(root, &filesScanned, &dirsScanned, &bytesScanned, current)
+	result, err := scanPathConcurrent(context.Background(), root, &filesScanned, &dirsScanned, &bytesScanned, current)
 	if err != nil {
 		t.Fatalf("scanPathConcurrent(root): %v", err)
 	}
@@ -1298,6 +1447,82 @@ func TestScanPathConcurrentSkipsCacheForCheapSubdir(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected child entry in scan result")
+	}
+}
+
+func TestAnalyzeIncludesParallelsVMStorageButKeepsOtherVirtualizationSkips(t *testing.T) {
+	root := t.TempDir()
+	parallels := filepath.Join(root, "Parallels")
+	orbStack := filepath.Join(root, "OrbStack")
+	for _, dir := range []string{parallels, orbStack} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("create %s: %v", dir, err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "disk.img"), []byte(strings.Repeat("x", 4096)), 0o644); err != nil {
+			t.Fatalf("write data in %s: %v", dir, err)
+		}
+	}
+
+	var filesScanned, dirsScanned, bytesScanned int64
+	current := &atomic.Value{}
+	current.Store("")
+	result, err := scanPathConcurrentWithOptions(context.Background(), root, &filesScanned, &dirsScanned, &bytesScanned, current, false, 0)
+	if err != nil {
+		t.Fatalf("scan root: %v", err)
+	}
+
+	foundParallels := false
+	for _, entry := range result.Entries {
+		switch entry.Path {
+		case parallels:
+			foundParallels = true
+			if entry.Size <= 0 {
+				t.Fatalf("expected Parallels to contribute a positive size, got %d", entry.Size)
+			}
+		case orbStack:
+			t.Fatalf("expected existing OrbStack skip to remain in place")
+		}
+	}
+	if !foundParallels {
+		t.Fatalf("expected Parallels VM storage in scan entries")
+	}
+}
+
+func TestLiveScanIncludesParallelsVMStorageButKeepsOtherVirtualizationSkips(t *testing.T) {
+	root := t.TempDir()
+	parallels := filepath.Join(root, "Parallels")
+	orbStack := filepath.Join(root, "OrbStack")
+	for _, dir := range []string{parallels, orbStack} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("create %s: %v", dir, err)
+		}
+	}
+
+	entries, targets, _, _, _, err := readLiveScanInitialEntries(root, nil)
+	if err != nil {
+		t.Fatalf("read live scan entries: %v", err)
+	}
+
+	foundParallelsEntry := false
+	for _, entry := range entries {
+		switch entry.Path {
+		case parallels:
+			foundParallelsEntry = true
+		case orbStack:
+			t.Fatalf("expected existing OrbStack skip to remain in live entries")
+		}
+	}
+	foundParallelsTarget := false
+	for _, target := range targets {
+		switch target.path {
+		case parallels:
+			foundParallelsTarget = true
+		case orbStack:
+			t.Fatalf("expected existing OrbStack skip to remain in live targets")
+		}
+	}
+	if !foundParallelsEntry || !foundParallelsTarget {
+		t.Fatalf("expected Parallels in both live entries and targets, entry=%v target=%v", foundParallelsEntry, foundParallelsTarget)
 	}
 }
 
@@ -1339,7 +1564,7 @@ func TestScanPathConcurrentUsesChildCacheLargeFiles(t *testing.T) {
 	var childFiles, childDirs, childBytes int64
 	childCurrent := &atomic.Value{}
 	childCurrent.Store("")
-	childResult, err := scanPathConcurrent(child, &childFiles, &childDirs, &childBytes, childCurrent)
+	childResult, err := scanPathConcurrent(context.Background(), child, &childFiles, &childDirs, &childBytes, childCurrent)
 	if err != nil {
 		t.Fatalf("scanPathConcurrent(child): %v", err)
 	}
@@ -1358,7 +1583,7 @@ func TestScanPathConcurrentUsesChildCacheLargeFiles(t *testing.T) {
 	current := &atomic.Value{}
 	current.Store("")
 
-	result, err := scanPathConcurrent(root, &filesScanned, &dirsScanned, &bytesScanned, current)
+	result, err := scanPathConcurrent(context.Background(), root, &filesScanned, &dirsScanned, &bytesScanned, current)
 	if err != nil {
 		t.Fatalf("scanPathConcurrent(root): %v", err)
 	}
@@ -1419,12 +1644,38 @@ func TestScanPathConcurrentWarmsChildCachesWithoutRecursiveSpotlight(t *testing.
 	current := &atomic.Value{}
 	current.Store("")
 
-	if _, err := scanPathConcurrent(root, &filesScanned, &dirsScanned, &bytesScanned, current); err != nil {
+	if _, err := scanPathConcurrent(context.Background(), root, &filesScanned, &dirsScanned, &bytesScanned, current); err != nil {
 		t.Fatalf("scanPathConcurrent(root): %v", err)
 	}
 
 	if len(spotlightRoots) != 1 || spotlightRoots[0] != root {
 		t.Fatalf("expected only root spotlight invocation, got %q", spotlightRoots)
+	}
+}
+
+func TestSpotlightConsumerStopsWhenScanIsCanceled(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "large.bin")
+	if err := os.WriteFile(file, []byte("large"), 0o644); err != nil {
+		t.Fatalf("write spotlight result: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	originalRunner := spotlightQueryRunner
+	spotlightQueryRunner = func(_ context.Context, _, _ string) ([]byte, error) {
+		cancel()
+		return []byte(strings.Repeat(file+"\n", 10_000)), nil
+	}
+	t.Cleanup(func() {
+		spotlightQueryRunner = originalRunner
+	})
+
+	files, err := findLargeFilesWithSpotlight(ctx, root, 1)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled Spotlight consumer, got %v", err)
+	}
+	if len(files) != 0 {
+		t.Fatalf("canceled Spotlight consumer returned %d files", len(files))
 	}
 }
 
@@ -1443,7 +1694,8 @@ func TestScanCmdTreatsWarmedCacheAsStale(t *testing.T) {
 		TotalSize:  42,
 		TotalFiles: 1,
 	}
-	if err := saveCacheToDiskWithOptions(target, result, true); err != nil {
+	ctx := context.Background()
+	if err := saveCacheToDiskWithOptions(newScanPublication(ctx, nil), target, result, true); err != nil {
 		t.Fatalf("saveCacheToDiskWithOptions: %v", err)
 	}
 
@@ -1458,6 +1710,97 @@ func TestScanCmdTreatsWarmedCacheAsStale(t *testing.T) {
 	}
 	if scanMsg.result.TotalFiles != result.TotalFiles {
 		t.Fatalf("expected cached result to survive stale load, got %d", scanMsg.result.TotalFiles)
+	}
+}
+
+func TestCanceledCacheSaveDoesNotPublish(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	target := filepath.Join(home, "target")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+
+	ctx, cancelContext := context.WithCancel(context.Background())
+	publication := newScanPublication(ctx, cancelContext)
+	publication.cancel()
+	err := saveCacheToDiskWithOptions(publication, target, scanResult{TotalSize: 42, TotalFiles: 1}, true)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled cache save, got %v", err)
+	}
+
+	cachePath, err := getCachePath(target)
+	if err != nil {
+		t.Fatalf("resolve cache path: %v", err)
+	}
+	if _, err := os.Stat(cachePath); !os.IsNotExist(err) {
+		t.Fatalf("canceled cache save published %s", cachePath)
+	}
+}
+
+func TestCanceledCacheMutationsDoNotPublish(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	target := filepath.Join(home, "target")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	cachePath, err := getCachePath(target)
+	if err != nil {
+		t.Fatalf("resolve cache path: %v", err)
+	}
+
+	ctx, cancelContext := context.WithCancel(context.Background())
+	publication := newScanPublication(ctx, cancelContext)
+	publication.mu.Lock()
+	saveDone := make(chan error, 1)
+	go func() {
+		saveDone <- saveCacheToDiskWithOptions(publication, target, scanResult{TotalSize: 42, TotalFiles: 1}, true)
+	}()
+	waitForTestCondition(t, "cache save to reach its temporary file", func() bool {
+		matches, globErr := filepath.Glob(filepath.Join(filepath.Dir(cachePath), "entry-*.tmp"))
+		return globErr == nil && len(matches) > 0
+	})
+	cancelDone := make(chan struct{})
+	go func() {
+		publication.cancel()
+		close(cancelDone)
+	}()
+	waitForTestCondition(t, "cache-save cancellation to start", publication.canceling.Load)
+	publication.mu.Unlock()
+
+	if err := <-saveDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected cache save to lose publication order, got %v", err)
+	}
+	<-cancelDone
+	if _, err := os.Stat(cachePath); !os.IsNotExist(err) {
+		t.Fatalf("canceled cache save published %s", cachePath)
+	}
+
+	if err := saveCacheToDisk(target, scanResult{TotalSize: 84, TotalFiles: 2}); err != nil {
+		t.Fatalf("seed cache entry: %v", err)
+	}
+	removeCtx, removeCancel := context.WithCancel(context.Background())
+	removePublication := newScanPublication(removeCtx, removeCancel)
+	removePublication.mu.Lock()
+	removeDone := make(chan error, 1)
+	go func() {
+		removeDone <- removeCacheEntryForScan(removePublication, target)
+	}()
+	removeCancelDone := make(chan struct{})
+	go func() {
+		removePublication.cancel()
+		close(removeCancelDone)
+	}()
+	waitForTestCondition(t, "cache-removal cancellation to start", removePublication.canceling.Load)
+	removePublication.mu.Unlock()
+
+	if err := <-removeDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected cache removal to lose publication order, got %v", err)
+	}
+	<-removeCancelDone
+	if _, err := os.Stat(cachePath); err != nil {
+		t.Fatalf("canceled cache removal changed published state: %v", err)
 	}
 }
 
@@ -1521,6 +1864,221 @@ func TestLiveScanInitialListingShowsImmediateChildren(t *testing.T) {
 	}
 	if !foundFile || !foundDir {
 		t.Fatalf("expected immediate file and directory entries, got %+v", start.entries)
+	}
+}
+
+func TestLiveScanCancellationStopsFoldedDirectoryProbe(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "folded")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatalf("create folded directory: %v", err)
+	}
+
+	started := installBlockingDuProbe(t)
+
+	ctx, cancelContext := context.WithCancel(context.Background())
+	publication := newScanPublication(ctx, cancelContext)
+	defer publication.cancel()
+	limiter := newScanLimiter(1)
+	largeFileMinSize := int64(largeFileWarmupMinSize)
+	var filesScanned, dirsScanned, bytesScanned int64
+	currentPath := &atomic.Value{}
+	currentPath.Store("")
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := scanLiveTarget(
+			ctx,
+			liveScanTarget{name: "folded", path: target, kind: liveScanTargetFoldedDirectory},
+			make(chan fileEntry, maxLargeFiles*2),
+			&largeFileMinSize,
+			limiter,
+			&filesScanned,
+			&dirsScanned,
+			&bytesScanned,
+			currentPath,
+			scanCacheBypass,
+			publication,
+		)
+		done <- err
+	}()
+
+	waitForTestPath(t, started)
+
+	publication.cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected canceled scan, got %v", err)
+		}
+	case <-time.After(liveScanCancellationBudget):
+		t.Fatal("folded-directory probe kept running after live scan cancellation")
+	}
+}
+
+func TestLiveScanCancellationStopsNestedFoldedDirectoryProbe(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	if err := os.MkdirAll(filepath.Join(target, ".git"), 0o755); err != nil {
+		t.Fatalf("create nested folded directory: %v", err)
+	}
+	started := installBlockingDuProbe(t)
+
+	ctx, cancelContext := context.WithCancel(context.Background())
+	publication := newScanPublication(ctx, cancelContext)
+	defer publication.cancel()
+	limiter := newScanLimiter(1)
+	largeFileMinSize := int64(largeFileWarmupMinSize)
+	var filesScanned, dirsScanned, bytesScanned int64
+	currentPath := &atomic.Value{}
+	currentPath.Store("")
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := scanLiveTarget(
+			ctx,
+			liveScanTarget{name: "target", path: target, kind: liveScanTargetDirectory},
+			make(chan fileEntry, maxLargeFiles*2),
+			&largeFileMinSize,
+			limiter,
+			&filesScanned,
+			&dirsScanned,
+			&bytesScanned,
+			currentPath,
+			scanCacheBypass,
+			publication,
+		)
+		done <- err
+	}()
+
+	waitForTestPath(t, started)
+	publication.cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected canceled scan, got %v", err)
+		}
+	case <-time.After(liveScanCancellationBudget):
+		t.Fatal("nested folded-directory probe kept running after live scan cancellation")
+	}
+}
+
+func TestLiveScanEventStreamRejectsCompletionAfterCancellation(t *testing.T) {
+	ctx, cancelContext := context.WithCancel(context.Background())
+	stream := newLiveScanEventStream(newScanPublication(ctx, cancelContext), 1)
+
+	stream.publishProgress(liveScanEventMsg{kind: liveScanChildProgress})
+	stream.publishProgress(liveScanEventMsg{kind: liveScanChildProgress})
+	stream.publish(liveScanEventMsg{kind: liveScanChildDone})
+
+	canceled := make(chan struct{})
+	go func() {
+		stream.cancel()
+		close(canceled)
+	}()
+	select {
+	case <-canceled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancel blocked behind queued live-scan events")
+	}
+
+	stream.publish(liveScanEventMsg{kind: liveScanComplete})
+	stream.close()
+	for event := range stream.events {
+		if event.kind == liveScanComplete {
+			t.Fatal("stream published completion after cancellation")
+		}
+	}
+}
+
+func TestLiveScanEventStreamReservesRequiredCapacity(t *testing.T) {
+	ctx, cancelContext := context.WithCancel(context.Background())
+	const targetCount = 3
+	stream := newLiveScanEventStream(newScanPublication(ctx, cancelContext), targetCount)
+
+	done := make(chan struct{})
+	go func() {
+		for range cap(stream.events) - stream.requiredSlots {
+			stream.publishProgress(liveScanEventMsg{kind: liveScanChildProgress})
+		}
+		for range targetCount {
+			stream.publish(liveScanEventMsg{kind: liveScanChildDone})
+		}
+		stream.publish(liveScanEventMsg{kind: liveScanComplete})
+		stream.close()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("required live-scan events exhausted their reserved capacity")
+	}
+	if !errors.Is(ctx.Err(), context.Canceled) {
+		t.Fatalf("closed stream did not release its context: %v", ctx.Err())
+	}
+
+	var required int
+	for event := range stream.events {
+		if event.kind != liveScanChildProgress {
+			required++
+		}
+	}
+	if required != targetCount+1 {
+		t.Fatalf("got %d required events, want %d", required, targetCount+1)
+	}
+}
+
+func TestCanceledLiveScanPublishesNoResultsOrCache(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	root := filepath.Join(home, "root")
+	project := filepath.Join(root, "project")
+	if err := os.MkdirAll(filepath.Join(project, "node_modules"), 0o755); err != nil {
+		t.Fatalf("create folded subtree: %v", err)
+	}
+	for i := range subdirCacheMinFiles {
+		path := filepath.Join(project, fmt.Sprintf("file-%03d.bin", i))
+		if err := os.WriteFile(path, []byte("cacheable"), 0o644); err != nil {
+			t.Fatalf("write cacheable file: %v", err)
+		}
+	}
+	started := installBlockingDuProbe(t)
+
+	var filesScanned, dirsScanned, bytesScanned int64
+	currentPath := &atomic.Value{}
+	currentPath.Store("")
+	start, ok := startLiveScanCmd(root, &filesScanned, &dirsScanned, &bytesScanned, currentPath)().(liveScanStartMsg)
+	if !ok {
+		t.Fatal("expected live scan start message")
+	}
+
+	waitForTestPath(t, started)
+	start.cancel()
+
+	deadline := time.NewTimer(liveScanCancellationBudget)
+	defer deadline.Stop()
+	for {
+		select {
+		case event, open := <-start.events:
+			if !open {
+				cachePath, err := getCachePath(project)
+				if err != nil {
+					t.Fatalf("resolve project cache path: %v", err)
+				}
+				if _, err := os.Stat(cachePath); !os.IsNotExist(err) {
+					t.Fatalf("canceled scan persisted partial cache at %s", cachePath)
+				}
+				return
+			}
+			switch event.kind {
+			case liveScanChildDone, liveScanComplete:
+				t.Fatalf("canceled scan published stale event kind %v", event.kind)
+			}
+		case <-deadline.C:
+			t.Fatal("canceled live scan did not close promptly")
+		}
 	}
 }
 
@@ -1752,13 +2310,14 @@ func TestCacheBypassSkipsHomeLibraryOverviewSnapshot(t *testing.T) {
 
 	scanTarget := func(policy scanCachePolicy) scanResult {
 		t.Helper()
+		ctx := context.Background()
 		var filesScanned, dirsScanned, bytesScanned int64
 		current := &atomic.Value{}
 		current.Store("")
 		limiter := newScanLimiter(1)
 		largeFileMinSize := int64(largeFileWarmupMinSize)
 		result, err := scanLiveTarget(
-			context.Background(),
+			ctx,
 			liveScanTarget{name: "Library", path: library, kind: liveScanTargetHomeLibrary},
 			make(chan fileEntry, maxLargeFiles*2),
 			&largeFileMinSize,
@@ -1768,6 +2327,7 @@ func TestCacheBypassSkipsHomeLibraryOverviewSnapshot(t *testing.T) {
 			&bytesScanned,
 			current,
 			policy,
+			newScanPublication(ctx, nil),
 		)
 		if err != nil {
 			t.Fatalf("scan Home Library: %v", err)
@@ -1784,10 +2344,11 @@ func TestCacheBypassSkipsHomeLibraryOverviewSnapshot(t *testing.T) {
 
 	scanHome := func(policy scanCachePolicy) int64 {
 		t.Helper()
+		ctx := context.Background()
 		var filesScanned, dirsScanned, bytesScanned int64
 		current := &atomic.Value{}
 		current.Store("")
-		result, err := scanPathConcurrentWithLimiter(home, &filesScanned, &dirsScanned, &bytesScanned, current, false, maxEntries, nil, policy)
+		result, err := scanPathConcurrentWithLimiter(ctx, home, &filesScanned, &dirsScanned, &bytesScanned, current, false, maxEntries, nil, policy, newScanPublication(ctx, nil))
 		if err != nil {
 			t.Fatalf("scan Home: %v", err)
 		}
@@ -2176,7 +2737,8 @@ func TestEnterSelectedDirRefreshesStaleInMemoryCache(t *testing.T) {
 		TotalSize:  1,
 		TotalFiles: 1,
 	}
-	if err := saveCacheToDiskWithOptions(child, warmed, true); err != nil {
+	ctx := context.Background()
+	if err := saveCacheToDiskWithOptions(newScanPublication(ctx, nil), child, warmed, true); err != nil {
 		t.Fatalf("saveCacheToDiskWithOptions: %v", err)
 	}
 
@@ -2242,7 +2804,8 @@ func TestGoBackRefreshesHistoryEntryNeedingRefresh(t *testing.T) {
 		TotalSize:  2,
 		TotalFiles: 1,
 	}
-	if err := saveCacheToDiskWithOptions(child, warmed, true); err != nil {
+	ctx := context.Background()
+	if err := saveCacheToDiskWithOptions(newScanPublication(ctx, nil), child, warmed, true); err != nil {
 		t.Fatalf("saveCacheToDiskWithOptions: %v", err)
 	}
 
@@ -2315,7 +2878,7 @@ func TestScanPathConcurrentWarmsChildCacheWithLiveProgress(t *testing.T) {
 	done := make(chan struct{})
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := scanPathConcurrent(root, &filesScanned, &dirsScanned, &bytesScanned, current)
+		_, err := scanPathConcurrent(context.Background(), root, &filesScanned, &dirsScanned, &bytesScanned, current)
 		errCh <- err
 		close(done)
 	}()
@@ -2794,7 +3357,7 @@ func TestScanPathPermissionError(t *testing.T) {
 	current.Store("")
 
 	// Scanning the locked dir itself should fail.
-	_, err := scanPathConcurrent(lockedDir, &files, &dirs, &bytes, current)
+	_, err := scanPathConcurrent(context.Background(), lockedDir, &files, &dirs, &bytes, current)
 	if err == nil {
 		t.Fatalf("expected error scanning locked directory, got nil")
 	}
@@ -2824,7 +3387,7 @@ func TestCalculateDirSizeFastHighFanoutCompletes(t *testing.T) {
 
 	done := make(chan int64, 1)
 	go func() {
-		done <- calculateDirSizeFast(root, &files, &dirs, &bytes, current)
+		done <- calculateDirSizeFast(context.Background(), root, &files, &dirs, &bytes, current)
 	}()
 
 	select {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"runtime"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -13,25 +14,43 @@ import (
 	"github.com/shirou/gopsutil/v4/process"
 )
 
+type processSample struct {
+	processes        []ProcessInfo
+	parentsAvailable bool
+}
+
 var collectProcessesFunc = collectProcesses
 
-func collectProcesses() ([]ProcessInfo, error) {
+const zombieParentLimit = 3
+
+func collectProcesses() (processSample, error) {
 	if runtime.GOOS == "darwin" {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 
-		out, err := runCmd(ctx, "ps", "-Aceo", "pid=,ppid=,pcpu=,pmem=,rss=,comm=", "-r")
-		if err != nil {
-			out, err = runCmd(ctx, "ps", "aux")
-			if err != nil {
-				return nil, err
+		out, err := runCmd(ctx, "ps", "-Aceo", "pid=,ppid=,state=,pcpu=,pmem=,rss=,comm=", "-r")
+		if err == nil {
+			if procs, parseErr := parseProcessOutputStrict(out); parseErr == nil {
+				return processSample{processes: procs, parentsAvailable: true}, nil
 			}
-			return parsePsAuxOutput(out), nil
 		}
-		return parseProcessOutput(out), nil
+
+		out, err = runCmd(ctx, "ps", "aux")
+		if err != nil {
+			return processSample{}, err
+		}
+		procs, err := parsePsAuxOutputStrict(out)
+		if err != nil {
+			return processSample{}, err
+		}
+		return processSample{processes: procs}, nil
 	}
 
-	return collectProcessesGopsutil()
+	procs, err := collectProcessesGopsutil()
+	if err != nil {
+		return processSample{}, err
+	}
+	return processSample{processes: procs, parentsAvailable: true}, nil
 }
 
 func collectProcessesGopsutil() ([]ProcessInfo, error) {
@@ -57,10 +76,15 @@ func collectProcessesGopsutil() ([]ProcessInfo, error) {
 			rssBytes = memInfo.RSS
 		}
 		ppid, _ := p.Ppid()
+		stateStr := ""
+		if st, err := p.Status(); err == nil && len(st) > 0 {
+			stateStr = st[0]
+		}
 
 		procs = append(procs, ProcessInfo{
 			PID:         int(pid),
 			PPID:        int(ppid),
+			State:       stateStr,
 			Name:        name,
 			Command:     name,
 			CPU:         cpuVal,
@@ -71,91 +95,68 @@ func collectProcessesGopsutil() ([]ProcessInfo, error) {
 	return procs, nil
 }
 
-func parseProcessOutput(raw string) []ProcessInfo {
-	procs := make([]ProcessInfo, 0, strings.Count(raw, "\n"))
-	for line := range strings.Lines(strings.TrimSpace(raw)) {
-		fields := strings.Fields(line)
-		if len(fields) < 5 {
-			continue
-		}
+func parseProcessOutputStrict(raw string) ([]ProcessInfo, error) {
+	rows := strings.Split(strings.TrimSpace(raw), "\n")
+	if len(rows) == 0 || (len(rows) == 1 && rows[0] == "") {
+		return nil, fmt.Errorf("empty ps process table")
+	}
 
-		pid, err := strconv.Atoi(fields[0])
-		if err != nil || pid <= 0 {
-			continue
+	procs := make([]ProcessInfo, 0, len(rows))
+	for _, row := range rows {
+		fields := strings.Fields(row)
+		if len(fields) < 7 || !isProcessStateToken(fields[2]) {
+			return nil, fmt.Errorf("unexpected ps process row")
 		}
-		ppid, _ := strconv.Atoi(fields[1])
-		cpuVal, err := strconv.ParseFloat(fields[2], 64)
-		if err != nil {
-			continue
-		}
-		memVal, err := strconv.ParseFloat(fields[3], 64)
-		if err != nil {
-			continue
-		}
-
-		rssBytes := uint64(0)
-		commandStart := 4
-		if len(fields) >= 6 {
-			if rssKB, err := strconv.ParseUint(fields[4], 10, 64); err == nil {
-				rssBytes = rssKB * 1024
-				commandStart = 5
-			}
-		}
-
-		command := strings.Join(fields[commandStart:], " ")
-		if command == "" {
-			continue
+		pid, pidErr := strconv.Atoi(fields[0])
+		ppid, ppidErr := strconv.Atoi(fields[1])
+		cpuVal, cpuErr := strconv.ParseFloat(fields[3], 64)
+		memVal, memErr := strconv.ParseFloat(fields[4], 64)
+		rssKB, rssErr := strconv.ParseUint(fields[5], 10, 64)
+		command := strings.Join(fields[6:], " ")
+		if pidErr != nil || ppidErr != nil || cpuErr != nil || memErr != nil || rssErr != nil ||
+			pid <= 0 || ppid < 0 || command == "" {
+			return nil, fmt.Errorf("unexpected ps process row")
 		}
 		procs = append(procs, ProcessInfo{
 			PID:         pid,
 			PPID:        ppid,
-			Name:        processNameFromCommand(command),
+			State:       fields[2],
+			Name:        processNameFromComm(command),
 			Command:     command,
 			CPU:         cpuVal,
 			Memory:      memVal,
-			MemoryBytes: rssBytes,
+			MemoryBytes: rssKB * 1024,
 		})
 	}
-	return procs
+	return procs, nil
 }
 
-// parsePsAuxOutput parses the fallback "ps aux" format.
-// Columns: USER PID %CPU %MEM VSZ RSS TT STAT STARTED TIME COMMAND
-func parsePsAuxOutput(raw string) []ProcessInfo {
-	procs := make([]ProcessInfo, 0, strings.Count(raw, "\n"))
-	first := true
-	for line := range strings.Lines(strings.TrimSpace(raw)) {
-		if first {
-			first = false
-			continue
+func parsePsAuxOutputStrict(raw string) ([]ProcessInfo, error) {
+	rows := strings.Split(strings.TrimSpace(raw), "\n")
+	expectedHeader := []string{"USER", "PID", "%CPU", "%MEM", "VSZ", "RSS", "TT", "STAT", "STARTED", "TIME", "COMMAND"}
+	if len(rows) < 2 || !slices.Equal(strings.Fields(rows[0]), expectedHeader) {
+		return nil, fmt.Errorf("unexpected ps aux header")
+	}
+
+	procs := make([]ProcessInfo, 0, len(rows)-1)
+	for _, row := range rows[1:] {
+		fields := strings.Fields(row)
+		if len(fields) < 11 || !isProcessStateToken(fields[7]) {
+			return nil, fmt.Errorf("unexpected ps aux process row")
 		}
-		fields := strings.Fields(line)
-		if len(fields) < 11 {
-			continue
-		}
-		pid, err := strconv.Atoi(fields[1])
-		if err != nil || pid <= 0 {
-			continue
-		}
-		cpuVal, err := strconv.ParseFloat(fields[2], 64)
-		if err != nil {
-			continue
-		}
-		memVal, err := strconv.ParseFloat(fields[3], 64)
-		if err != nil {
-			continue
-		}
-		rssKB, err := strconv.ParseUint(fields[5], 10, 64)
-		if err != nil {
-			rssKB = 0
-		}
+		pid, pidErr := strconv.Atoi(fields[1])
+		cpuVal, cpuErr := strconv.ParseFloat(fields[2], 64)
+		memVal, memErr := strconv.ParseFloat(fields[3], 64)
+		_, vszErr := strconv.ParseUint(fields[4], 10, 64)
+		rssKB, rssErr := strconv.ParseUint(fields[5], 10, 64)
 		command := strings.Join(fields[10:], " ")
-		if command == "" {
-			continue
+		if pidErr != nil || cpuErr != nil || memErr != nil || vszErr != nil || rssErr != nil || pid <= 0 || command == "" {
+			return nil, fmt.Errorf("unexpected ps aux process row")
 		}
 		procs = append(procs, ProcessInfo{
 			PID:         pid,
 			PPID:        0,
+			State:       fields[7],
 			Name:        processNameFromCommand(command),
 			Command:     command,
 			CPU:         cpuVal,
@@ -163,7 +164,96 @@ func parsePsAuxOutput(raw string) []ProcessInfo {
 			MemoryBytes: rssKB * 1024,
 		})
 	}
-	return procs
+	return procs, nil
+}
+
+func isProcessStateToken(state string) bool {
+	if state == "" {
+		return false
+	}
+	// Darwin can report "?" while a process state is temporarily unknown.
+	// Keep the row so one transient state does not invalidate the whole sample;
+	// isZombieState still treats only Z-prefixed states as zombies.
+	if !strings.ContainsRune("?DIRSTUWZ", rune(state[0])) {
+		return false
+	}
+	for _, modifier := range state[1:] {
+		if !strings.ContainsRune("+<>AELNSsVWX", modifier) {
+			return false
+		}
+	}
+	return true
+}
+
+func isZombieState(state string) bool {
+	return strings.HasPrefix(strings.TrimSpace(state), "Z")
+}
+
+func summarizeZombies(processes []ProcessInfo, limit int, parentsAvailable bool) (int, []ZombieParent, bool) {
+	byPID := make(map[int]ProcessInfo, len(processes))
+	for _, proc := range processes {
+		byPID[proc.PID] = proc
+	}
+
+	count := 0
+	complete := parentsAvailable
+	byParent := make(map[int]int)
+	for _, proc := range processes {
+		if !isZombieState(proc.State) {
+			continue
+		}
+		count++
+		if !parentsAvailable {
+			continue
+		}
+		if proc.PPID <= 0 {
+			complete = false
+			continue
+		}
+		parent, ok := byPID[proc.PPID]
+		if !ok || parent.Name == "" {
+			complete = false
+			continue
+		}
+		byParent[proc.PPID]++
+	}
+
+	parents := make([]ZombieParent, 0, len(byParent))
+	for ppid, zombieCount := range byParent {
+		parents = append(parents, ZombieParent{
+			PID:   ppid,
+			Name:  byPID[ppid].Name,
+			Count: zombieCount,
+		})
+	}
+	sort.Slice(parents, func(i, j int) bool {
+		if parents[i].Count != parents[j].Count {
+			return parents[i].Count > parents[j].Count
+		}
+		if parents[i].Name != parents[j].Name {
+			return parents[i].Name < parents[j].Name
+		}
+		return parents[i].PID < parents[j].PID
+	})
+	if limit <= 0 {
+		if len(parents) > 0 {
+			complete = false
+		}
+		return count, nil, complete
+	}
+	if len(parents) > limit {
+		parents = parents[:limit]
+		complete = false
+	}
+	return count, parents, complete
+}
+
+func processNameFromComm(command string) string {
+	name := command
+	if idx := strings.LastIndex(name, "/"); idx >= 0 {
+		name = name[idx+1:]
+	}
+	return strings.TrimSpace(name)
 }
 
 func processNameFromCommand(command string) string {

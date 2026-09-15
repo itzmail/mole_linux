@@ -42,7 +42,7 @@ setup() {
     mkdir -p "$HOME/Applications/TestApp.app"
     ln -s "$HOME/Applications/TestApp.app" "$HOME/Caskroom/test-app/1.0.0/TestApp.app"
 
-    run /bin/bash <<EOF
+    run /bin/bash << EOF
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/brew.sh"
 
@@ -74,7 +74,8 @@ EOF
 @test "get_brew_cask_name handles non-brew apps" {
     mkdir -p "$HOME/Applications/ManualApp.app"
 
-    result=$(/bin/bash <<EOF
+    result=$(
+        /bin/bash << EOF
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/brew.sh"
 # Mock brew to return nothing for this
@@ -90,7 +91,7 @@ EOF
 @test "brew detection requires brew info to mention the exact selected app path" {
     mkdir -p "$HOME/Applications/Owned.app" "$HOME/Applications/Other.app" "$HOME/Applications/SameName.app"
 
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/brew.sh"
@@ -98,7 +99,7 @@ source "$PROJECT_ROOT/lib/uninstall/brew.sh"
 brew() {
     case "$*" in
         "list --cask")
-            printf '%s\n' "owned" "samename" "standard"
+            printf '%s\n' "mixed" "owned" "samename" "standard"
             ;;
         "info --cask owned")
             printf 'app "%s"\n' "$HOME/Applications/Owned.app"
@@ -108,6 +109,9 @@ brew() {
             ;;
         "info --cask standard")
             printf '%s\n' 'Standard.app (App)'
+            ;;
+        "info --cask mixed")
+            printf '%s\n' 'Mixed.APP (App)'
             ;;
         *)
             return 1
@@ -123,16 +127,79 @@ owned=$(_detect_cask_via_brew_list "$HOME/Applications/Owned.app" "Owned.app")
 ! get_brew_cask_name "$HOME/Applications/SameName.app"
 standard=$(_detect_cask_via_brew_list "/Applications/Standard.app" "Standard.app")
 [[ "$standard" == "standard" ]] || exit 1
+mixed=$(_detect_cask_via_brew_list "/Applications/Mixed.APP" "Mixed.APP")
+[[ "$mixed" == "mixed" ]] || exit 1
 EOF
 
     [ "$status" -eq 0 ]
+}
+
+@test "Homebrew detection preserves timeout and signal probe statuses" {
+    mkdir -p "$HOME/Applications/Probe.app"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/brew.sh"
+
+brew() { printf '%s\n' probe; }
+run_with_timeout() { return "${PROBE_RC:?}"; }
+
+PROBE_RC=124
+rc=0
+is_brew_cask_installed probe || rc=$?
+[[ $rc -eq 124 ]] || exit 1
+rc=0
+_detect_cask_via_brew_list "$HOME/Applications/Probe.app" "Probe.app" || rc=$?
+[[ $rc -eq 124 ]] || exit 1
+rc=0
+get_brew_cask_name "$HOME/Applications/Probe.app" || rc=$?
+[[ $rc -eq 124 ]] || exit 1
+
+PROBE_RC=143
+rc=0
+is_brew_cask_installed probe || rc=$?
+[[ $rc -eq 143 ]] || exit 1
+rc=0
+_detect_cask_via_brew_list "$HOME/Applications/Probe.app" "Probe.app" || rc=$?
+[[ $rc -eq 143 ]] || exit 1
+rc=0
+get_brew_cask_name "$HOME/Applications/Probe.app" || rc=$?
+[[ $rc -eq 143 ]]
+EOF
+
+    [ "$status" -eq 0 ]
+}
+
+@test "brew uninstall preserves an interrupted app size probe" {
+    mkdir -p "$HOME/Applications/Probe.app"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/brew.sh"
+
+brew() { printf 'UNEXPECTED_BREW\n'; }
+get_path_size_kb() { return 124; }
+rc=0
+brew_uninstall_cask probe "$HOME/Applications/Probe.app" || rc=$?
+printf 'RC=%s\n' "$rc"
+[[ $rc -eq 124 ]]
+EOF
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+    [[ "$output" == *"RC=124"* ]] || return 1
+    [[ "$output" != *"UNEXPECTED_BREW"* ]]
 }
 
 @test "Caskroom symlink detection rejects a mismatched app bundle name" {
     mkdir -p "$HOME/Applications"
     ln -s "/opt/homebrew/Caskroom/real-cask/1.0/Real.app" "$HOME/Applications/Fake.app"
 
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/brew.sh"
@@ -141,7 +208,10 @@ resolve_path() { printf '%s\n' "/opt/homebrew/Caskroom/real-cask/1.0/Real.app"; 
 ! _detect_cask_via_symlink_check "$HOME/Applications/Fake.app"
 EOF
 
-    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
 }
 
 @test "batch_uninstall_applications uses brew uninstall for casks (mocked)" {
@@ -246,7 +316,7 @@ files_cleaned=0
 total_items=0
 total_size_cleaned=0
 
-printf '\n' | batch_uninstall_applications > /dev/null 2>&1
+printf '\n' | batch_uninstall_applications > "$HOME/brew_shared_output.log" 2>&1
 
 grep -q "uninstall --cask brewshared-beta" "$HOME/brew_shared_calls.log" || {
     echo "WRONG: plain cask uninstall not invoked"
@@ -256,6 +326,11 @@ grep -q "uninstall --cask brewshared-beta" "$HOME/brew_shared_calls.log" || {
 if grep -q -- "--zap" "$HOME/brew_shared_calls.log"; then
     echo "WRONG: --zap used despite surviving same-bundle sibling"
     cat "$HOME/brew_shared_calls.log"
+    exit 1
+fi
+if grep -q -- "Homebrew apps will be fully cleaned" "$HOME/brew_shared_output.log"; then
+    echo "WRONG: preview claims --zap despite surviving same-bundle sibling"
+    cat "$HOME/brew_shared_output.log"
     exit 1
 fi
 [[ -d "$HOME/Applications/BrewShared.app" ]] || {
@@ -426,7 +501,7 @@ total_size_cleaned=0
 
 printf '\n' | batch_uninstall_applications > /dev/null 2>&1 || true
 
-[[ -d "$HOME/Applications/BrewBroken.app" ]]
+[[ -d "$HOME/Applications/BrewBroken.app" ]] || exit 1
 [[ ! -f "$HOME/remove.log" ]]
 EOF
 
@@ -485,7 +560,7 @@ total_size_cleaned=0
 
 printf '\n' | batch_uninstall_applications > /dev/null 2>&1
 
-[[ ! -d "$HOME/Applications/BrewCleanup.app" ]]
+[[ ! -d "$HOME/Applications/BrewCleanup.app" ]] || exit 1
 grep -q "SAFE_REMOVE:$HOME/Applications/BrewCleanup.app" "$HOME/remove.log"
 EOF
 
@@ -497,7 +572,7 @@ EOF
     local leftover="$HOME/Library/Application Support/BrewManual"
     mkdir -p "$app_bundle" "$leftover"
 
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/batch.sh"
@@ -538,7 +613,10 @@ total_size_cleaned=0
 printf '\n' | batch_uninstall_applications
 EOF
 
-    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
     [[ -d "$app_bundle" ]] || return 1
     [[ -d "$leftover" ]] || return 1
     [[ ! -e "$HOME/brew-manual-side-effects.log" ]] || return 1
@@ -592,7 +670,7 @@ EOF
 }
 
 @test "brew_uninstall_cask passes cask token as argv without shell evaluation" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/brew.sh"
@@ -611,9 +689,115 @@ export -f brew
 cask_name='bad"; touch "$HOME/pwned"; #'
 brew_uninstall_cask "$cask_name"
 
-[[ ! -e "$HOME/pwned" ]]
+[[ ! -e "$HOME/pwned" ]] || exit 1
 grep -Fx '<bad"; touch "$HOME/pwned"; #>' "$HOME/brew_argv.log"
 EOF
 
     [ "$status" -eq 0 ]
+}
+
+@test "_detect_cask_via_caskroom_search handles empty uniq array expansion under set -u" {
+    mkdir -p "$BATS_TEST_TMPDIR/TestCaskApp.app"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" TEST_APP_PATH="$BATS_TEST_TMPDIR/TestCaskApp.app" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/brew.sh"
+
+find() {
+    echo "/opt/homebrew/Caskroom/test-cask-app/1.0.0/TestCaskApp.app"
+}
+run_with_timeout() {
+    shift
+    "$@"
+}
+_mole_brew_probe() {
+    echo "test-cask-app"
+    return 0
+}
+
+_detect_cask_via_caskroom_search "$TEST_APP_PATH"
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == "test-cask-app" ]]
+}
+
+# Only discovery and Homebrew are mocked; app identity uses real fixture
+# directories and symlinks so a same-name copy cannot satisfy the fallback.
+run_caskroom_info_failure_case() {
+    local scenario="$1"
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" SCENARIO="$scenario" \
+        FIXTURE="$BATS_TEST_TMPDIR" /bin/bash --noprofile --norc <<'SCRIPT'
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/brew.sh"
+mkdir -p "$FIXTURE/selected/Rebased.app" "$FIXTURE/other/Rebased.app" "$FIXTURE/cask"
+app_path="$FIXTURE/selected/Rebased.app"
+match="$FIXTURE/cask/Rebased.app"
+ln -s "$app_path" "$match"
+case "$SCENARIO" in
+    unrelated) rm "$match"; ln -s "$FIXTURE/other/Rebased.app" "$match" ;;
+    copied) rm "$match"; mkdir "$match" ;;
+esac
+find() { printf '%s\n' "$FIXTURE/cask/Rebased.app"; }
+# Production token parsing has independent coverage; fixture paths must not
+# create or change the machine's actual Caskroom.
+_extract_cask_token_from_path() { printf '%s\n' rebased; }
+run_with_timeout() { shift; "$@"; }
+_mole_brew_probe() {
+    shift
+    case "$*" in
+        'list --cask') printf '%s\n' rebased ;;
+        'info --cask rebased')
+            case "$SCENARIO" in
+                timeout) return 124 ;;
+                cancelled) return 143 ;;
+                retargeted) rm "$FIXTURE/cask/Rebased.app"; ln -s "$FIXTURE/other/Rebased.app" "$FIXTURE/cask/Rebased.app" ;;
+            esac
+            return 1
+            ;;
+        *) return 99 ;;
+    esac
+}
+result=""
+rc=0
+result=$(_detect_cask_via_caskroom_search Rebased.app "$app_path") || rc=$?
+printf 'rc=%s token=%s\n' "$rc" "$result"
+SCRIPT
+}
+
+@test "third-party cask info failure accepts the exact installed app (#1558)" {
+    run_caskroom_info_failure_case exact
+    [ "$status" -eq 0 ]
+    [ "$output" = 'rc=0 token=rebased' ]
+}
+
+@test "third-party cask info failure refuses a same-name app at another path (#1558)" {
+    run_caskroom_info_failure_case unrelated
+    [ "$status" -eq 0 ]
+    [ "$output" = 'rc=2 token=' ]
+}
+
+@test "third-party cask info failure refuses a same-name copied bundle (#1558)" {
+    run_caskroom_info_failure_case copied
+    [ "$status" -eq 0 ]
+    [ "$output" = 'rc=2 token=' ]
+}
+
+@test "third-party cask info failure rechecks a retargeted symlink (#1558)" {
+    run_caskroom_info_failure_case retargeted
+    [ "$status" -eq 0 ]
+    [ "$output" = 'rc=2 token=' ]
+}
+
+@test "third-party cask info timeout is not bypassed by exact ownership (#1558)" {
+    run_caskroom_info_failure_case timeout
+    [ "$status" -eq 0 ]
+    [ "$output" = 'rc=124 token=' ]
+}
+
+@test "third-party cask info cancellation is not bypassed by exact ownership (#1558)" {
+    run_caskroom_info_failure_case cancelled
+    [ "$status" -eq 0 ]
+    [ "$output" = 'rc=143 token=' ]
 }

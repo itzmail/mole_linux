@@ -363,3 +363,94 @@ func TestCounterDeltaClampsCounterReset(t *testing.T) {
 		t.Fatalf("counterDelta reset = %d, want 0", got)
 	}
 }
+
+func TestCorrectAPFSDiskUsageReportsFinderPurgeable(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("APFS Finder corrections are macOS-only")
+	}
+
+	origRunCmd := runCmd
+	origCommandExists := commandExists
+	origCachedAt := finderDiskCachedAt
+	origFree := finderDiskFree
+	origTotal := finderDiskTotal
+	t.Cleanup(func() {
+		runCmd = origRunCmd
+		commandExists = origCommandExists
+		finderDiskCachedAt = origCachedAt
+		finderDiskFree = origFree
+		finderDiskTotal = origTotal
+	})
+	finderDiskCachedAt = time.Time{}
+
+	commandExists = func(name string) bool { return name == "osascript" }
+	// Finder: 663.7 GB free of 1.8897 TB, i.e. statfs free (522.7 GB) plus
+	// 141 GB purgeable, matching the #1357 scenario.
+	runCmd = func(ctx context.Context, name string, args ...string) (string, error) {
+		return "663700000000, 1889700000000", nil
+	}
+
+	total := uint64(1889700000000)
+	rawFree := uint64(522700000000)
+	rawUsed := total - rawFree
+	used, usedPercent, purgeable := correctAPFSDiskUsage("/", total, rawUsed, rawFree)
+
+	if want := total - uint64(663700000000); used != want {
+		t.Fatalf("used = %d, want %d", used, want)
+	}
+	if usedPercent < 64.87 || usedPercent > 64.89 {
+		t.Fatalf("usedPercent = %f, want ~64.88", usedPercent)
+	}
+	if purgeable != uint64(141000000000) {
+		t.Fatalf("purgeable = %d, want %d", purgeable, uint64(141000000000))
+	}
+}
+
+func TestCorrectAPFSDiskUsageClampsPurgeableToZero(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("APFS Finder corrections are macOS-only")
+	}
+
+	origRunCmd := runCmd
+	origCommandExists := commandExists
+	origCachedAt := finderDiskCachedAt
+	origFree := finderDiskFree
+	origTotal := finderDiskTotal
+	t.Cleanup(func() {
+		runCmd = origRunCmd
+		commandExists = origCommandExists
+		finderDiskCachedAt = origCachedAt
+		finderDiskFree = origFree
+		finderDiskTotal = origTotal
+	})
+	finderDiskCachedAt = time.Time{}
+
+	commandExists = func(name string) bool { return name == "osascript" }
+	// Finder free below the statfs free means there is no purgeable space.
+	runCmd = func(ctx context.Context, name string, args ...string) (string, error) {
+		return "500000000000, 1889700000000", nil
+	}
+
+	total := uint64(1889700000000)
+	rawFree := uint64(522700000000)
+	rawUsed := total - rawFree
+	_, _, purgeable := correctAPFSDiskUsage("/", total, rawUsed, rawFree)
+	if purgeable != 0 {
+		t.Fatalf("purgeable = %d, want 0", purgeable)
+	}
+}
+
+func TestFinderPurgeableBytesIgnoresCorrectedTotal(t *testing.T) {
+	// The regression this pins: purgeable was once derived from the
+	// diskutil-corrected total minus statfs used, so the correction itself
+	// showed up as purgeable space. The statfs free figure is the only
+	// valid baseline.
+	rawFree := uint64(500 << 30)
+	finderFree := uint64(520 << 30)
+	if got, want := finderPurgeableBytes(rawFree, finderFree), uint64(20<<30); got != want {
+		t.Fatalf("purgeable = %d, want %d", got, want)
+	}
+	if got := finderPurgeableBytes(finderFree, rawFree); got != 0 {
+		t.Fatalf("purgeable when finder below statfs = %d, want 0", got)
+	}
+}

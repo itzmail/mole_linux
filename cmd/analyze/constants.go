@@ -5,9 +5,12 @@ package main
 import "time"
 
 const (
-	maxEntries             = 30
-	maxLargeFiles          = 20
-	barWidth               = 24
+	maxEntries    = 30
+	maxLargeFiles = 20
+	barWidth      = 24
+	// Below this many columns a scanned path is too clipped to tell anything
+	// apart, so it moves to its own row instead of sharing the status line.
+	scanPathInlineMinWidth = 24
 	spotlightMinFileSize   = 100 << 20
 	largeFileWarmupMinSize = 1 << 20
 	defaultViewport        = 12
@@ -237,7 +240,6 @@ var defaultSkipDirs = map[string]bool{
 	// Virtualization/Container mounts (NFS, network filesystems).
 	"OrbStack":        true, // OrbStack NFS mounts
 	"Colima":          true, // Colima VM mounts
-	"Parallels":       true, // Parallels Desktop VMs
 	"VMware Fusion":   true, // VMware Fusion VMs
 	"VirtualBox VMs":  true, // VirtualBox VMs
 	"Rancher Desktop": true, // Rancher Desktop mounts
@@ -290,7 +292,7 @@ var skipExtensions = map[string]bool{
 	".hx":     true,
 }
 
-var spinnerFrames = []string{"|", "/", "-", "\\", "|", "/", "-", "\\"}
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 const (
 	colorPurple     = "\033[0;35m"

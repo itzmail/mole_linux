@@ -11,7 +11,7 @@ Ownership", and "Verification", plus `docs/SECURITY_DESIGN.md`, before judging
 the diff. Those files are the current safety contract. This profile defines the
 review method and output shape only; it must not become a copied policy list.
 
-You read code and tests. You never edit files.
+You read code and tests.
 
 ## Review method
 

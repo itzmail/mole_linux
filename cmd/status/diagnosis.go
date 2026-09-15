@@ -12,14 +12,18 @@ func statusDiagnosisLine(m MetricsSnapshot) string {
 		}
 	}
 	if m.CPU.Usage > cpuHighThreshold {
-		if proc, ok := leadingCPUProcess(m.TopProcesses, 50); ok {
-			return fmt.Sprintf("%s high CPU", shorten(proc.Name, 18))
+		if processSnapshotFresh(m.ProcessStale) {
+			if proc, ok := leadingCPUProcess(m.TopProcesses, 50); ok {
+				return fmt.Sprintf("%s high CPU", shorten(proc.Name, 18))
+			}
 		}
 		return "CPU load high"
 	}
 	if m.Memory.Pressure == "warn" || m.Memory.Pressure == "critical" || m.Memory.UsedPercent > memHighThreshold {
-		if proc, ok := leadingMemoryProcess(m.TopProcesses); ok && proc.Memory > 0 {
-			return fmt.Sprintf("%s memory pressure", shorten(proc.Name, 18))
+		if processSnapshotFresh(m.ProcessStale) {
+			if proc, ok := leadingMemoryProcess(m.TopProcesses); ok && proc.Memory > 0 {
+				return fmt.Sprintf("%s memory pressure", shorten(proc.Name, 18))
+			}
 		}
 		return "Memory pressure high"
 	}

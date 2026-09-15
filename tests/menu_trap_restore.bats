@@ -96,3 +96,28 @@ EOF
     [ "$status" -eq 0 ] || { echo "$output"; return 1; }
     [[ "$output" == *OUTER_CLEANUP_MARKER* ]] || return 1
 }
+
+@test "footer never drops the Space Select hint before secondary controls (#1382)" {
+	run env PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+
+# The footer is the only place that teaches multi-select. Dropping it on a
+# narrow terminal made `mo uninstall` read as single-select (#1382), so every
+# control-footer variant except the filter-mode one must keep it.
+awk '
+    /^[[:space:]]*#/ { next }
+    /_segs=\(|_segs_simple=\(/ {
+        seen++
+        if ($0 !~ /\$space_select/) { bad++; print "missing space_select: " $0 }
+    }
+    END { exit (!seen || bad) }
+' "$PROJECT_ROOT/lib/ui/menu_paginated.sh" || exit 1
+echo ok
+EOF
+
+	[ "$status" -eq 0 ] || {
+		echo "$output"
+		return 1
+	}
+	[[ "$output" == *"ok"* ]]
+}

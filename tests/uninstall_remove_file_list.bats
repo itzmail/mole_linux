@@ -39,6 +39,25 @@ source "$PROJECT_ROOT/lib/uninstall/batch.sh"
 EOF
 }
 
+@test "remove_file_list refuses shared XDG roots regardless of display-name casing (#1446)" {
+    mkdir -p "$HOME/.Local/bin" "$HOME/.Config" "$HOME/.Cache"
+    touch "$HOME/.Local/bin/unrelated-cli" "$HOME/.Config/unrelated-config" "$HOME/.Cache/unrelated-cache"
+    local list
+    printf -v list '%s\n%s\n%s' "$HOME/.Local" "$HOME/.Config" "$HOME/.Cache"
+
+    run /bin/bash --noprofile --norc <<EOF
+$(prelude)
+remove_file_list "$list" "false"
+EOF
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"0"* ]]
+    [[ -f "$HOME/.Local/bin/unrelated-cli" ]]
+    [[ -f "$HOME/.Config/unrelated-config" ]]
+    [[ -f "$HOME/.Cache/unrelated-cache" ]]
+    [[ ! -d "$MOLE_TEST_TRASH_DIR" ]]
+}
+
 @test "remove_file_list batches eligible Trash moves into a single helper call" {
     local f1="$SANDBOX/a.plist"
     local f2="$SANDBOX/b.plist"
@@ -95,10 +114,45 @@ EOF
     # Audit log records one ok line per moved path.
     local ok_lines
     ok_lines=$(awk -F'\t' '$4 == "ok" && $2 == "trash"' "$MOLE_DELETE_LOG" | wc -l | tr -d ' ')
-    [ "$ok_lines" -eq 5 ]
+	[ "$ok_lines" -eq 5 ]
 }
 
-@test "remove_file_list falls through to per-file path when batch helper fails" {
+@test "Trash batches refresh live-owner evidence before each move" {
+	local first_cache="$HOME/Library/Caches/com.example.One"
+	local second_cache="$HOME/Library/Caches/com.example.Two"
+	mkdir -p "$first_cache" "$second_cache" "$HOME/.cache/mole"
+	printf 'one\n' > "$first_cache/data"
+	printf 'two\n' > "$second_cache/data"
+	local ps_count="$SANDBOX/ps-count"
+	: > "$ps_count"
+
+	run env PROJECT_ROOT="$PROJECT_ROOT" PS_COUNT="$ps_count" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+ps() {
+	printf 'x' >> "$PS_COUNT"
+	local calls
+	calls=$(wc -c < "$PS_COUNT" | tr -d ' ')
+	printf '  PID  PPID COMM ARGS\n'
+	if [[ $calls -ge 2 ]]; then
+		printf '9000 1 /Applications/ExampleTwo /Applications/ExampleTwo --bundle com.example.Two\n'
+	fi
+}
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+remove_file_list "$(printf '%s\n%s\n' \
+	"$HOME/Library/Caches/com.example.One" \
+	"$HOME/Library/Caches/com.example.Two")" false
+printf 'PS_CALLS=%s ONE=%s TWO=%s\n' \
+	"$(wc -c < "$PS_COUNT" | tr -d ' ')" \
+	"$([[ -e "$HOME/Library/Caches/com.example.One" ]] && printf yes || printf no)" \
+	"$([[ -e "$HOME/Library/Caches/com.example.Two" ]] && printf yes || printf no)"
+EOF
+
+	[ "$status" -eq 0 ] || return 1
+	[[ "$output" == *"PS_CALLS=3 ONE=no TWO=yes"* ]] || return 1
+}
+
+@test "remove_file_list preserves unmoved paths when the guarded batch helper fails" {
     local f1="$SANDBOX/x.plist"
     local f2="$SANDBOX/y.plist"
     : > "$f1"
@@ -109,31 +163,58 @@ EOF
     local trace="$SANDBOX/trace"
     : > "$trace"
 
-    # Stub the batch helper to fail, and stub mole_delete to record per-file
-    # invocations and act on the file. This proves the fallback path runs once
-    # per file rather than silently dropping the batch.
+    # A failed identity-bound batch must not hand the same stale lexical paths
+    # to a second sink. The files stay in place for manual review.
     run /bin/bash --noprofile --norc <<EOF
 $(prelude)
 _mole_move_to_trash_batch() { return 1; }
 mole_delete() {
     printf 'mole_delete %s\n' "\$1" >> "$trace"
-    rm -f "\$1"
-    return 0
+    return 99
 }
 remove_file_list "$list" "false"
 EOF
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *"2"* ]] || return 1
+    [[ "$output" == *"0"* ]] || return 1
+    [[ -e "$f1" && -e "$f2" ]] || return 1
+    [[ ! -s "$trace" ]]
+}
 
-    [[ ! -e "$f1" ]] || return 1
-    [[ ! -e "$f2" ]] || return 1
+@test "guarded Trash batch rejects an ancestor swapped after collection" {
+    local base="$SANDBOX/swap-parent"
+    local original_parent="$SANDBOX/original-parent"
+    local outside_parent="$HOME/Documents/OutsideParent"
+    local target="$base/cache"
+    mkdir -p "$target" "$outside_parent/cache"
+    touch "$target/OWNED_SENTINEL" "$outside_parent/cache/OUTSIDE_SENTINEL"
+    local list="$target"
 
-    local fallback_calls
-    fallback_calls=$(wc -l < "$trace" | tr -d ' ')
-    [ "$fallback_calls" -eq 2 ]
-    grep -qF "mole_delete $f1" "$trace"
-    grep -qF "mole_delete $f2" "$trace"
+    run /bin/bash --noprofile --norc <<EOF
+$(prelude)
+eval "\$(declare -f _mole_snapshot_path_identity | sed '1s/_mole_snapshot_path_identity/_real_mole_snapshot_path_identity/')"
+snapshot_calls=0
+_mole_snapshot_path_identity() {
+    snapshot_calls=\$((snapshot_calls + 1))
+    if [[ \$snapshot_calls -eq 2 ]]; then
+        mv "$base" "$original_parent"
+        ln -s "$outside_parent" "$base"
+    fi
+    _real_mole_snapshot_path_identity "\$1"
+}
+mole_delete() { echo "UNEXPECTED_FALLBACK:\$1"; return 99; }
+remove_file_list "$list" "false"
+[[ -f "$outside_parent/cache/OUTSIDE_SENTINEL" ]] || exit 1
+[[ -f "$original_parent/cache/OWNED_SENTINEL" ]]
+EOF
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+    [[ "$output" == *"0"* ]] || return 1
+    [[ "$output" != *"UNEXPECTED_FALLBACK"* ]] || return 1
+    [[ ! -e "$MOLE_TEST_TRASH_DIR/cache" ]]
 }
 
 @test "_mole_move_to_trash_batch returns 1 when trash CLI is missing under MOLE_TEST_NO_AUTH" {
@@ -189,6 +270,36 @@ EOF
     local n
     n=$(wc -l < "$fallback_count" | tr -d ' ')
     [ "$n" -eq 2 ]
+}
+
+@test "remove_file_list stops after an interrupted per-file delete" {
+    local first="$SANDBOX/interrupt-first.plist"
+    local second="$SANDBOX/interrupt-second.plist"
+    : > "$first"
+    : > "$second"
+    local list
+    printf -v list '%s\n%s' "$first" "$second"
+
+    run /bin/bash --noprofile --norc <<EOF
+$(prelude)
+_mole_path_requires_direct_trash() { return 0; }
+delete_calls=0
+mole_delete() {
+    delete_calls=\$((delete_calls + 1))
+    printf 'DELETE_CALL:%s\n' "\$1"
+    return 130
+}
+rc=0
+remove_file_list "$list" "false" || rc=\$?
+printf 'RC=%s CALLS=%s\n' "\$rc" "\$delete_calls"
+EOF
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"RC=130 CALLS=1"* ]] || return 1
+    [[ "$output" == *"DELETE_CALL:$first"* ]] || return 1
+    [[ "$output" != *"DELETE_CALL:$second"* ]] || return 1
+    [[ -e "$first" ]] || return 1
+    [[ -e "$second" ]]
 }
 
 @test "remove_file_list routes Microsoft Word app data per-file and batches ordinary leftovers" {

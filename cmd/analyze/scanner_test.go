@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -79,11 +80,11 @@ func TestGetDirectorySizeFromDuWithIgnoresSkipsCloudPlaceholderTree(t *testing.T
 	writeFileWithSize(t, filepath.Join(base, "Application Support", "state.dat"), 4096)
 	writeFileWithSize(t, filepath.Join(base, "Mobile Documents", "cloud.dat"), 1024*1024)
 
-	withoutIgnore, err := getDirectorySizeFromDuWithExcludeAndIgnores(base, "", nil)
+	withoutIgnore, err := getDirectorySizeFromDuWithExcludeAndIgnores(context.Background(), base, "", nil)
 	if err != nil {
 		t.Fatalf("getDirectorySizeFromDuWithExcludeAndIgnores without ignore: %v", err)
 	}
-	withIgnore, err := getDirectorySizeFromDuWithExcludeAndIgnores(base, "", []string{"Mobile Documents"})
+	withIgnore, err := getDirectorySizeFromDuWithExcludeAndIgnores(context.Background(), base, "", []string{"Mobile Documents"})
 	if err != nil {
 		t.Fatalf("getDirectorySizeFromDuWithExcludeAndIgnores with ignore: %v", err)
 	}
@@ -125,7 +126,7 @@ func BenchmarkGetDirectorySizeFromDuWithExcludeHomeLibrary(b *testing.B) {
 	b.ResetTimer()
 
 	for b.Loop() {
-		size, err := getDirectorySizeFromDuWithExclude(base, excludePath)
+		size, err := getDirectorySizeFromDuWithExclude(context.Background(), base, excludePath)
 		if err != nil {
 			b.Fatalf("getDirectorySizeFromDuWithExclude: %v", err)
 		}

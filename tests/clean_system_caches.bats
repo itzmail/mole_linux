@@ -245,6 +245,141 @@ EOF
     rm -rf "$test_cache"
 }
 
+@test "clean_service_worker_cache reports only successful removals" {
+    local test_cache="$HOME/test_sw_cache_failed_remove"
+    mkdir -p "$test_cache/abc123_https_example.com_0"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<EOF
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/caches.sh"
+DRY_RUN=false
+declare -a PROTECTED_SW_DOMAINS=("never.invalid")
+safe_remove() { return 1; }
+note_activity() { :; }
+run_with_timeout() {
+    shift
+    if [[ "\$1" == "sh" ]]; then
+        printf '%s\n' "$test_cache/abc123_https_example.com_0"
+    elif [[ "\$1" == "du" ]]; then
+        printf '512\t%s\n' "$test_cache/abc123_https_example.com_0"
+    else
+        "\$@"
+    fi
+}
+clean_service_worker_cache TestBrowser "$test_cache"
+EOF
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" != *"TestBrowser Service Worker"* ]]
+}
+
+@test "clean_service_worker_cache checks its guard after sizing before dry-run registration" {
+    local test_cache="$HOME/test_sw_cache_guard"
+    mkdir -p "$test_cache/abc123_https_example.com_0"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<EOF
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/caches.sh"
+DRY_RUN=true
+declare -a PROTECTED_SW_DOMAINS=("never.invalid")
+delete_guard() { [[ ! -e "$test_cache/process-started" ]]; }
+record_dry_run_cleanup_target() { echo "UNEXPECTED_RECORD:\$1"; }
+note_activity() { :; }
+run_with_timeout() {
+    shift
+    if [[ "\$1" == "sh" ]]; then
+        printf '%s\n' "$test_cache/abc123_https_example.com_0"
+    elif [[ "\$1" == "du" ]]; then
+        touch "$test_cache/process-started"
+        printf '512\t%s\n' "$test_cache/abc123_https_example.com_0"
+    else
+        "\$@"
+    fi
+}
+rc=0
+clean_service_worker_cache TestBrowser "$test_cache" delete_guard || rc=\$?
+printf 'RC:%s\n' "\$rc"
+EOF
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"RC:75"* ]] || return 1
+    [[ "$output" != *"UNEXPECTED_RECORD"* ]] || return 1
+    [[ "$output" != *"TestBrowser Service Worker"* ]]
+}
+
+@test "clean_service_worker_cache discards partial discovery after timeout" {
+    local test_cache="$HOME/test_sw_cache_partial_timeout"
+    mkdir -p "$test_cache/abc123_https_example.com_0"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<EOF
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/caches.sh"
+DRY_RUN=false
+declare -a PROTECTED_SW_DOMAINS=("never.invalid")
+safe_remove() { echo "UNEXPECTED_REMOVE:\$1"; return 0; }
+note_activity() { :; }
+run_with_timeout() {
+    shift
+    if [[ "\$1" == "sh" ]]; then
+        printf '%s\n' "$test_cache/abc123_https_example.com_0"
+        return 124
+    fi
+    if [[ "\$1" == "du" ]]; then
+        printf '512\t%s\n' "$test_cache/abc123_https_example.com_0"
+        return 0
+    fi
+    "\$@"
+}
+rc=0
+clean_service_worker_cache TestBrowser "$test_cache" || rc=\$?
+printf 'RC:%s\n' "\$rc"
+EOF
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"RC:124"* ]] || return 1
+    [[ "$output" != *"UNEXPECTED_REMOVE"* ]] || return 1
+    [[ "$output" != *"TestBrowser Service Worker"* ]]
+}
+
+@test "clean_service_worker_cache refuses a symlinked cache root" {
+    local outside="$HOME/outside-sw-profile"
+    local linked_profile="$HOME/linked-sw-profile"
+    mkdir -p "$outside/Service Worker/CacheStorage/abc123_https_example.com_0"
+    ln -s "$outside" "$linked_profile"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<EOF
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/caches.sh"
+DRY_RUN=false
+declare -a PROTECTED_SW_DOMAINS=("never.invalid")
+safe_remove() { echo "UNEXPECTED_REMOVE:\$1"; return 0; }
+note_activity() { :; }
+run_with_timeout() {
+    shift
+    if [[ "\$1" == "sh" ]]; then
+        printf '%s\n' "$linked_profile/Service Worker/CacheStorage/abc123_https_example.com_0"
+        return 0
+    fi
+    if [[ "\$1" == "du" ]]; then
+        printf '512\t%s\n' "$linked_profile/Service Worker/CacheStorage/abc123_https_example.com_0"
+        return 0
+    fi
+    "\$@"
+}
+rc=0
+clean_service_worker_cache TestBrowser "$linked_profile/Service Worker/CacheStorage" || rc=\$?
+printf 'RC:%s\n' "\$rc"
+EOF
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" != *"UNEXPECTED_REMOVE"* ]] || return 1
+    [[ "$output" == *"RC:1"* ]]
+}
+
 @test "clean_project_caches completes without errors" {
     mkdir -p "$HOME/Projects/test-app/.next/cache"
     mkdir -p "$HOME/Projects/python-app/__pycache__"
@@ -306,7 +441,29 @@ EOF
     [[ "$output" == *"Python bytecode cache"* ]] || return 1
     [[ "$output" == *"1 dirs"* ]] || return 1
 
-    rm -rf "$HOME/Projects"
+	rm -rf "$HOME/Projects"
+}
+
+@test "clean_python_bytecode_cache_group reuses its exact size at removal" {
+	local cache_dir="$HOME/Projects/python-app/pkg/__pycache__"
+	mkdir -p "$cache_dir"
+	touch "$cache_dir/module.pyc"
+
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" CACHE_DIR="$cache_dir" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/caches.sh"
+DRY_RUN=false
+get_path_size_kb() { printf '321\n'; }
+should_protect_path() { return 1; }
+is_path_whitelisted() { return 1; }
+safe_remove() { printf 'REMOVE=%s SILENT=%s SIZE=%s\n' "$1" "$2" "$3"; }
+clean_python_bytecode_cache_group "$HOME/Projects/python-app" "$CACHE_DIR"
+EOF
+
+	[ "$status" -eq 0 ] || return 1
+	[[ "$output" == *"REMOVE=$cache_dir SILENT=true SIZE=321"* ]] || return 1
+	rm -rf "$HOME/Projects"
 }
 
 @test "pycache_has_bytecode checks direct bytecode files without spawning find" {
@@ -465,7 +622,53 @@ EOF
     [ "$status" -eq 0 ]
     [[ "$output" == *"Next.js build cache|$HOME/go/src/github.com/example/demo/.next/cache/test.cache"* ]] || return 1
 
-    rm -rf "$HOME/go"
+	rm -rf "$HOME/go"
+}
+
+@test "clean_project_caches scans independent roots concurrently within its bound" {
+	local scan_home="$HOME/concurrent-project-scans"
+	mkdir -p "$scan_home/root-1" "$scan_home/root-2" "$scan_home/root-3" "$scan_home/root-4"
+
+	run env HOME="$scan_home" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/caches.sh"
+discover_project_cache_roots() {
+	printf '%s\n' "$HOME/root-1" "$HOME/root-2" "$HOME/root-3" "$HOME/root-4"
+}
+get_optimal_parallel_jobs() { printf '2\n'; }
+scan_project_cache_root() {
+	: > "$2"
+	touch "$HOME/active-${1##*/}"
+	while [[ ! -e "$HOME/release-scans" ]]; do
+		sleep 0.02
+	done
+	rm -f "$HOME/active-${1##*/}"
+}
+process_project_cache_matches() { :; }
+
+(
+	trap 'touch "$HOME/release-scans"' EXIT
+	for _ in {1..100}; do
+		active_count=$(command find "$HOME" -maxdepth 1 -name 'active-*' | wc -l | tr -d ' ')
+		if [[ "$active_count" -ge 2 ]]; then
+			printf '%s\n' "$active_count" > "$HOME/observed-concurrency"
+			touch "$HOME/release-scans"
+			exit 0
+		fi
+		sleep 0.02
+	done
+	exit 1
+) &
+monitor_pid=$!
+
+clean_project_caches
+wait "$monitor_pid"
+printf 'CONCURRENCY=%s\n' "$(cat "$HOME/observed-concurrency")"
+EOF
+
+	[ "$status" -eq 0 ] || return 1
+	[[ "$output" == "CONCURRENCY=2" ]] || return 1
 }
 
 @test "discover_project_cache_roots dedupes aliased roots by filesystem identity" {
@@ -532,8 +735,192 @@ EOF
     elapsed=$(printf '%s\n' "$output" | awk -F= '/ELAPSED=/{print $2}' | tail -1)
     [[ "$elapsed" =~ ^[0-9]+$ ]] || return 1
     (( elapsed < 5 ))
+    [[ "$output" == *"Project caches · skipped 1 slow/incomplete root scan"* ]] || return 1
 
-    rm -rf "$HOME/.config/mole" "$HOME/SlowProjects" "$fake_bin"
+	rm -rf "$HOME/.config/mole" "$HOME/SlowProjects" "$fake_bin"
+}
+
+@test "clean_project_caches propagates an interrupted root scan" {
+	local scan_home="$HOME/interrupted-project-scan"
+	mkdir -p "$scan_home/root"
+
+	run env HOME="$scan_home" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/caches.sh"
+discover_project_cache_roots() { printf '%s\n' "$HOME/root"; }
+scan_project_cache_root() {
+	: > "$2"
+	return 130
+}
+process_project_cache_matches() { printf 'UNEXPECTED_PROCESS\n'; }
+clean_rc=0
+clean_project_caches || clean_rc=$?
+printf 'RC=%s\n' "$clean_rc"
+EOF
+
+	[ "$status" -eq 0 ] || return 1
+	[[ "$output" == "RC=130" ]] || return 1
+}
+
+@test "clean_project_caches processes no roots when a later scan is interrupted" {
+	local scan_home="$HOME/interrupted-project-scan-batch"
+	mkdir -p "$scan_home/root-1" "$scan_home/root-2"
+
+	run env HOME="$scan_home" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/caches.sh"
+discover_project_cache_roots() { printf '%s\n' "$HOME/root-1" "$HOME/root-2"; }
+scan_project_cache_root() {
+	: > "$2"
+	[[ "$1" == "$HOME/root-1" ]] && return 0
+	return 130
+}
+process_project_cache_matches() { touch "$HOME/processed"; }
+clean_rc=0
+clean_project_caches || clean_rc=$?
+printf 'RC=%s PROCESSED=%s\n' "$clean_rc" "$([[ -e "$HOME/processed" ]] && printf yes || printf no)"
+EOF
+
+	[ "$status" -eq 0 ] || return 1
+	[[ "$output" == "RC=130 PROCESSED=no" ]] || return 1
+}
+
+@test "clean_project_caches stops launching roots after an interrupted batch" {
+	local scan_home="$HOME/interrupted-project-scan-launch"
+	mkdir -p "$scan_home/root-1" "$scan_home/root-2" "$scan_home/root-3"
+
+	run env HOME="$scan_home" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/caches.sh"
+discover_project_cache_roots() {
+	printf '%s\n' "$HOME/root-1" "$HOME/root-2" "$HOME/root-3"
+}
+get_optimal_parallel_jobs() { printf '1\n'; }
+scan_project_cache_root() {
+	: > "$2"
+	printf '%s\n' "${1##*/}" >> "$HOME/scanned"
+	[[ "${1##*/}" == "root-1" ]] && return 130
+	return 0
+}
+process_project_cache_matches() { printf 'UNEXPECTED_PROCESS\n'; }
+clean_rc=0
+clean_project_caches || clean_rc=$?
+printf 'RC=%s SCANNED=%s\n' "$clean_rc" "$(paste -sd, "$HOME/scanned")"
+EOF
+
+	[ "$status" -eq 0 ] || return 1
+	[[ "$output" == "RC=130 SCANNED=root-1" ]] || return 1
+}
+
+@test "clean_project_caches kills active root scans when its parent receives TERM" {
+	local scan_home="$HOME/terminated-project-scans"
+	mkdir -p "$scan_home/root"
+	local driver="$scan_home/driver.sh"
+
+	cat > "$driver" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/caches.sh"
+discover_project_cache_roots() { printf '%s\n' "$HOME/root"; }
+get_optimal_parallel_jobs() { printf '1\n'; }
+scan_project_cache_root() {
+	: > "$2"
+	touch "$HOME/worker-started"
+	trap 'exit 143' TERM
+	sleep 1
+	touch "$HOME/worker-survived"
+}
+process_project_cache_matches() { :; }
+clean_project_caches
+EOF
+	chmod +x "$driver"
+
+	run env HOME="$scan_home" PROJECT_ROOT="$PROJECT_ROOT" DRIVER="$driver" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+/bin/bash "$DRIVER" &
+parent_pid=$!
+for _ in {1..100}; do
+	[[ -e "$HOME/worker-started" ]] && break
+	sleep 0.02
+done
+[[ -e "$HOME/worker-started" ]] || exit 1
+kill -TERM "$parent_pid"
+parent_rc=0
+wait "$parent_pid" || parent_rc=$?
+sleep 0.1
+printf 'PARENT_RC=%s WORKER_SURVIVED=%s\n' \
+	"$parent_rc" "$([[ -e "$HOME/worker-survived" ]] && printf yes || printf no)"
+EOF
+
+	[ "$status" -eq 0 ] || return 1
+	[[ "$output" == "PARENT_RC=143 WORKER_SURVIVED=no" ]] || return 1
+}
+
+@test "scan_project_cache_root discards partial output when its producer times out" {
+	mkdir -p "$HOME/Projects/app/.next/cache"
+	touch "$HOME/Projects/app/package.json"
+	local output_file
+	output_file=$(mktemp)
+
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" OUTPUT_FILE="$output_file" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/caches.sh"
+run_with_timeout() {
+	printf '%s\n' "$HOME/Projects/app/.next"
+	return 124
+}
+scan_rc=0
+scan_project_cache_root "$HOME/Projects" "$OUTPUT_FILE" || scan_rc=$?
+printf 'STATUS=%s SIZE=%s\n' "$scan_rc" "$(wc -c < "$OUTPUT_FILE" | tr -d ' ')"
+EOF
+
+	rm -rf "$HOME/Projects" "$output_file"
+	[ "$status" -eq 0 ] || return 1
+	[[ "$output" == "STATUS=124 SIZE=0" ]] || return 1
+}
+
+@test "scan_project_cache_root bounds grouping within the shared deadline" {
+	mkdir -p "$HOME/Projects"
+	local fake_bin
+	fake_bin="$(mktemp -d "$HOME/project-cache-postprocess.XXXXXX")"
+	cat > "$fake_bin/find" <<'EOF'
+#!/bin/bash
+for i in $(seq 1 1000); do
+	printf '%s\n' "$HOME/Projects/app-$i/.next"
+done
+EOF
+	cat > "$fake_bin/dirname" <<'EOF'
+#!/bin/bash
+sleep 0.02
+/usr/bin/dirname "$@"
+EOF
+	chmod +x "$fake_bin/find" "$fake_bin/dirname"
+	local output_file
+	output_file=$(mktemp)
+
+	run env HOME="$HOME" PATH="$fake_bin:$PATH" PROJECT_ROOT="$PROJECT_ROOT" OUTPUT_FILE="$output_file" \
+		MOLE_PROJECT_CACHE_SCAN_TIMEOUT=2 /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/caches.sh"
+SECONDS=0
+scan_rc=0
+scan_project_cache_root "$HOME/Projects" "$OUTPUT_FILE" || scan_rc=$?
+printf 'STATUS=%s ELAPSED=%s BYTES=%s\n' \
+	"$scan_rc" "$SECONDS" "$(wc -c < "$OUTPUT_FILE" | tr -d ' ')"
+EOF
+
+	[ "$status" -eq 0 ] || return 1
+	local elapsed
+	elapsed=$(printf '%s\n' "$output" | sed -n 's/.*ELAPSED=\([0-9][0-9]*\).*/\1/p')
+	[[ "$output" == STATUS=124*" BYTES=0" ]] || return 1
+	[[ "$elapsed" =~ ^[0-9]+$ ]] || return 1
+	((elapsed < 4))
 }
 
 @test "scan_project_cache_root prunes conda and site-packages" {

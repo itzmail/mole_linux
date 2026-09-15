@@ -141,7 +141,7 @@ func getInterfaceIPs() map[string]string {
 		for _, addr := range iface.Addrs {
 			// IPv4 only.
 			if strings.Contains(addr.Addr, ".") && !strings.HasPrefix(addr.Addr, "127.") {
-				ip := strings.Split(addr.Addr, "/")[0]
+				ip, _, _ := strings.Cut(addr.Addr, "/")
 				result[iface.Name] = ip
 				break
 			}
@@ -259,7 +259,7 @@ func collectProxyFromScutilOutput(out string) ProxyStatus {
 }
 
 func collectProxyFromTunInterfaces() ProxyStatus {
-	stats, err := net.IOCounters(true)
+	stats, err := collectIOCountersSafely()
 	if err != nil {
 		return ProxyStatus{Enabled: false}
 	}
@@ -281,7 +281,14 @@ func collectProxyFromTunInterfaces() ProxyStatus {
 	if len(activeTun) > 1 {
 		host = activeTun[0] + "+"
 	}
-	return ProxyStatus{Enabled: true, Type: "TUN", Host: host}
+	// Reported as a tunnel, never as a proxy. This branch is only reached when
+	// no proxy is configured in the environment or in scutil, which is exactly
+	// the case where an active `utun` is most likely iCloud Private Relay or a
+	// VPN. Calling that "Proxy TUN" told users something false about a machine
+	// that has no proxy at all.
+	// Keep the existing JSON type value for automation consumers. IsTunnel is
+	// the presentation hint that lets the terminal UI use an honest label.
+	return ProxyStatus{Enabled: true, Type: "TUN", Host: host, IsTunnel: true}
 }
 
 func scutilProxyEnabled(out, key string) bool {

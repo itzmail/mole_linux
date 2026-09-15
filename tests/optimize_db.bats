@@ -34,6 +34,7 @@ create_logical_file() {
 @test "opt_notification_cleanup reports healthy when db is small" {
 	local tmp_dir nc_db_dir
 	tmp_dir=$(mktemp -d)
+	# Legacy Darwin-user-dir layout (pre-Sequoia fallback).
 	nc_db_dir="$tmp_dir/com.apple.notificationcenter/db2"
 	mkdir -p "$nc_db_dir"
 	create_logical_file "$nc_db_dir/db" 1k
@@ -49,6 +50,55 @@ EOF
 	rm -rf "$tmp_dir"
 	[ "$status" -eq 0 ]
 	[[ "$output" == *"healthy"* ]]
+}
+
+@test "opt_notification_cleanup prefers the usernoted group-container database" {
+	# macOS 15+ live path (issue #1368). When both exist, prefer group container.
+	# Isolated HOME so leftover group-container dbs do not poison sibling tests.
+	local case_home group_dir legacy_root legacy_dir
+	case_home=$(mktemp -d "${BATS_TEST_DIRNAME}/tmp-nc-group.XXXXXX")
+	group_dir="$case_home/Library/Group Containers/group.com.apple.usernoted/db2"
+	legacy_root=$(mktemp -d "${BATS_TEST_DIRNAME}/tmp-nc-legacy.XXXXXX")
+	legacy_dir="$legacy_root/com.apple.notificationcenter/db2"
+	mkdir -p "$group_dir" "$legacy_dir"
+	create_logical_file "$group_dir/db" 1k
+	create_logical_file "$legacy_dir/db" 1k
+
+	run env HOME="$case_home" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<EOF
+set -euo pipefail
+source "\$PROJECT_ROOT/lib/core/common.sh"
+source "\$PROJECT_ROOT/lib/optimize/tasks.sh"
+getconf() { echo "$legacy_root"; }
+debug_log() { printf 'DEBUG:%s\n' "\$*"; }
+execute_optimization notification_cleanup
+EOF
+
+	rm -rf "$case_home" "$legacy_root"
+	[ "$status" -eq 0 ] || {
+		echo "$output"
+		return 1
+	}
+	[[ "$output" == *"healthy"* ]] || return 1
+	[[ "$output" == *"DEBUG:Notification Center database: $group_dir/db"* ]] || return 1
+}
+
+@test "opt_notification_cleanup reports unavailable when no supported path exists" {
+	run env HOME="$HOME/nc-missing" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/optimize/tasks.sh"
+getconf() { echo "/nonexistent-darwin-user-dir"; }
+execute_optimization notification_cleanup
+[[ "$(optimize_outcome_count unavailable)" == "1" ]] || exit 1
+EOF
+
+	[ "$status" -eq 0 ] || {
+		echo "$output"
+		return 1
+	}
+	[[ "$output" == *"unavailable"* ]] || return 1
+	[[ "$output" != *"not found"* ]] || return 1
+	[[ "$output" != *"already optimized"* ]] || return 1
 }
 
 @test "opt_notification_cleanup warns when sqlite3 fails" {
@@ -200,4 +250,35 @@ EOF
 	[ "$status" -eq 0 ] || { echo "$output"; return 1; }
 	[[ "$output" == *"VACUUM_CALLED"* ]] || return 1
 	[[ "$output" == *"Optimized 1 databases"* ]]
+}
+
+@test "SQLite optimization does not claim all optimized when size policy skips" {
+	# issue #1367: oversized skip must not share the "already optimized" headline.
+	run env HOME="$HOME/sqlite-oversized" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/optimize/tasks.sh"
+db="$HOME/Library/Messages/chat.db"
+mkdir -p "$(dirname "$db")"
+touch "$db"
+pgrep() { return 1; }
+file() { echo "SQLite 3.x database"; }
+# 200 MiB > MOLE_SQLITE_MAX_SIZE (100 MiB).
+get_file_size() { echo 209715200; }
+should_protect_path() { return 1; }
+bytes_to_human() { echo "200.0MB"; }
+run_with_timeout() { echo "UNEXPECTED_SQLITE"; return 0; }
+
+execute_optimization sqlite_vacuum
+EOF
+
+	[ "$status" -eq 0 ] || {
+		echo "$output"
+		return 1
+	}
+	[[ "$output" == *"No databases compacted"* ]] || return 1
+	[[ "$output" == *"100 MB safety limit"* ]] || return 1
+	[[ "$output" == *"Messages/chat.db"* ]] || return 1
+	[[ "$output" != *"All databases already optimized"* ]] || return 1
+	[[ "$output" != *"UNEXPECTED_SQLITE"* ]] || return 1
 }

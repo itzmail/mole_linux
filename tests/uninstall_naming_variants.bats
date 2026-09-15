@@ -156,6 +156,32 @@ EOF
     [[ "$output" != *"unbound variable"* ]]
 }
 
+@test "find_app_files emits embedded extension leftovers once" {
+    local app="$HOME/Applications/Developer.app"
+    local widget="$app/Contents/PlugIns/Developer Widget.appex/Contents"
+    local app_scripts="$HOME/Library/Application Scripts/developer.apple.wwdc-Release.Developer-Widget"
+    local container="$HOME/Library/Containers/developer.apple.wwdc-Release.Developer-Widget"
+    mkdir -p "$widget" "$app_scripts" "$container"
+    cat > "$widget/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleIdentifier</key><string>developer.apple.wwdc-Release.Developer-Widget</string>
+</dict></plist>
+PLIST
+
+    result=$(
+        HOME="$HOME" APP="$app" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+find_app_files "developer.apple.wwdc-Release" "Developer" "$APP"
+EOF
+    )
+
+    [ "$(printf '%s\n' "$result" | awk -v path="$app_scripts" '$0 == path { count++ } END { print count + 0 }')" -eq 1 ] || return 1
+    [ "$(printf '%s\n' "$result" | awk -v path="$container" '$0 == path { count++ } END { print count + 0 }')" -eq 1 ]
+}
+
 @test "find_app_files detects vendor-nested Application Support directories" {
     mkdir -p "$HOME/Library/Application Support/Avid/Sibelius"
     mkdir -p "$HOME/Library/Application Support/OtherVendor/Sibelius"
@@ -305,4 +331,82 @@ find_app_files 'invalid_bundle' ''"
     [[ "$result" != *"com.raycast-x.macos"* ]] || return 1
     [[ "$result" != *"Caches/Raycast-X"* ]] || return 1
     [[ "$result" != *"raycast-x.raycast"* ]] || return 1
+}
+
+@test "find_app_files derives a camel-split data dir from the bundle leaf (AyuGram Desktop)" {
+    # tdesktop forks: display name "AyuGram", bundle one.ayugram.AyuGramDesktop,
+    # data at "Application Support/AyuGram Desktop". No display-name variant
+    # reaches it; the bundle leaf does.
+    mkdir -p "$HOME/Library/Application Support/AyuGram Desktop"
+    echo "tdata" > "$HOME/Library/Application Support/AyuGram Desktop/settings"
+
+    result=$(find_app_files "one.ayugram.AyuGramDesktop" "AyuGram")
+
+    [[ "$result" =~ "Library/Application Support/AyuGram Desktop" ]] || return 1
+}
+
+@test "find_app_files also takes the raw bundle leaf as an exact dir name" {
+    mkdir -p "$HOME/Library/Application Support/AyuGramDesktop"
+    echo "tdata" > "$HOME/Library/Application Support/AyuGramDesktop/settings"
+
+    result=$(find_app_files "one.ayugram.AyuGramDesktop" "AyuGram")
+
+    [[ "$result" =~ "Library/Application Support/AyuGramDesktop" ]] || return 1
+}
+
+@test "bundle-leaf variants need eight characters and a camel transition" {
+    # A short or single-word leaf ("app", "desktop", "helper") must derive
+    # nothing: exact-path or not, those names collide with unrelated dirs.
+    mkdir -p "$HOME/Library/Application Support/app"
+    mkdir -p "$HOME/Library/Application Support/desktop"
+    mkdir -p "$HOME/Library/Application Support/Whatsapp"
+
+    result=$(find_app_files "com.example.app" "Example")
+    [[ "$result" != *"Application Support/app"* ]] || return 1
+
+    result=$(find_app_files "com.example.desktop" "Example")
+    [[ "$result" != *"Application Support/desktop"* ]] || return 1
+
+    # 8+ chars but no lower-to-upper transition: no derivation either.
+    result=$(find_app_files "com.example.Whatsapp" "Example")
+    [[ "$result" != *"Application Support/Whatsapp"* ]] || return 1
+}
+
+@test "bundle-leaf variants stay quiet when the leaf equals the display name" {
+    # When leaf and display name agree, the ordinary app-name patterns
+    # already cover the dir; the derivation must not add anything, and an
+    # invalid bundle id must never reach the derivation at all.
+    mkdir -p "$HOME/Library/Application Support/CamelCaseApp"
+
+    result=$(find_app_files "com.example.CamelCaseApp" "CamelCaseApp")
+    [[ "$result" =~ "Application Support/CamelCaseApp" ]] || return 1
+
+    result=$(find_app_files "unknown" "Other")
+    [[ "$result" != *"CamelCaseApp"* ]] || return 1
+}
+
+@test "bundle-leaf variants refuse a leaf that does not extend the display name" {
+    # Safety review collision classes: a wrapper or fork whose bundle leaf
+    # names ANOTHER product must derive nothing, even though the leaf clears
+    # every size floor. The dirs exist here, so a miss is a real exclusion.
+    mkdir -p "$HOME/Library/Application Support/Google Chrome"
+    mkdir -p "$HOME/Library/Application Support/GoogleChrome"
+    mkdir -p "$HOME/Library/Application Support/Telegram Desktop"
+    mkdir -p "$HOME/Library/Application Support/AddressBook"
+    mkdir -p "$HOME/Library/Application Support/AyuGram Desktop"
+
+    result=$(find_app_files "com.wrapper.GoogleChrome" "My Chrome SSB")
+    [[ "$result" != *"Google Chrome"* ]] || return 1
+    [[ "$result" != *"GoogleChrome"* ]] || return 1
+
+    result=$(find_app_files "org.acmefork.TelegramDesktop" "64Gram")
+    [[ "$result" != *"Telegram Desktop"* ]] || return 1
+
+    result=$(find_app_files "com.acme.AddressBook" "Acme Contacts Sync")
+    [[ "$result" != *"Application Support/AddressBook"* ]] || return 1
+
+    # Positive control in the same world: the leaf that extends its own
+    # display name still derives, so the negatives above are not vacuous.
+    result=$(find_app_files "one.ayugram.AyuGramDesktop" "AyuGram")
+    [[ "$result" =~ "Application Support/AyuGram Desktop" ]] || return 1
 }

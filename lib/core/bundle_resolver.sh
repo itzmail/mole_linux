@@ -11,12 +11,25 @@ if [[ -n "${_MOLE_BUNDLE_RESOLVER_LOADED:-}" ]]; then
 fi
 readonly _MOLE_BUNDLE_RESOLVER_LOADED=1
 
+_MOLE_BUNDLE_RESOLVER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -z "${MOLE_TIMEOUTS_LOADED:-}" ]]; then
+    # shellcheck source=lib/core/timeouts.sh
+    source "$_MOLE_BUNDLE_RESOLVER_DIR/timeouts.sh"
+fi
+
 # Standard locations for installed apps on macOS. Overridable from tests.
 _MOLE_BUNDLE_RESOLVER_APP_ROOTS=(
     "/Applications"
     "/Applications/Setapp"
     "/Applications/Utilities"
+    "/System/Applications"
+    "/System/Applications/Utilities"
     "$HOME/Applications"
+    "$HOME/Library/Application Support/Setapp/Applications"
+    "/opt/homebrew/Caskroom"
+    "/usr/local/Caskroom"
+    "/Library/Input Methods"
+    "$HOME/Library/Input Methods"
 )
 
 # Return 0 if some installed app either has the given CFBundleIdentifier, or
@@ -27,6 +40,7 @@ _MOLE_BUNDLE_RESOLVER_APP_ROOTS=(
 # privileged helper associated with an app that still exists on disk?"
 bundle_has_installed_app() {
     local bundle_id="$1"
+    local deadline_seconds="${2:-$((SECONDS + MOLE_TIMEOUT_DISK_VERIFY_SEC))}"
     [[ -z "$bundle_id" ]] && return 1
 
     # Reject malformed IDs to avoid feeding junk into mdfind/find.
@@ -35,14 +49,24 @@ bundle_has_installed_app() {
     # Fast path: Spotlight. Gated with a timeout because mdfind has been known
     # to wedge on misconfigured indexes.
     if command -v mdfind > /dev/null 2>&1; then
-        # `|| true` guards against two failure modes under `set -e` + `pipefail`:
-        # run_with_timeout returning 124 on timeout, and mdfind itself exiting
-        # non-zero. Both must fall through to the filesystem scan below.
+        # Ordinary lookup failures fall through to the filesystem scan below;
+        # signals are propagated so a destructive caller cannot ignore Ctrl-C.
         local hit=""
         if declare -f run_with_timeout > /dev/null 2>&1; then
-            hit=$(run_with_timeout "$MOLE_TIMEOUT_QUICK_DETECT_SEC" mdfind "kMDItemCFBundleIdentifier == '$bundle_id'" 2> /dev/null | head -1) || true
+            local mdfind_timeout="$MOLE_TIMEOUT_QUICK_DETECT_SEC"
+            if [[ -n "$deadline_seconds" ]] && declare -f _mole_timeout_with_deadline > /dev/null 2>&1; then
+                mdfind_timeout=$(_mole_timeout_with_deadline "$mdfind_timeout" "$deadline_seconds") || return 0
+            fi
+            local mdfind_rc=0
+            hit=$(run_with_timeout "$mdfind_timeout" mdfind \
+                "kMDItemCFBundleIdentifier == '$bundle_id'" 2> /dev/null) || mdfind_rc=$?
+            [[ $mdfind_rc -ge 128 ]] && return "$mdfind_rc"
+            hit="${hit%%$'\n'*}"
         else
-            hit=$(mdfind "kMDItemCFBundleIdentifier == '$bundle_id'" 2> /dev/null | head -1) || true
+            local mdfind_rc=0
+            hit=$(mdfind "kMDItemCFBundleIdentifier == '$bundle_id'" 2> /dev/null) || mdfind_rc=$?
+            [[ $mdfind_rc -ge 128 ]] && return "$mdfind_rc"
+            hit="${hit%%$'\n'*}"
         fi
         [[ -n "$hit" ]] && return 0
     fi
@@ -86,25 +110,84 @@ bundle_has_installed_app() {
     local app_root app info app_bundle
     for app_root in "${_MOLE_BUNDLE_RESOLVER_APP_ROOTS[@]}"; do
         [[ -d "$app_root" ]] || continue
+        if [[ $SECONDS -ge $deadline_seconds ]]; then
+            return 0
+        fi
+        local app_scan_file=""
+        if ! app_scan_file=$(create_temp_file 2> /dev/null); then
+            return 0
+        fi
+        local app_scan_timeout="$MOLE_TIMEOUT_MEDIUM_PROBE_SEC"
+        local app_scan_rc=0
+        local app_scan_depth=1
+        case "$app_root" in
+            */Caskroom | */Setapp/Applications)
+                app_scan_depth=3
+                ;;
+        esac
+        app_scan_timeout=$(_mole_timeout_with_deadline "$app_scan_timeout" \
+            "$deadline_seconds") || app_scan_rc=$?
+        if [[ $app_scan_rc -eq 0 ]]; then
+            run_with_timeout "$app_scan_timeout" /usr/bin/find "$app_root" \
+                -maxdepth "$app_scan_depth" -iname "*.app" -print0 \
+                < /dev/null > "$app_scan_file" 2> /dev/null || app_scan_rc=$?
+        fi
+        if [[ $app_scan_rc -ne 0 ]]; then
+            rm -f -- "$app_scan_file" 2> /dev/null || true # SAFE: exact tracked temp file created above
+            [[ $app_scan_rc -ge 128 ]] && return "$app_scan_rc"
+            return 0
+        fi
+        local app_scan_found_or_unknown=false
+        local app_scan_interrupt_rc=0
         while IFS= read -r -d '' app; do
+            [[ $SECONDS -lt $deadline_seconds ]] || {
+                app_scan_found_or_unknown=true
+                break
+            }
             if [[ -e "$app/Contents/Library/LaunchServices/$bundle_id" ]]; then
-                return 0
+                app_scan_found_or_unknown=true
+                break
             fi
             info="$app/Contents/Info.plist"
             [[ -f "$info" ]] || continue
-            app_bundle=$(plutil -extract CFBundleIdentifier raw "$info" 2> /dev/null || echo "")
-            [[ -n "$app_bundle" ]] || continue
+            local plist_timeout=""
+            plist_timeout=$(_mole_timeout_with_deadline "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
+                "$deadline_seconds") || {
+                app_scan_found_or_unknown=true
+                break
+            }
+            local plist_probe_rc=0
+            app_bundle=$(run_with_timeout "$plist_timeout" plutil \
+                -extract CFBundleIdentifier raw "$info" 2> /dev/null) || plist_probe_rc=$?
+            if [[ $plist_probe_rc -ne 0 || -z "$app_bundle" ]]; then
+                if [[ $plist_probe_rc -ge 128 ]]; then
+                    app_scan_interrupt_rc=$plist_probe_rc
+                    break
+                fi
+                app_scan_found_or_unknown=true
+                break
+            fi
             local app_bundle_lower
             app_bundle_lower=$(printf '%s' "$app_bundle" | tr '[:upper:]' '[:lower:]')
-            [[ "$app_bundle_lower" == "$bundle_id_lower" ]] && return 0
-            [[ -n "$parent_id_lower" && "$app_bundle_lower" == "$parent_id_lower" ]] && return 0
+            if [[ "$app_bundle_lower" == "$bundle_id_lower" ||
+                -n "$parent_id_lower" && "$app_bundle_lower" == "$parent_id_lower" ]]; then
+                app_scan_found_or_unknown=true
+                break
+            fi
             if ((${#mapped_app_bundles[@]} > 0)); then
                 local mapped_bundle
                 for mapped_bundle in "${mapped_app_bundles[@]}"; do
-                    [[ "$app_bundle" == "$mapped_bundle" ]] && return 0
+                    if [[ "$app_bundle" == "$mapped_bundle" ]]; then
+                        app_scan_found_or_unknown=true
+                        break
+                    fi
                 done
+                [[ "$app_scan_found_or_unknown" == "true" ]] && break
             fi
-        done < <(find "$app_root" -maxdepth 1 -name "*.app" -print0 2> /dev/null)
+        done < "$app_scan_file"
+        rm -f -- "$app_scan_file" 2> /dev/null || true # SAFE: exact tracked temp file created above
+        [[ $app_scan_interrupt_rc -ne 0 ]] && return "$app_scan_interrupt_rc"
+        [[ "$app_scan_found_or_unknown" == "true" ]] && return 0
     done
 
     return 1

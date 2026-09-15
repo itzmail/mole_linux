@@ -410,14 +410,20 @@ _tty_bg_field() {
 # A directory-sizing `du` on a stalled network mount or a huge tree wedges the
 # whole scan: it has no internal bound and the caller usually pipes it into a
 # command substitution that just waits. Every `du -s*` in lib/ and bin/ must
-# therefore run under run_with_timeout. This test pins that so a new sizing site
-# cannot be added unbounded.
+# therefore run under run_with_timeout or the shared bounded sudo helper. This
+# test pins that so a new sizing site cannot be added unbounded.
 @test "every du sizing call in lib/ and bin/ runs under run_with_timeout" {
     PROJECT_ROOT="$(cd "${BATS_TEST_DIRNAME}/.." && pwd)"
-    unbounded=$(grep -rn -- 'du -s' "$PROJECT_ROOT/lib" "$PROJECT_ROOT/bin" \
-        | grep -v 'run_with_timeout' \
-        | grep -v '^\s*#' \
-        | grep -v ':[0-9]*:\s*#' || true)
+    unbounded=""
+    while IFS=: read -r file line text; do
+        [[ "$text" =~ ^[[:space:]]*# ]] && continue
+        local first_line=$((line > 2 ? line - 2 : 1))
+        local context=""
+        context=$(sed -n "${first_line},${line}p" "$file")
+        if ! grep -Eq 'run_with_timeout|_mole_bounded_sudo' <<< "$context"; then
+            unbounded+="${file}:${line}:${text}"$'\n'
+        fi
+    done < <(grep -rn -- 'du -s' "$PROJECT_ROOT/lib" "$PROJECT_ROOT/bin" || true)
     if [[ -n "$unbounded" ]]; then
         echo "Unbounded du call sites:" >&2
         echo "$unbounded" >&2

@@ -249,17 +249,17 @@ _start_sudo_keepalive() {
         # This prevents immediately triggering Touch ID again
         sleep 2
 
-        local retry_count=0
         while true; do
             if ! sudo -n -v 2> /dev/null; then
-                retry_count=$((retry_count + 1))
-                if [[ $retry_count -ge 3 ]]; then
-                    exit 1
-                fi
+                # A failed refresh is harmless and often transient (authd
+                # busy, machine waking). Giving up after a few misses is what
+                # let the timestamp lapse minutes into a long install and
+                # forced a second authentication prompt; `-n` never prompts,
+                # so retrying costs nothing. Exit only with the parent.
+                kill -0 "$$" 2> /dev/null || exit
                 sleep 5
                 continue
             fi
-            retry_count=0
             sleep 30
             kill -0 "$$" 2> /dev/null || exit
         done

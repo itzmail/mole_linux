@@ -228,7 +228,10 @@ func TestProcessCollectionUpdatesProcessFreshness(t *testing.T) {
 }
 
 func TestCollectorAppliesCachedEnrichmentToFastSnapshot(t *testing.T) {
+	zeroZombies := 0
+	parentsComplete := true
 	previous := MetricsSnapshot{
+		CollectedAt: time.Now(),
 		CPU:         CPUStatus{PCoreCount: 8, ECoreCount: 4},
 		Memory:      MemoryStatus{Cached: 512, Pressure: "warn"},
 		Hardware:    HardwareInfo{Model: "MacBook Pro", CPUModel: "M3", OSVersion: "macOS 15", RefreshRate: "120Hz"},
@@ -243,6 +246,8 @@ func TestCollectorAppliesCachedEnrichmentToFastSnapshot(t *testing.T) {
 		TopProcesses: []ProcessInfo{
 			{PID: 42, Name: "Xcode", CPU: 82},
 		},
+		ZombieCount:           &zeroZombies,
+		ZombieParentsComplete: &parentsComplete,
 		ProcessAlerts: []ProcessAlert{
 			{PID: 42, Name: "Xcode", CPU: 140, Status: "active"},
 		},
@@ -250,6 +255,7 @@ func TestCollectorAppliesCachedEnrichmentToFastSnapshot(t *testing.T) {
 
 	collector := NewCollector(ProcessWatchOptions{})
 	collector.cacheEnrichment(previous)
+	collector.cacheProcessEnrichment(previous)
 	previous.GPU[0].Name = "mutated"
 
 	next := MetricsSnapshot{
@@ -371,8 +377,13 @@ func TestCollectorKeepsFastDisksWhenCacheHasNone(t *testing.T) {
 
 func TestCollectorKeepsLiveProcessDataWhenApplyingEnrichment(t *testing.T) {
 	collector := NewCollector(ProcessWatchOptions{})
-	collector.cacheEnrichment(MetricsSnapshot{
-		TopProcesses: []ProcessInfo{{PID: 1, Name: "old", CPU: 10}},
+	zeroZombies := 0
+	parentsComplete := true
+	collector.cacheProcessEnrichment(MetricsSnapshot{
+		CollectedAt:           time.Now(),
+		TopProcesses:          []ProcessInfo{{PID: 1, Name: "old", CPU: 10}},
+		ZombieCount:           &zeroZombies,
+		ZombieParentsComplete: &parentsComplete,
 		ProcessAlerts: []ProcessAlert{
 			{PID: 1, Name: "old", Status: "active"},
 		},
@@ -397,32 +408,37 @@ func TestCollectorKeepsLiveProcessDataWhenApplyingEnrichment(t *testing.T) {
 
 func TestMetricsSnapshotFieldsHaveCollectionClassifications(t *testing.T) {
 	classified := map[string]string{
-		"CollectedAt":    "fast",
-		"Host":           "fast",
-		"Platform":       "fast",
-		"Uptime":         "fast",
-		"UptimeSeconds":  "fast",
-		"Procs":          "fast",
-		"Hardware":       "enrichment",
-		"HealthScore":    "recomputed",
-		"HealthScoreMsg": "recomputed",
-		"CPU":            "mixed",
-		"GPU":            "enrichment",
-		"Memory":         "mixed",
-		"Disks":          "enrichment",
-		"TrashSize":      "enrichment",
-		"TrashApprox":    "enrichment",
-		"DiskIO":         "fast",
-		"Network":        "fast",
-		"NetworkHistory": "fast",
-		"Proxy":          "enrichment",
-		"Batteries":      "enrichment",
-		"Thermal":        "enrichment",
-		"Sensors":        "enrichment",
-		"Bluetooth":      "enrichment",
-		"TopProcesses":   "live-or-enrichment",
-		"ProcessWatch":   "config",
-		"ProcessAlerts":  "live-or-enrichment",
+		"CollectedAt":           "fast",
+		"Host":                  "fast",
+		"Platform":              "fast",
+		"Uptime":                "fast",
+		"UptimeSeconds":         "fast",
+		"Procs":                 "fast",
+		"Hardware":              "enrichment",
+		"HealthScore":           "recomputed",
+		"HealthScoreMsg":        "recomputed",
+		"CPU":                   "mixed",
+		"GPU":                   "enrichment",
+		"Memory":                "mixed",
+		"Disks":                 "enrichment",
+		"TrashSize":             "enrichment",
+		"TrashApprox":           "enrichment",
+		"DiskIO":                "fast",
+		"Network":               "fast",
+		"NetworkHistory":        "fast",
+		"Proxy":                 "enrichment",
+		"Batteries":             "enrichment",
+		"Thermal":               "enrichment",
+		"Sensors":               "enrichment",
+		"Bluetooth":             "enrichment",
+		"TopProcesses":          "live-or-enrichment",
+		"ProcessCollectedAt":    "live-or-enrichment",
+		"ProcessStale":          "live-or-enrichment",
+		"ZombieCount":           "live-or-enrichment",
+		"ZombieParents":         "live-or-enrichment",
+		"ZombieParentsComplete": "live-or-enrichment",
+		"ProcessWatch":          "config",
+		"ProcessAlerts":         "live-or-enrichment",
 	}
 
 	typ := reflect.TypeFor[MetricsSnapshot]()

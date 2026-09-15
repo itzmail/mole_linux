@@ -67,7 +67,7 @@ run_hook() {
     local skill
     local skill_link
 
-    for skill in mole release-flow release-notes; do
+    for skill in bugs mole release-flow release-notes; do
         skill_link="$PROJECT_ROOT/.agents/skills/$skill"
         [ -L "$skill_link" ]
         [ "$(readlink "$skill_link")" = "../../.claude/skills/$skill" ]

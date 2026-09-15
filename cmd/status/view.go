@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 
@@ -40,6 +41,10 @@ const (
 	metricLabelWidth    = 6
 	processMemoryWidth  = 7
 	processWideMinWidth = 46
+
+	// Stands in for a value that has not been measured yet, so a card keeps its
+	// shape from the first frame instead of growing when the data lands.
+	placeholderValue = "--"
 )
 
 // Mole body frames (facing right).
@@ -284,26 +289,74 @@ func getScoreStyle(score int) lipgloss.Style {
 	}
 }
 
-func renderProcessAlertBar(alerts []ProcessAlert, width int) string {
+func renderProcessAlertBar(alerts []ProcessAlert, processStale *bool, processCollectedAt *time.Time, width int) string {
 	active := activeAlerts(alerts)
 	if len(active) == 0 {
 		return ""
 	}
 
 	focus := active[0]
+	prefix := "ALERT"
+	historical := !processSnapshotFresh(processStale)
+	if historical {
+		prefix = "LAST ALERT"
+		available := max(width-2, 0)
+		if width > 0 && lipgloss.Width(prefix) > available {
+			prefix = "OLD"
+		}
+	}
 
-	text := fmt.Sprintf(
-		"ALERT %s at %.1f%% for %s (threshold %.1f%%)",
+	detail := fmt.Sprintf(
+		"%s at %.1f%% for %s (threshold %.1f%%)",
 		formatProcessLabel(ProcessInfo{PID: focus.PID, Name: focus.Name}),
 		focus.CPU,
 		focus.Window,
 		focus.Threshold,
 	)
+	text := prefix + " " + detail
 	if len(active) > 1 {
 		text += fmt.Sprintf(" · +%d more", len(active)-1)
 	}
+	if historical {
+		freshnessWidth := -1
+		if width > 0 {
+			freshnessWidth = max(width-2-lipgloss.Width(prefix+" · "), 0)
+		}
+		if freshness := processFreshnessLabel(processStale, processCollectedAt, freshnessWidth); freshness != "" {
+			text = prefix + " · " + freshness + " · " + strings.TrimPrefix(text, prefix+" ")
+		}
+	}
 
 	return renderBanner(alertBarStyle, text, width)
+}
+
+func processSnapshotStale(stale *bool) bool {
+	return stale != nil && *stale
+}
+
+func processSnapshotFresh(stale *bool) bool {
+	return stale != nil && !*stale
+}
+
+func processFreshnessLabel(stale *bool, collectedAt *time.Time, maxWidth int) string {
+	if processSnapshotFresh(stale) {
+		return ""
+	}
+	base := "STALE"
+	if stale == nil {
+		base = "UNKNOWN"
+	}
+	if maxWidth >= 0 && lipgloss.Width(base) > maxWidth {
+		return ""
+	}
+	if base == "UNKNOWN" || collectedAt == nil || collectedAt.IsZero() {
+		return base
+	}
+	label := base + " " + collectedAt.Format(time.RFC3339)
+	if maxWidth >= 0 && lipgloss.Width(label) > maxWidth {
+		return base
+	}
+	return label
 }
 
 func renderBanner(style lipgloss.Style, text string, width int) string {
@@ -455,7 +508,9 @@ func renderDiskCard(disks []DiskStatus, io DiskIOStatus, _ uint64, _ bool) cardD
 		} else if len(disks) == 1 {
 			lines = append(lines, formatDiskMetaLine(disks[0]))
 		}
-		lines = append(lines, formatDiskSMARTLine(disks))
+		if smartLine := formatDiskSMARTLine(disks); smartLine != "" {
+			lines = append(lines, smartLine)
+		}
 	}
 	lines = append(lines, formatDiskIOLine(io))
 	return cardData{icon: iconDisk, title: "Disk", lines: lines}
@@ -497,59 +552,45 @@ func formatDiskMetaLine(d DiskStatus) string {
 	if d.Fstype != "" {
 		parts = append(parts, strings.ToUpper(d.Fstype))
 	}
+	if d.Purgeable > 0 {
+		parts = append(parts, humanBytesShort(d.Purgeable)+" purgeable")
+	}
 	return fmt.Sprintf("Total  %s", strings.Join(parts, " · "))
 }
 
+// formatDiskSMARTLine returns "" unless a disk is actually failing.
+//
+// SMART has one actionable state. "Verified" asks nothing of the user, and
+// external enclosures usually do not pass SMART through at all, so a Mac with
+// two USB disks rendered "SMART  INTR OK · EXTR1 N/A · EXTR2 N/A": a row whose
+// length grew with disk count, carrying no information, and the only row in the
+// card wide enough to break the alignment of the ones above it. A failing disk
+// still gets a full-width red line, and the health score already counts SMART
+// failures either way.
 func formatDiskSMARTLine(disks []DiskStatus) string {
-	if len(disks) == 1 {
-		status, failing := formatSMARTStatus(disks[0].SmartStatus, false)
-		if failing {
-			status += " · " + dangerStyle.Render("Back up now")
-		}
-		return fmt.Sprintf("%-*s %s", metricLabelWidth, "SMART", status)
-	}
-
+	failingLabels := make([]string, 0, len(disks))
 	internal, external := splitDisks(disks)
-	parts := make([]string, 0, len(disks)+1)
-	hasFailing := false
-	addGroup := func(prefix string, list []DiskStatus) {
+	collectFailing := func(prefix string, list []DiskStatus) {
 		for index, disk := range list {
-			status, failing := formatSMARTStatus(disk.SmartStatus, true)
-			parts = append(parts, diskLabel(prefix, index, len(list))+" "+status)
-			hasFailing = hasFailing || failing
+			if disk.SmartStatus != smartStatusFailing {
+				continue
+			}
+			if len(disks) == 1 {
+				failingLabels = append(failingLabels, dangerStyle.Render("Failing"))
+				continue
+			}
+			failingLabels = append(failingLabels,
+				diskLabel(prefix, index, len(list))+" "+dangerStyle.Render("FAIL"))
 		}
 	}
-	addGroup("INTR", internal)
-	addGroup("EXTR", external)
-	if hasFailing {
-		parts = append([]string{dangerStyle.Render("Back up now")}, parts...)
+	collectFailing("INTR", internal)
+	collectFailing("EXTR", external)
+	if len(failingLabels) == 0 {
+		return ""
 	}
-	return fmt.Sprintf("%-*s %s", metricLabelWidth, "SMART", strings.Join(parts, " · "))
-}
 
-func formatSMARTStatus(status string, compact bool) (string, bool) {
-	switch status {
-	case smartStatusVerified:
-		if compact {
-			return okStyle.Render("OK"), false
-		}
-		return okStyle.Render("Verified"), false
-	case smartStatusFailing:
-		if compact {
-			return dangerStyle.Render("FAIL"), true
-		}
-		return dangerStyle.Render("Failing"), true
-	case smartStatusUnsupported:
-		if compact {
-			return subtleStyle.Render("N/A"), false
-		}
-		return subtleStyle.Render("Unsupported"), false
-	default:
-		if compact {
-			return subtleStyle.Render("?"), false
-		}
-		return subtleStyle.Render("Unknown"), false
-	}
+	failingLabels = append(failingLabels, dangerStyle.Render("Back up now"))
+	return fmt.Sprintf("%-*s %s", metricLabelWidth, "SMART", strings.Join(failingLabels, " · "))
 }
 
 func formatDiskIOLine(io DiskIOStatus) string {
@@ -575,8 +616,16 @@ func ioBar(rate float64) string {
 }
 
 func renderProcessCard(procs []ProcessInfo, cardWidth int) cardData {
+	return renderProcessCardWithZombies(procs, 0, nil, cardWidth)
+}
+
+func renderProcessCardWithZombies(procs []ProcessInfo, zombieCount int, zombieParents []ZombieParent, cardWidth int) cardData {
 	var lines []string
 	maxProcs := 3
+	if zombieCount > 0 {
+		lines = append(lines, renderZombieProcessLine(zombieCount, zombieParents, cardWidth))
+		maxProcs = 2
+	}
 	for i, p := range procs {
 		if i >= maxProcs {
 			break
@@ -603,6 +652,18 @@ func renderProcessCard(procs []ProcessInfo, cardWidth int) cardData {
 	return cardData{icon: iconProcs, title: "Processes", lines: lines}
 }
 
+func renderZombieProcessLine(count int, parents []ZombieParent, cardWidth int) string {
+	if cardWidth <= 0 {
+		cardWidth = colWidth
+	}
+	line := fmt.Sprintf("Zombies %d", count)
+	if len(parents) > 0 {
+		owner := formatProcessLabel(ProcessInfo{PID: parents[0].PID, Name: parents[0].Name})
+		line += fmt.Sprintf(" · %s ×%d", owner, parents[0].Count)
+	}
+	return warnStyle.Render(shorten(line, cardWidth))
+}
+
 func processBar(percent float64, cardWidth int) string {
 	if cardWidth >= processWideMinWidth {
 		return progressBar(percent)
@@ -620,13 +681,50 @@ func processMemoryText(p ProcessInfo) string {
 	return ""
 }
 
-func buildCards(m MetricsSnapshot, width int, cpuCores int) []cardData {
+// buildCards renders every card. batteryProbed says whether a full collection
+// has completed at least once; until it has, an empty battery list means "not
+// measured yet", not "this Mac has no battery".
+func buildCards(m MetricsSnapshot, width int, cpuCores int, batteryProbed bool) []cardData {
+	zombieCount := 0
+	if m.ZombieCount != nil {
+		zombieCount = *m.ZombieCount
+	}
+	processCard := renderProcessCardWithZombies(m.TopProcesses, zombieCount, m.ZombieParents, width)
+	hasRenderedProcessData := len(m.TopProcesses) > 0 || zombieCount > 0
+	hasActiveProcessAlert := len(activeAlerts(m.ProcessAlerts)) > 0
+	switch {
+	case processSnapshotFresh(m.ProcessStale):
+		if !hasRenderedProcessData {
+			message := "No process activity"
+			if hasActiveProcessAlert {
+				message = "No process rows · active alert above"
+			}
+			processCard.lines = []string{subtleStyle.Render(message)}
+		}
+	case processSnapshotStale(m.ProcessStale):
+		freshnessWidth := width
+		if freshnessWidth <= 0 {
+			freshnessWidth = colWidth
+		}
+		freshness := processFreshnessLabel(m.ProcessStale, m.ProcessCollectedAt, freshnessWidth)
+		if hasRenderedProcessData {
+			processCard.lines = append([]string{warnStyle.Render(freshness)}, processCard.lines...)
+		} else {
+			processCard.lines = []string{warnStyle.Render(freshness + " · no retained process activity")}
+		}
+	default:
+		if hasRenderedProcessData {
+			processCard.lines = append([]string{warnStyle.Render("UNKNOWN")}, processCard.lines...)
+		} else if hasActiveProcessAlert || m.ProcessCollectedAt != nil || m.ZombieCount != nil {
+			processCard.lines = []string{warnStyle.Render("UNKNOWN · process sample unavailable")}
+		}
+	}
 	cards := []cardData{
 		renderCPUCard(m.CPU, m.Thermal, cpuCores),
 		renderMemoryCard(m.Memory, width),
 		renderDiskCard(m.Disks, m.DiskIO, m.TrashSize, m.TrashApprox),
-		renderBatteryCard(m.Batteries, m.Thermal),
-		renderProcessCard(m.TopProcesses, width),
+		renderBatteryCard(m.Batteries, m.Thermal, batteryProbed),
+		processCard,
 		renderNetworkCard(m.Network, m.NetworkHistory, m.Proxy, width),
 	}
 	// Sensors card disabled - redundant with CPU temp
@@ -671,7 +769,11 @@ func renderNetworkCard(netStats []NetworkStatus, history NetworkHistory, proxy P
 		// Show proxy and IP on one line.
 		var infoParts []string
 		if proxy.Enabled {
-			infoParts = append(infoParts, "Proxy "+proxy.Type)
+			if proxy.IsTunnel {
+				infoParts = append(infoParts, "Tunnel")
+			} else {
+				infoParts = append(infoParts, "Proxy "+proxy.Type)
+			}
 		}
 		if primaryIP != "" {
 			infoParts = append(infoParts, primaryIP)
@@ -730,9 +832,20 @@ func sparkline(history []float64, current float64, width int) string {
 	return okStyle.Render(result)
 }
 
-func renderBatteryCard(batts []BatteryStatus, thermal ThermalStatus) cardData {
+func renderBatteryCard(batts []BatteryStatus, thermal ThermalStatus, probed bool) cardData {
 	var lines []string
-	if len(batts) == 0 {
+	if len(batts) == 0 && !probed {
+		// The first collection is the fast one, and it does not read batteries.
+		// Saying "No battery" here told every laptop it had none for the couple
+		// of seconds before the first full collection landed. Hold the card's
+		// shape with placeholders instead, so the real values replace them
+		// without the layout jumping.
+		lines = append(lines,
+			fmt.Sprintf("Level  %s  %6s", batteryProgressBar(0), placeholderValue),
+			fmt.Sprintf("Health %s  %6s", batteryProgressBar(0), placeholderValue),
+			subtleStyle.Render(placeholderValue),
+		)
+	} else if len(batts) == 0 {
 		lines = append(lines, subtleStyle.Render("No battery"))
 	} else {
 		b := batts[0]

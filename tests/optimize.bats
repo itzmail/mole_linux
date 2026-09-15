@@ -191,6 +191,37 @@ EOF
 	[[ "$output" == *"count=0"* ]]
 }
 
+@test "opt_fix_broken_configs debug lists only successfully repaired paths" {
+	local test_home="$HOME/fixprefs-debug-paths"
+	local repaired="$test_home/Library/Preferences/com.example.repaired.plist"
+	local failed="$test_home/Library/Preferences/com.example.failed.plist"
+	run env HOME="$test_home" PROJECT_ROOT="$PROJECT_ROOT" MO_DEBUG=1 /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/optimize/maintenance.sh"
+source "$PROJECT_ROOT/lib/optimize/tasks.sh"
+
+prefs="$HOME/Library/Preferences"
+mkdir -p "$prefs"
+touch \
+    "$prefs/com.example.repaired.plist" \
+    "$prefs/com.example.failed.plist"
+
+plutil() { return 1; }
+safe_remove() {
+    [[ "$1" != *"failed.plist" ]]
+}
+
+execute_optimization fix_broken_configs
+EOF
+
+	[ "$status" -eq 0 ] || { echo "$output"; return 1; }
+	[[ "$output" == *"Repaired 1 corrupted preference files"* ]] || return 1
+	[[ "$output" == *"Removed corrupted preference:"* ]] || return 1
+	[[ "$output" == *"$repaired"* ]] || return 1
+	[[ "$output" != *"$failed"* ]] || return 1
+}
+
 @test "fix_broken_preferences does not count protected Adobe plists" {
 	local test_home="$HOME/fixprefs-protected"
 	run env HOME="$test_home" PROJECT_ROOT="$PROJECT_ROOT" MO_DEBUG=1 /bin/bash --noprofile --norc <<'EOF'
@@ -299,6 +330,72 @@ EOF
 	[[ "$output" == *"cleaned=42"* ]] || return 1
 	[[ "$output" == *"remove:$HOME/Library/Caches/com.apple.QuickLook.thumbnailcache:42"* ]] || return 1
 	[ "$(grep -c "size:$HOME/Library/Caches/com.apple.QuickLook.thumbnailcache" <<< "$output")" -eq 1 ]
+}
+
+@test "optimize scans never delete candidates from partial find output" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/optimize/tasks.sh"
+
+saved="$HOME/Library/Saved Application State/Partial.savedState"
+shared="$HOME/Library/Application Support/com.apple.sharedfilelist/Partial.sfl3"
+mkdir -p "$saved" "${shared%/*}"
+touch "$shared"
+safe_remove() {
+    printf 'UNEXPECTED_REMOVE:%s\n' "$1"
+    return 0
+}
+run_with_timeout() {
+    shift
+    case "$*" in
+        *"Saved Application State"*) printf '%s\0' "$saved" ;;
+        *) printf '%s\0' "$shared" ;;
+    esac
+    return 73
+}
+
+optimize_task_start
+opt_saved_state_cleanup
+optimize_task_finish saved_state_cleanup
+optimize_task_start
+opt_shared_file_list_repair
+optimize_task_finish shared_file_list_repair
+EOF
+
+	[ "$status" -eq 0 ] || {
+		echo "$output"
+		return 1
+	}
+	[[ "$output" != *"UNEXPECTED_REMOVE"* ]]
+}
+
+@test "optimize saved-state cleanup propagates deletion interruption" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/optimize/tasks.sh"
+
+saved="$HOME/Library/Saved Application State/Interrupted.savedState"
+mkdir -p "$saved"
+run_with_timeout() {
+    shift
+    printf '%s\0' "$saved"
+}
+should_protect_path() { return 1; }
+safe_remove() { return 130; }
+optimize_task_start
+rc=0
+opt_saved_state_cleanup || rc=$?
+printf 'RC=%s\n' "$rc"
+[[ $rc -eq 130 ]]
+EOF
+
+	[ "$status" -eq 0 ] || {
+		echo "$output"
+		return 1
+	}
+	[[ "$output" == *"RC=130"* ]]
 }
 
 @test "opt_quarantine_cleanup reports clean when no database" {
@@ -458,7 +555,7 @@ execute_optimization sqlite_vacuum
 EOF
 
 	[[ "$status" -eq 0 ]] || { echo "$output"; return 1; }
-	[[ "$output" == *"Skipped 1 oversized databases"* ]] || return 1
+	[[ "$output" == *"Skipped 1 databases over the 100 MB safety limit"* ]] || return 1
 }
 
 @test "optimize does not auto-fix Gatekeeper anymore" {
@@ -792,6 +889,35 @@ EOF
 	[ "$status" -eq 0 ]
 	[[ "$output" == *"already clean"* ]] || return 1
 	[[ "$output" != *"DEFAULTS: write"* ]]
+}
+
+@test "opt_prune_spotlight_orphan_rules propagates an interrupted app resolver" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/optimize/tasks.sh"
+PLIST="$HOME/Library/Preferences/com.apple.spotlight.plist"
+mkdir -p "$(dirname "$PLIST")"
+rm -f "$PLIST"
+/usr/libexec/PlistBuddy \
+    -c "Add :EnabledPreferenceRules array" \
+    -c "Add :EnabledPreferenceRules:0 string com.example.Interrupted" \
+    "$PLIST" >/dev/null 2>&1
+defaults() {
+    case "$1" in
+        read) return 0 ;;
+        write | delete) echo "UNEXPECTED_WRITE: $*" ;;
+    esac
+}
+bundle_has_installed_app() { return 130; }
+rc=0
+opt_prune_spotlight_orphan_rules || rc=$?
+printf 'RC=%s\n' "$rc"
+EOF
+
+	[ "$status" -eq 0 ] || return 1
+	[[ "$output" == *"RC=130"* ]] || return 1
+	[[ "$output" != *"UNEXPECTED_WRITE"* ]]
 }
 
 @test "opt_spotlight_index_optimize reports optimal when probes are fast" {
@@ -1175,6 +1301,11 @@ EOF
 	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" \
 		MOLE_OPTIMIZE_PS_SAMPLE_1=$'120 /Applications/AliEntSafe.app/Contents/Services/CloudShell.app/Contents/MacOS/CloudShell --type=event-capture\n35 /usr/libexec/syspolicyd\n20 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer' \
 		MOLE_OPTIMIZE_PS_SAMPLE_2=$'140 /Applications/AliEntSafe.app/Contents/Services/CloudShell.app/Contents/MacOS/CloudShell --type=event-processor\n30 /usr/libexec/syspolicyd\n18 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer' \
+		MOLE_OPTIMIZE_SWAPUSAGE='total = 8192.00M  used = 100.00M  free = 8092.00M' \
+		MOLE_OPTIMIZE_MEM_FREE_SAMPLE=70 \
+		MOLE_OPTIMIZE_RSS_SAMPLE=$'1000 Finder' \
+		MOLE_OPTIMIZE_VM_SAMPLE=$'1000 Finder' \
+		MOLE_OPTIMIZE_PROCTIME_SAMPLE=$'1 00:01 05:00 quietd' \
 		/bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
@@ -1192,6 +1323,11 @@ EOF
 	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" \
 		MOLE_OPTIMIZE_PS_SAMPLE_1=$'55 /usr/libexec/syspolicyd\n12 /usr/libexec/diskimagesiod' \
 		MOLE_OPTIMIZE_PS_SAMPLE_2=$'60 /usr/libexec/syspolicyd\n10 /Library/Developer/PrivateFrameworks/CoreSimulator.framework/Resources/bin/simdiskimaged' \
+		MOLE_OPTIMIZE_SWAPUSAGE='total = 8192.00M  used = 100.00M  free = 8092.00M' \
+		MOLE_OPTIMIZE_MEM_FREE_SAMPLE=70 \
+		MOLE_OPTIMIZE_RSS_SAMPLE=$'1000 Finder' \
+		MOLE_OPTIMIZE_VM_SAMPLE=$'1000 Finder' \
+		MOLE_OPTIMIZE_PROCTIME_SAMPLE=$'1 00:01 05:00 quietd' \
 		MOLE_OPTIMIZE_SPCTL_STATUS="assessments enabled" \
 		MOLE_OPTIMIZE_HDIUTIL_INFO=$'================================================\nimage-path      : /System/Library/AssetsV2/com_apple_MobileAsset_iOSSimulatorRuntime/example.asset/AssetData/Restore/000.dmg\n/dev/disk8s1\t/Library/Developer/CoreSimulator/Volumes/iOS_23E244\n' \
 		/bin/bash --noprofile --norc <<'EOF'
@@ -1213,6 +1349,11 @@ EOF
 	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" \
 		MOLE_OPTIMIZE_PS_SAMPLE_1=$'180 /Applications/AliEntSafe.app/Contents/Services/CloudShell.app/Contents/MacOS/CloudShell --type=event-capture' \
 		MOLE_OPTIMIZE_PS_SAMPLE_2=$'5 /Applications/AliEntSafe.app/Contents/Services/CloudShell.app/Contents/MacOS/CloudShell --type=event-capture' \
+		MOLE_OPTIMIZE_SWAPUSAGE='total = 8192.00M  used = 100.00M  free = 8092.00M' \
+		MOLE_OPTIMIZE_MEM_FREE_SAMPLE=70 \
+		MOLE_OPTIMIZE_RSS_SAMPLE=$'1000 Finder' \
+		MOLE_OPTIMIZE_VM_SAMPLE=$'1000 Finder' \
+		MOLE_OPTIMIZE_PROCTIME_SAMPLE=$'1 00:01 05:00 quietd' \
 		/bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
@@ -1229,6 +1370,11 @@ EOF
 	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_DRY_RUN=1 \
 		MOLE_OPTIMIZE_PS_SAMPLE_1=$'55 /usr/libexec/syspolicyd' \
 		MOLE_OPTIMIZE_PS_SAMPLE_2=$'60 /usr/libexec/syspolicyd' \
+		MOLE_OPTIMIZE_SWAPUSAGE='total = 8192.00M  used = 100.00M  free = 8092.00M' \
+		MOLE_OPTIMIZE_MEM_FREE_SAMPLE=70 \
+		MOLE_OPTIMIZE_RSS_SAMPLE=$'1000 Finder' \
+		MOLE_OPTIMIZE_VM_SAMPLE=$'1000 Finder' \
+		MOLE_OPTIMIZE_PROCTIME_SAMPLE=$'1 00:01 05:00 quietd' \
 		MOLE_OPTIMIZE_SPCTL_STATUS="assessments enabled" \
 		MOLE_OPTIMIZE_HDIUTIL_INFO=$'================================================\nimage-path      : /Users/test/Downloads/TestInstaller.dmg\n/dev/disk14s1\t/Volumes/Test Installer\n' \
 		/bin/bash --noprofile --norc <<'EOF'
@@ -1251,6 +1397,11 @@ EOF
 	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_DRY_RUN=1 \
 		MOLE_OPTIMIZE_PS_SAMPLE_1=$'1 /usr/sbin/distnoted' \
 		MOLE_OPTIMIZE_PS_SAMPLE_2=$'1 /usr/sbin/distnoted' \
+		MOLE_OPTIMIZE_SWAPUSAGE='total = 8192.00M  used = 100.00M  free = 8092.00M' \
+		MOLE_OPTIMIZE_MEM_FREE_SAMPLE=70 \
+		MOLE_OPTIMIZE_RSS_SAMPLE=$'1000 Finder' \
+		MOLE_OPTIMIZE_VM_SAMPLE=$'1000 Finder' \
+		MOLE_OPTIMIZE_PROCTIME_SAMPLE=$'1 00:01 05:00 quietd' \
 		MOLE_OPTIMIZE_HDIUTIL_INFO=$'================================================\nimage-path      : /Users/test/Downloads/TestInstaller.dmg\n/dev/disk14s1\t/Volumes/Test Installer\n' \
 		/bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
@@ -1271,6 +1422,11 @@ EOF
 	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_DRY_RUN=1 \
 		MOLE_OPTIMIZE_PS_SAMPLE_1=$'55 /usr/libexec/syspolicyd' \
 		MOLE_OPTIMIZE_PS_SAMPLE_2=$'60 /usr/libexec/syspolicyd' \
+		MOLE_OPTIMIZE_SWAPUSAGE='total = 8192.00M  used = 100.00M  free = 8092.00M' \
+		MOLE_OPTIMIZE_MEM_FREE_SAMPLE=70 \
+		MOLE_OPTIMIZE_RSS_SAMPLE=$'1000 Finder' \
+		MOLE_OPTIMIZE_VM_SAMPLE=$'1000 Finder' \
+		MOLE_OPTIMIZE_PROCTIME_SAMPLE=$'1 00:01 05:00 quietd' \
 		MOLE_OPTIMIZE_SPCTL_STATUS="assessments enabled" \
 		MOLE_OPTIMIZE_HDIUTIL_INFO=$'================================================\nimage-path      : /Users/test/Downloads/KeepMe.dmg\n/dev/disk15s1\t/Volumes/KeepMe\n' \
 		/bin/bash --noprofile --norc <<'EOF'
@@ -1300,6 +1456,11 @@ EOF
 	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_DRY_RUN=1 \
 		MOLE_OPTIMIZE_PS_SAMPLE_1=$'55 /usr/libexec/syspolicyd' \
 		MOLE_OPTIMIZE_PS_SAMPLE_2=$'60 /usr/libexec/syspolicyd' \
+		MOLE_OPTIMIZE_SWAPUSAGE='total = 8192.00M  used = 100.00M  free = 8092.00M' \
+		MOLE_OPTIMIZE_MEM_FREE_SAMPLE=70 \
+		MOLE_OPTIMIZE_RSS_SAMPLE=$'1000 Finder' \
+		MOLE_OPTIMIZE_VM_SAMPLE=$'1000 Finder' \
+		MOLE_OPTIMIZE_PROCTIME_SAMPLE=$'1 00:01 05:00 quietd' \
 		MOLE_OPTIMIZE_SPCTL_STATUS="assessments enabled" \
 		MOLE_OPTIMIZE_HDIUTIL_INFO=$'================================================\nimage-path      : /Volumes/EXT3/Mail/TB.dmg\n/dev/disk6s2               Apple_HFS                       /Volumes/mail\n' \
 		/bin/bash --noprofile --norc <<'EOF'
@@ -1320,6 +1481,11 @@ EOF
 	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" \
 		MOLE_OPTIMIZE_PS_SAMPLE_1=$'4 /usr/sbin/distnoted\n3 /usr/libexec/coreaudiod' \
 		MOLE_OPTIMIZE_PS_SAMPLE_2=$'5 /usr/sbin/distnoted\n2 /usr/libexec/coreaudiod' \
+		MOLE_OPTIMIZE_SWAPUSAGE='total = 8192.00M  used = 100.00M  free = 8092.00M' \
+		MOLE_OPTIMIZE_MEM_FREE_SAMPLE=70 \
+		MOLE_OPTIMIZE_RSS_SAMPLE=$'1000 Finder' \
+		MOLE_OPTIMIZE_VM_SAMPLE=$'1000 Finder' \
+		MOLE_OPTIMIZE_PROCTIME_SAMPLE=$'1 00:01 05:00 quietd' \
 		/bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
@@ -1351,6 +1517,47 @@ EOF
 	[[ "$single" == *"Detached /Volumes/A"* ]] || return 1
 	[[ "$single" != *"mounted images"* ]] || return 1
 	[[ "$double" == *"Detached 2 mounted images"* ]] || return 1
+}
+
+@test "opt_diag_offer_detach_candidates renders image paths without terminal escapes" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" NO_COLOR=1 /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/optimize/diagnostics.sh"
+image_path=$'/Users/test/Bad\\033[2J-\033[2J.dmg'
+mount_path=$'/Volumes/Bad\\033[H-\033[H'
+MOLE_DRY_RUN=1 opt_diag_offer_detach_candidates "${image_path}"$'\t'"${mount_path}"
+EOF
+
+	[ "$status" -eq 0 ] || { echo "$output"; return 1; }
+	[[ "$output" == *'Bad\033[2J-'* ]] || return 1
+	[[ "$output" == *'/Volumes/Bad\033[H-'* ]] || return 1
+	[[ "$output" != *$'\033[2J'* ]] || return 1
+	[[ "$output" != *$'\033[H'* ]]
+}
+
+@test "opt_diag_detach_candidates renders result paths without terminal escapes" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" NO_COLOR=1 /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/optimize/diagnostics.sh"
+run_with_timeout() {
+	shift
+	shift
+	shift
+	[[ "$1" == *Success* ]]
+}
+success_mount=$'/Volumes/Success\\033[2J-\033[2J'
+failed_mount=$'/Volumes/Failed\\033[H-\033[H'
+candidates="/tmp/one.dmg"$'\t'"$success_mount"$'\n'"/tmp/two.dmg"$'\t'"$failed_mount"
+opt_diag_detach_candidates "$candidates"
+EOF
+
+	[ "$status" -eq 0 ] || { echo "$output"; return 1; }
+	[[ "$output" == *'Detached /Volumes/Success\033[2J-'* ]] || return 1
+	[[ "$output" == *'Failed to detach /Volumes/Failed\033[H-'* ]] || return 1
+	[[ "$output" != *$'\033[2J'* ]] || return 1
+	[[ "$output" != *$'\033[H'* ]]
 }
 
 @test "opt_periodic_maintenance skips when periodic command missing" {
@@ -1424,7 +1631,7 @@ EOF
 set -euo pipefail
 body=$(sed -n '/^handle_interrupt() {/,/^}/p' "$PROJECT_ROOT/bin/optimize.sh")
 trap_line=$(printf '%s\n' "$body" | awk '/trap - EXIT/ { print NR; exit }')
-cleanup_line=$(printf '%s\n' "$body" | awk '/^[[:space:]]*cleanup_all$/ { print NR; exit }')
+cleanup_line=$(printf '%s\n' "$body" | awk '/^[[:space:]]*cleanup_all 130$/ { print NR; exit }')
 [[ -n "$trap_line" && -n "$cleanup_line" && "$trap_line" -lt "$cleanup_line" ]]
 EOF
 
@@ -1470,7 +1677,25 @@ EOF
 	[[ "$output" == *"Legacy Overrides|legacy_overrides_audit|optimize_task"* ]] || return 1
 }
 
+# Login-item matching fixtures must not scan apps installed on the test host.
+setup_login_item_fixture() {
+	HOME="$HOME/login-item-$BATS_TEST_NUMBER"
+	export HOME
+	mkdir -p "$HOME/bin"
+	printf '#!/bin/bash\nexit 1\n' > "$HOME/bin/mdfind"
+	cat > "$HOME/bin/find" <<'EOF'
+#!/bin/bash
+case "$1" in
+    "$HOME"/*) exec /usr/bin/find "$@" ;;
+    *) exit 0 ;;
+esac
+EOF
+	chmod +x "$HOME/bin/mdfind" "$HOME/bin/find"
+	export PATH="$HOME/bin:$PATH"
+}
+
 @test "_login_item_app_exists finds nested helper app bundles" {
+	setup_login_item_fixture
 	local helper="$HOME/Applications/Roon.app/Contents/RoonServer.app"
 	mkdir -p "$helper"
 
@@ -1478,9 +1703,24 @@ EOF
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/optimize/tasks.sh"
-mdfind() { return 1; }
-sfltool() { return 1; }
-export -f mdfind sfltool
+if _login_item_app_exists "RoonServer"; then
+    echo "found"
+fi
+EOF
+
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"found"* ]]
+}
+
+@test "_login_item_app_exists finds nested mixed-case app bundles" {
+	setup_login_item_fixture
+	local helper="$HOME/Applications/Roon.APP/Contents/RoonServer.APP"
+	mkdir -p "$helper"
+
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/optimize/tasks.sh"
 if _login_item_app_exists "RoonServer"; then
     echo "found"
 fi
@@ -1491,6 +1731,7 @@ EOF
 }
 
 @test "_login_item_app_exists finds nested helper apps by bundle display name" {
+	setup_login_item_fixture
 	local helper="$HOME/Applications/Adobe Acrobat DC.app/Contents/Helpers/AdobeResourceSynchronizer.app"
 	mkdir -p "$helper/Contents"
 	cat > "$helper/Contents/Info.plist" <<'PLIST'
@@ -1510,9 +1751,6 @@ PLIST
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/optimize/tasks.sh"
-mdfind() { return 1; }
-sfltool() { return 1; }
-export -f mdfind sfltool
 if _login_item_app_exists "Acrobat Collaboration Synchronizer"; then
     echo "found"
 fi
@@ -1523,6 +1761,7 @@ EOF
 }
 
 @test "_login_item_app_exists trusts an existing System Events login item path" {
+	setup_login_item_fixture
 	local helper="$HOME/Applications/Adobe Acrobat DC.app/Contents/Helpers/AdobeResourceSynchronizer.app"
 	mkdir -p "$helper"
 
@@ -1530,9 +1769,6 @@ EOF
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/optimize/tasks.sh"
-mdfind() { return 1; }
-sfltool() { return 1; }
-export -f mdfind sfltool
 if _login_item_app_exists "Acrobat Collaboration Synchronizer" "$HELPER_PATH" 2>&1; then
     echo "found"
 fi

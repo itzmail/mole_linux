@@ -78,6 +78,17 @@ EOF
     [ "$status" -eq 0 ]
 }
 
+@test "bundle_has_installed_app finds a mixed-case app bundle suffix" {
+    make_app "$FAKE_APPS/KeePassXC.APP" "org.keepassxc.KeePassXC"
+
+    run env FAKE_APPS="$FAKE_APPS" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<EOF
+$(prelude)
+bundle_has_installed_app "org.keepassxc.KeePassXC"
+EOF
+
+    [ "$status" -eq 0 ]
+}
+
 @test "bundle_has_installed_app falls back after run_with_timeout returns 124 (set -e + pipefail regression)" {
     # Regression for the flake that blocked PR #770: under `set -euo pipefail`,
     # `hit=$(run_with_timeout ... | head -1)` inside a command substitution
@@ -244,4 +255,149 @@ EOF
 
     # Exit 1 = not found (expected). Exit 2+ or crash = unbound variable bug.
     [ "$status" -eq 1 ]
+}
+
+@test "bundle_has_installed_app bounds its direct fallback with the caller deadline" {
+    make_app "$FAKE_APPS/Deadline.app" "com.example.deadline"
+
+    run env FAKE_APPS="$FAKE_APPS" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+mdfind() { return 0; }
+export -f mdfind
+_MOLE_BUNDLE_RESOLVER_APP_ROOTS=("$FAKE_APPS")
+bundle_has_installed_app "com.example.deadline" "$((SECONDS + 5))"
+EOF
+
+    [ "$status" -eq 0 ]
+}
+
+@test "bundle_has_installed_app fails closed when its bounded app scan times out" {
+    run env FAKE_APPS="$FAKE_APPS" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+mdfind() { return 0; }
+export -f mdfind
+_MOLE_BUNDLE_RESOLVER_APP_ROOTS=("$FAKE_APPS")
+run_with_timeout() {
+    local _duration="$1"
+    shift
+    if [[ "${1:-}" == "/usr/bin/find" ]]; then
+        return 124
+    fi
+    "$@"
+}
+bundle_has_installed_app "com.example.unknown" "$((SECONDS + 5))"
+EOF
+
+    # Returning success means "installed or unknown" to orphan detection.
+    [ "$status" -eq 0 ]
+}
+
+@test "bundle_has_installed_app fails closed when a bounded plist probe times out" {
+    make_app "$FAKE_APPS/Unknown.app" "com.example.some-app"
+
+    run env FAKE_APPS="$FAKE_APPS" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+mdfind() { return 0; }
+export -f mdfind
+_MOLE_BUNDLE_RESOLVER_APP_ROOTS=("$FAKE_APPS")
+run_with_timeout() {
+    local _duration="$1"
+    shift
+    if [[ "${1:-}" == "plutil" ]]; then
+        return 124
+    fi
+    "$@"
+}
+bundle_has_installed_app "com.example.unknown" "$((SECONDS + 5))"
+EOF
+
+    [ "$status" -eq 0 ]
+}
+
+@test "bundle_has_installed_app propagates an interrupted Spotlight probe" {
+    run env FAKE_APPS="$FAKE_APPS" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+mdfind() { return 0; }
+export -f mdfind
+run_with_timeout() { return 130; }
+_MOLE_BUNDLE_RESOLVER_APP_ROOTS=("$FAKE_APPS")
+rc=0
+bundle_has_installed_app "com.example.interrupted" "$((SECONDS + 5))" || rc=$?
+printf 'RC=%s\n' "$rc"
+EOF
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"RC=130"* ]]
+}
+
+@test "bundle_has_installed_app propagates an interrupted direct app scan" {
+    run env FAKE_APPS="$FAKE_APPS" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+mdfind() { return 0; }
+export -f mdfind
+run_with_timeout() {
+    local _duration="$1"
+    shift
+    case "${1:-}" in
+        mdfind) return 124 ;;
+        /usr/bin/find) return 130 ;;
+        *) "$@" ;;
+    esac
+}
+_MOLE_BUNDLE_RESOLVER_APP_ROOTS=("$FAKE_APPS")
+rc=0
+bundle_has_installed_app "com.example.interrupted" "$((SECONDS + 5))" || rc=$?
+printf 'RC=%s\n' "$rc"
+EOF
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"RC=130"* ]]
+}
+
+@test "bundle_has_installed_app propagates an interrupted direct plist probe" {
+    make_app "$FAKE_APPS/Interrupted.app" "com.example.some-app"
+
+    run env FAKE_APPS="$FAKE_APPS" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+mdfind() { return 0; }
+export -f mdfind
+run_with_timeout() {
+    local _duration="$1"
+    shift
+    case "${1:-}" in
+        mdfind) return 124 ;;
+        plutil) return 130 ;;
+        *) "$@" ;;
+    esac
+}
+_MOLE_BUNDLE_RESOLVER_APP_ROOTS=("$FAKE_APPS")
+rc=0
+bundle_has_installed_app "com.example.interrupted" "$((SECONDS + 5))" || rc=$?
+printf 'RC=%s\n' "$rc"
+EOF
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"RC=130"* ]]
+}
+
+@test "bundle_has_installed_app covers nested Homebrew Caskroom apps" {
+    local cask_root="$HOME/Caskroom"
+    make_app "$cask_root/example/1.2.3/Example.app" "com.example.caskroom"
+
+    run env CASK_ROOT="$cask_root" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+mdfind() { return 0; }
+export -f mdfind
+_MOLE_BUNDLE_RESOLVER_APP_ROOTS=("$CASK_ROOT")
+bundle_has_installed_app "com.example.caskroom" "$((SECONDS + 5))"
+EOF
+
+    [ "$status" -eq 0 ]
 }

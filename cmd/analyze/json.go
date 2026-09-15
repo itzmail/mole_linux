@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -60,7 +61,7 @@ func performDirectoryScanForJSON(path string) jsonOutput {
 	currentPath := &atomic.Value{}
 	currentPath.Store("")
 
-	result, err := scanPathConcurrentAllEntries(path, &filesScanned, &dirsScanned, &bytesScanned, currentPath)
+	result, err := scanPathConcurrentAllEntries(context.Background(), path, &filesScanned, &dirsScanned, &bytesScanned, currentPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to scan directory: %v\n", err)
 		os.Exit(1)

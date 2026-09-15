@@ -158,6 +158,34 @@ EOF
 	[[ "$output" == *"Unknown command: unknown-command"* ]]
 }
 
+@test "mole unknown command writes the diagnostic to stderr" {
+	local out="$BATS_TEST_TMPDIR/unknown.out"
+	local err="$BATS_TEST_TMPDIR/unknown.err"
+	run env HOME="$HOME" bash -c "'$PROJECT_ROOT/mole' unknown-command > '$out' 2> '$err'"
+	[ "$status" -ne 0 ]
+	[ ! -s "$out" ] || { cat "$out"; return 1; }
+	grep -q "Unknown command: unknown-command" "$err" || { cat "$err"; return 1; }
+}
+
+# Every subcommand that rejects an option must do it the way bin/history.sh
+# already did: nothing on stdout, so `mo <cmd> --bogus > out` leaves the reason
+# on the terminal instead of burying it in the redirected file. analyze and
+# status are left to cmd/*/usage_test.go: their wrapper reports a missing
+# bundled binary instead, on jobs that do not build the Go helpers.
+@test "every subcommand sends its unknown-option diagnostic to stderr" {
+	local cmd out err
+	for cmd in "update --bogus" "remove --bogus" "optimize --bogus" \
+		"purge --bogus" "installer --bogus" "uninstall --bogus" \
+		"uninstall --whitelist" "history --bogus"; do
+		out="$BATS_TEST_TMPDIR/opt.out"
+		err="$BATS_TEST_TMPDIR/opt.err"
+		run env HOME="$HOME" bash -c "'$PROJECT_ROOT/mole' $cmd > '$out' 2> '$err'"
+		[ "$status" -ne 0 ] || { echo "mo $cmd exited 0"; return 1; }
+		[ ! -s "$out" ] || { echo "mo $cmd wrote to stdout:"; cat "$out"; return 1; }
+		grep -qiE "unknown|not defined" "$err" || { echo "mo $cmd stderr:"; cat "$err"; return 1; }
+	done
+}
+
 @test "mole --help does not list check command" {
 	run env HOME="$HOME" "$PROJECT_ROOT/mole" --help
 	[ "$status" -eq 0 ]
@@ -726,4 +754,17 @@ print(f"watch_lines={len(lines)}")
 PY
 	[ "$status" -eq 0 ]
 	[[ "$output" == *"watch_lines=3"* ]]
+}
+
+@test "user CLI entrypoints refuse root before loading shared user state" {
+    for entry in mole bin/clean.sh bin/optimize.sh bin/purge.sh bin/uninstall.sh bin/installer.sh bin/touchid.sh bin/completion.sh; do
+        prefix=$(awk '/^(SCRIPT_DIR|ROOT_DIR|LIB_DIR)=/ { exit } { print }' "$PROJECT_ROOT/$entry")
+        # Execute the actual source prefix, substituting only the read-only UID
+        # so the test never requests root or runs a maintenance command.
+        run /bin/bash -c "${prefix//\$EUID/0}"
+        [ "$status" -eq 1 ] || return 1
+        [[ "$output" == *"Run Mole without sudo"* ]] || return 1
+        run /bin/bash -c "${prefix//\$EUID/501}"
+        [ "$status" -eq 0 ] || return 1
+    done
 }

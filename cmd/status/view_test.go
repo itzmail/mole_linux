@@ -3,6 +3,7 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -564,7 +565,7 @@ func TestRenderBatteryCardShowsAdapterInputOnly(t *testing.T) {
 	}}, ThermalStatus{
 		BatteryTemp:  30.7,
 		AdapterPower: 94,
-	})
+	}, true)
 
 	var joined []string
 	for _, line := range card.lines {
@@ -773,13 +774,28 @@ func TestRenderDiskCardAddsMetaLineForSingleDisk(t *testing.T) {
 		Fstype:      "apfs",
 	}}, DiskIOStatus{ReadRate: 0, WriteRate: 0.1}, 0, false)
 
-	if len(card.lines) != 4 {
-		t.Fatalf("renderDiskCard() single disk expected 4 lines, got %d", len(card.lines))
+	if len(card.lines) != 3 {
+		t.Fatalf("renderDiskCard() single disk expected 3 lines, got %d", len(card.lines))
 	}
 
 	meta := stripANSI(card.lines[1])
 	if meta != "Total  926G · APFS" {
 		t.Fatalf("renderDiskCard() single disk meta line = %q, want %q", meta, "Total  926G · APFS")
+	}
+}
+
+func TestRenderDiskCardMetaLineShowsPurgeable(t *testing.T) {
+	card := renderDiskCard([]DiskStatus{{
+		UsedPercent: 64.9,
+		Used:        1226 << 30,
+		Total:       926 << 30,
+		Fstype:      "apfs",
+		Purgeable:   141 << 30,
+	}}, DiskIOStatus{}, 0, false)
+
+	meta := stripANSI(card.lines[1])
+	if meta != "Total  926G · APFS · 141G purgeable" {
+		t.Fatalf("renderDiskCard() meta line = %q, want %q", meta, "Total  926G · APFS · 141G purgeable")
 	}
 }
 
@@ -789,8 +805,8 @@ func TestRenderDiskCardDoesNotAddMetaLineForMultipleDisks(t *testing.T) {
 		{UsedPercent: 50.0, Used: 500 << 30, Total: 1000 << 30, Fstype: "apfs"},
 	}, DiskIOStatus{}, 0, false)
 
-	if len(card.lines) != 4 {
-		t.Fatalf("renderDiskCard() multiple disks expected 4 lines, got %d", len(card.lines))
+	if len(card.lines) != 3 {
+		t.Fatalf("renderDiskCard() multiple disks expected 3 lines, got %d", len(card.lines))
 	}
 
 	for _, line := range card.lines {
@@ -842,31 +858,45 @@ func TestRenderDiskCardUsesGraphicIOLine(t *testing.T) {
 		{UsedPercent: 95.0, Used: 16 << 30, Total: 16<<30 + 444<<20, External: true},
 	}, DiskIOStatus{ReadRate: 0, WriteRate: 24.6}, 101<<20, false)
 
-	if len(card.lines) != 5 {
-		t.Fatalf("renderDiskCard() expected 5 lines without trash, got %d", len(card.lines))
+	if len(card.lines) != 4 {
+		t.Fatalf("renderDiskCard() expected 4 lines without trash, got %d", len(card.lines))
 	}
-	if got := stripANSI(card.lines[4]); got != "I/O    ▯▯▯▯▯ R 0 · ▮▮▯▯▯ W 25 MB/s" {
+	if got := stripANSI(card.lines[3]); got != "I/O    ▯▯▯▯▯ R 0 · ▮▮▯▯▯ W 25 MB/s" {
 		t.Fatalf("I/O line = %q", got)
 	}
 }
 
-func TestRenderDiskCardFormatsSingleAndMultipleSMARTSummaries(t *testing.T) {
-	single := renderDiskCard([]DiskStatus{{
-		UsedPercent: 30,
-		Used:        30 << 30,
-		Total:       100 << 30,
-		SmartStatus: smartStatusVerified,
-	}}, DiskIOStatus{}, 0, false)
-	if got := stripANSI(single.lines[2]); got != "SMART  Verified" {
-		t.Fatalf("single SMART line = %q", got)
-	}
-
-	multiple := renderDiskCard([]DiskStatus{
+// SMART earns a row only when a disk is failing. "Verified" needs no action,
+// and USB enclosures rarely pass SMART through, so healthy machines used to
+// carry a row that said nothing and grew with every disk attached.
+func TestRenderDiskCardShowsSMARTOnlyWhenFailing(t *testing.T) {
+	healthy := renderDiskCard([]DiskStatus{
 		{UsedPercent: 30, Used: 30 << 30, Total: 100 << 30, SmartStatus: smartStatusVerified},
 		{UsedPercent: 20, Used: 20 << 30, Total: 100 << 30, External: true, SmartStatus: smartStatusUnsupported},
 	}, DiskIOStatus{}, 0, false)
-	if got := stripANSI(multiple.lines[2]); got != "SMART  INTR OK · EXTR N/A" {
-		t.Fatalf("multiple SMART line = %q", got)
+	for _, line := range healthy.lines {
+		if strings.Contains(stripANSI(line), "SMART") {
+			t.Fatalf("healthy disks should not render a SMART row, got %q", stripANSI(line))
+		}
+	}
+
+	failing := renderDiskCard([]DiskStatus{{
+		UsedPercent: 30,
+		Used:        30 << 30,
+		Total:       100 << 30,
+		SmartStatus: smartStatusFailing,
+	}}, DiskIOStatus{}, 0, false)
+	var smartLine string
+	for _, line := range failing.lines {
+		if strings.Contains(stripANSI(line), "SMART") {
+			smartLine = stripANSI(line)
+		}
+	}
+	if smartLine == "" {
+		t.Fatal("a failing disk must still render a SMART row")
+	}
+	if !strings.Contains(smartLine, "Failing") || !strings.Contains(smartLine, "Back up now") {
+		t.Fatalf("failing SMART row must name the state and the action, got %q", smartLine)
 	}
 }
 
@@ -1051,8 +1081,10 @@ func TestStatusDiagnosisLinePrioritizesFailingSMART(t *testing.T) {
 }
 
 func TestStatusDiagnosisLineUsesTopCPUProcess(t *testing.T) {
+	stale := false
 	m := MetricsSnapshot{
-		CPU: CPUStatus{Usage: 95},
+		CPU:          CPUStatus{Usage: 95},
+		ProcessStale: &stale,
 		TopProcesses: []ProcessInfo{
 			{Name: "Safari", CPU: 12},
 			{Name: "Xcode", CPU: 82},
@@ -1065,9 +1097,24 @@ func TestStatusDiagnosisLineUsesTopCPUProcess(t *testing.T) {
 	}
 }
 
-func TestStatusDiagnosisLineUsesMemoryContributorWhenCPUIsCalm(t *testing.T) {
+func TestStatusDiagnosisLineDoesNotNameStaleCPUProcess(t *testing.T) {
+	stale := true
 	m := MetricsSnapshot{
-		CPU: CPUStatus{Usage: 20},
+		CPU:          CPUStatus{Usage: 95},
+		ProcessStale: &stale,
+		TopProcesses: []ProcessInfo{{Name: "Xcode", CPU: 82}},
+	}
+
+	if got := statusDiagnosisLine(m); got != "CPU load high" {
+		t.Fatalf("statusDiagnosisLine() = %q, want generic live-system diagnosis", got)
+	}
+}
+
+func TestStatusDiagnosisLineUsesMemoryContributorWhenCPUIsCalm(t *testing.T) {
+	stale := false
+	m := MetricsSnapshot{
+		CPU:          CPUStatus{Usage: 20},
+		ProcessStale: &stale,
 		Memory: MemoryStatus{
 			UsedPercent: 86,
 			Pressure:    "warn",
@@ -1081,6 +1128,21 @@ func TestStatusDiagnosisLineUsesMemoryContributorWhenCPUIsCalm(t *testing.T) {
 	got := statusDiagnosisLine(m)
 	if got != "Chrome memory pressure" {
 		t.Fatalf("statusDiagnosisLine() = %q, want memory contributor", got)
+	}
+}
+
+func TestStatusDiagnosisLineDoesNotNameUnknownMemoryProcess(t *testing.T) {
+	m := MetricsSnapshot{
+		CPU: CPUStatus{Usage: 20},
+		Memory: MemoryStatus{
+			UsedPercent: 86,
+			Pressure:    "warn",
+		},
+		TopProcesses: []ProcessInfo{{Name: "Chrome", Memory: 31}},
+	}
+
+	if got := statusDiagnosisLine(m); got != "Memory pressure high" {
+		t.Fatalf("statusDiagnosisLine() = %q, want generic diagnosis for unknown freshness", got)
 	}
 }
 
@@ -1123,6 +1185,103 @@ func TestRenderProcessCardShowsCollectingWhenEmpty(t *testing.T) {
 	}
 	if got := stripANSI(card.lines[0]); got != "Collecting..." {
 		t.Fatalf("renderProcessCard() empty line = %q", got)
+	}
+}
+
+func TestBuildCardsMarksStaleProcessSampleAtNarrowAndWideWidths(t *testing.T) {
+	stale := true
+	collectedAt := time.Date(2026, time.August, 30, 9, 7, 0, 0, time.Local)
+	snapshot := MetricsSnapshot{
+		TopProcesses:       []ProcessInfo{{Name: "Xcode", CPU: 82}},
+		ProcessStale:       &stale,
+		ProcessCollectedAt: &collectedAt,
+	}
+
+	for _, width := range []int{5, 19, 20, 56} {
+		cards := buildCards(snapshot, width, 0, true)
+		processCard := cards[4]
+		rendered := stripANSI(renderCard(processCard, width))
+		if !strings.Contains(rendered, "STALE") {
+			t.Fatalf("process card width %d missing stale marker: %q", width, rendered)
+		}
+		if width >= 19 && !strings.Contains(rendered, "82.0%") {
+			t.Fatalf("process card width %d should retain cached process metrics: %q", width, rendered)
+		}
+		if width >= 56 && !strings.Contains(rendered, "Xcode") {
+			t.Fatalf("wide process card should retain the cached process name: %q", rendered)
+		}
+	}
+}
+
+func TestBuildCardsMarksUnknownProcessFreshness(t *testing.T) {
+	snapshot := MetricsSnapshot{
+		TopProcesses: []ProcessInfo{{Name: "Xcode", CPU: 82}},
+	}
+
+	cards := buildCards(snapshot, 56, 0, true)
+	rendered := stripANSI(renderCard(cards[4], 56))
+	if !strings.Contains(rendered, "UNKNOWN") || !strings.Contains(rendered, "Xcode") {
+		t.Fatalf("unknown-freshness process card should label retained evidence: %q", rendered)
+	}
+}
+
+func TestBuildCardsDistinguishesEmptyProcessSampleStates(t *testing.T) {
+	fresh := false
+	stale := true
+	zero := 0
+	tests := []struct {
+		name     string
+		snapshot MetricsSnapshot
+		want     string
+	}{
+		{name: "fresh empty", snapshot: MetricsSnapshot{ProcessStale: &fresh}, want: "No process activity"},
+		{name: "fresh alert only", snapshot: MetricsSnapshot{ProcessStale: &fresh, ProcessAlerts: []ProcessAlert{{Status: "active"}}}, want: "No process rows · active alert above"},
+		{name: "stale empty", snapshot: MetricsSnapshot{ProcessStale: &stale}, want: "STALE · no retained process activity"},
+		{name: "stale measured zero", snapshot: MetricsSnapshot{ProcessStale: &stale, ZombieCount: &zero}, want: "STALE · no retained process activity"},
+		{name: "unknown retained alert", snapshot: MetricsSnapshot{ProcessAlerts: []ProcessAlert{{Status: "active"}}}, want: "UNKNOWN · process sample unavailable"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cards := buildCards(tt.snapshot, 38, 0, true)
+			rendered := stripANSI(renderCard(cards[4], 38))
+			if !strings.Contains(rendered, tt.want) {
+				t.Fatalf("process state should render %q, got %q", tt.want, rendered)
+			}
+			if strings.Contains(rendered, "Collecting") {
+				t.Fatalf("known or retained process state should not look like initial collection, got %q", rendered)
+			}
+		})
+	}
+}
+
+func TestRenderProcessCardShowsBoundedZombieGuidance(t *testing.T) {
+	card := renderProcessCardWithZombies(
+		[]ProcessInfo{
+			{Name: "Chrome", CPU: 12, MemoryBytes: 512 << 20},
+			{Name: "WindowServer", CPU: 8, MemoryBytes: 256 << 20},
+			{Name: "Xcode", CPU: 4, MemoryBytes: 128 << 20},
+		},
+		94,
+		[]ZombieParent{{PID: 42, Name: "Chrome", Count: 6}},
+		colWidth,
+	)
+
+	if len(card.lines) != 3 {
+		t.Fatalf("renderProcessCardWithZombies() lines = %d, want 3", len(card.lines))
+	}
+	plain := stripANSI(card.lines[0])
+	if !strings.Contains(plain, "Zombies 94") || !strings.Contains(plain, "Chrome (42)") {
+		t.Fatalf("zombie summary missing count or parent: %q", plain)
+	}
+	if strings.Contains(strings.ToLower(plain), "restart") || strings.Contains(strings.ToLower(plain), "quit") {
+		t.Fatalf("zombie summary should attribute without indiscriminate process advice: %q", plain)
+	}
+	if lipgloss.Width(plain) > colWidth {
+		t.Fatalf("zombie summary exceeds card width: %q", plain)
+	}
+	joined := stripANSI(strings.Join(card.lines, "\n"))
+	if strings.Contains(joined, "Xcode") {
+		t.Fatalf("zombie guidance should keep card at three rows, got %q", joined)
 	}
 }
 
@@ -1493,7 +1652,7 @@ func TestRenderTwoColumnsAlignsRowTitles(t *testing.T) {
 
 func TestRenderTwoColumnsNeverGrowsFixedPairLayout(t *testing.T) {
 	const width = 120
-	cards := buildCards(MetricsSnapshot{}, width/2-4, 2)
+	cards := buildCards(MetricsSnapshot{}, width/2-4, 2, true)
 	cw := width/2 - 2
 
 	var fixedRows []string

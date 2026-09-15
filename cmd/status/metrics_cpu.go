@@ -144,41 +144,44 @@ func getCoreTopology() (pCores, eCores int) {
 
 	out, err := runCmd(ctx, "sysctl", "-n",
 		"hw.perflevel0.logicalcpu",
-		"hw.perflevel0.name",
-		"hw.perflevel1.logicalcpu",
-		"hw.perflevel1.name")
+		"hw.perflevel1.logicalcpu")
 	if err != nil {
 		return 0, 0
 	}
 
-	var lines []string
-	for line := range strings.Lines(strings.TrimSpace(out)) {
-		lines = append(lines, line)
-	}
-	if len(lines) < 4 {
+	pCores, eCores = parseCoreTopology(out)
+	if pCores == 0 && eCores == 0 {
 		return 0, 0
-	}
-
-	level0Count, _ := strconv.Atoi(strings.TrimSpace(lines[0]))
-	level0Name := strings.ToLower(strings.TrimSpace(lines[1]))
-
-	level1Count, _ := strconv.Atoi(strings.TrimSpace(lines[2]))
-	level1Name := strings.ToLower(strings.TrimSpace(lines[3]))
-
-	if strings.Contains(level0Name, "performance") {
-		pCores = level0Count
-	} else if strings.Contains(level0Name, "efficiency") {
-		eCores = level0Count
-	}
-
-	if strings.Contains(level1Name, "performance") {
-		pCores = level1Count
-	} else if strings.Contains(level1Name, "efficiency") {
-		eCores = level1Count
 	}
 
 	cachedP, cachedE = pCores, eCores
 	lastTopologyAt = now
+	return pCores, eCores
+}
+
+// parseCoreTopology reads `sysctl -n hw.perflevel0.logicalcpu
+// hw.perflevel1.logicalcpu` output as top tier then the tier below it.
+//
+// The level ORDER decides which bucket a count lands in, never the level name.
+// M5 names its two levels "Super" and "Performance" and ships no "Efficiency"
+// level at all, so matching the word "performance" put 12 efficiency cores in
+// the P bucket and reported e_core_count 0 on an 18-core M5 Pro, which also
+// dropped the "12P+4E" load line entirely. Apple documents perflevel0 as the
+// highest-performance level, and that survives the next rename.
+func parseCoreTopology(out string) (pCores, eCores int) {
+	var lines []string
+	for line := range strings.Lines(strings.TrimSpace(out)) {
+		lines = append(lines, line)
+	}
+	if len(lines) < 2 {
+		return 0, 0
+	}
+
+	pCores, errP := strconv.Atoi(strings.TrimSpace(lines[0]))
+	eCores, errE := strconv.Atoi(strings.TrimSpace(lines[1]))
+	if errP != nil || errE != nil || pCores <= 0 || eCores <= 0 {
+		return 0, 0
+	}
 	return pCores, eCores
 }
 
