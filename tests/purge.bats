@@ -24,6 +24,9 @@ teardown_file() {
 }
 
 setup() {
+	PROJECT_ROOT="${PROJECT_ROOT:-$(cd "${BATS_TEST_DIRNAME}/.." && pwd)}"
+	export PROJECT_ROOT
+
 	# Safety: refuse to operate on a real home directory.
 	if [[ "$HOME" != "${BATS_TEST_DIRNAME}/tmp-"* ]]; then
 		printf 'FATAL: HOME is not a test temp dir: %s\n' "$HOME" >&2
@@ -2949,6 +2952,11 @@ EOF
 # inside the script. Required to exercise the interactive branch of
 # clean_project_artifacts, which only calls select_purge_categories when
 # stdin is a tty.
+fail() {
+	printf '%s\n' "$*" >&2
+	return 1
+}
+
 _run_in_pty() {
 	local script_file="$1"
 	# BSD script(1) (macOS) takes the command as trailing positional args.

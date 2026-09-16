@@ -71,6 +71,7 @@ jobs:
 
       - name: Run linux clean bats subset
         env:
+          PROJECT_ROOT: ${{ github.workspace }}
           MOLE_TEST_NO_AUTH: "1"
           BATS_FORMATTER: tap
           LANG: en_US.UTF-8

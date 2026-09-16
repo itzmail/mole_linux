@@ -28,11 +28,8 @@ setup_file() {
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/linux.sh"
-command() {
-    if [[ "$1" == "-v" ]]; then return 0; fi
-    builtin command "$@"
-}
-linux_list_uninstallable_packages() { echo "firefox|120.0|350000"; }
+_linux_detect_pkg_manager() { echo "apt"; }
+linux_list_uninstallable_packages() { echo "firefox|120.0|350000|CLI|firefox"; }
 linux_uninstall_main --list
 EOF
     [[ "$status" -eq 0 ]] || return 1
@@ -44,11 +41,8 @@ EOF
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/linux.sh"
-command() {
-    if [[ "$1" == "-v" ]]; then return 0; fi
-    builtin command "$@"
-}
-linux_list_uninstallable_packages() { echo "firefox|120.0|350000"; }
+_linux_detect_pkg_manager() { echo "apt"; }
+linux_list_uninstallable_packages() { echo "firefox|120.0|350000|CLI|firefox"; }
 linux_uninstall_main --json
 EOF
     [[ "$status" -eq 0 ]] || return 1
@@ -62,10 +56,7 @@ EOF
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/linux.sh"
-command() {
-    if [[ "$1" == "-v" ]]; then return 0; fi
-    builtin command "$@"
-}
+_linux_detect_pkg_manager() { echo "apt"; }
 linux_clean_package_leftovers() { echo "LEFTOVERS_CHECKED:$1"; }
 linux_uninstall_main firefox
 EOF
@@ -79,10 +70,7 @@ EOF
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/linux.sh"
-command() {
-    if [[ "$1" == "-v" && ("$2" == "apt-get" || "$2" == "pacman") ]]; then return 1; fi
-    builtin command "$@"
-}
+_linux_detect_pkg_manager() { echo ""; }
 linux_uninstall_main --list
 EOF
     [[ "$status" -eq 1 ]] || return 1
@@ -94,10 +82,6 @@ EOF
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/linux.sh"
-command() {
-    if [[ "$1" == "-v" ]]; then return 0; fi
-    builtin command "$@"
-}
 linux_uninstall_main --help
 EOF
     [[ "$status" -eq 0 ]] || return 1
@@ -109,12 +93,9 @@ EOF
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/linux.sh"
-command() {
-    if [[ "$1" == "-v" ]]; then return 0; fi
-    builtin command "$@"
-}
+_linux_detect_pkg_manager() { echo "apt"; }
 linux_list_uninstallable_packages() {
-    printf 'ansible|8.5|20000\nfirefox|120.0|350000\n'
+    printf 'ansible|8.5|20000|CLI|ansible\nfirefox|120.0|350000|CLI|firefox\n'
 }
 paginated_multi_select() {
     echo "MENU_CALLED:$1"
@@ -138,11 +119,8 @@ EOF
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/linux.sh"
-command() {
-    if [[ "$1" == "-v" ]]; then return 0; fi
-    builtin command "$@"
-}
-linux_list_uninstallable_packages() { echo "firefox|120.0|350000"; }
+_linux_detect_pkg_manager() { echo "apt"; }
+linux_list_uninstallable_packages() { echo "firefox|120.0|350000|CLI|firefox"; }
 paginated_multi_select() {
     MOLE_SELECTION_RESULT=""
     return 1
@@ -160,10 +138,7 @@ EOF
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/linux.sh"
-command() {
-    if [[ "$1" == "-v" ]]; then return 0; fi
-    builtin command "$@"
-}
+_linux_detect_pkg_manager() { echo "apt"; }
 linux_list_uninstallable_packages() { :; }
 linux_uninstall_main
 EOF

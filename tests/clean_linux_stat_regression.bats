@@ -28,6 +28,7 @@ teardown_file() {
 }
 
 @test "get_cleanup_path_size_kb sizing loop does not crash with more than 3 existing paths on Linux" {
+    [[ "$(uname -s)" == "Linux" ]] || skip "Linux stat only"
     mkdir -p "$HOME/.npm"
     for i in 1 2 3 4 5; do
         echo "data" > "$HOME/.npm/file_${i}.txt"
@@ -65,6 +66,7 @@ EOF
 }
 
 @test "mole clean --dry-run does not crash on Linux with a populated npm cache" {
+    [[ "$(uname -s)" == "Linux" ]] || skip "Linux stat only"
     mkdir -p "$HOME/.npm"
     for i in 1 2 3 4 5; do
         echo "data" > "$HOME/.npm/file_${i}.txt"

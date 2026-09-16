@@ -122,6 +122,7 @@ mo clean --whitelist         # Manage protected caches
 - **Debian & Ubuntu**: native `apt` cache cleaning and `dpkg-query` package uninstall.
 - **WSL2 (Windows Subsystem for Linux)**: full support for Ubuntu/Debian/Arch under WSL2.
 - **Omarchy Linux**: full support for Omarchy Hyprland environment and desktop webapps.
+- **macOS**: Mole requires macOS 12 or newer and supports both Intel and Apple Silicon Macs.
 
 ---
 

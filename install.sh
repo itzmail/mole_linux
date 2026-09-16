@@ -16,7 +16,13 @@ refuse_root_invocation() {
 }
 refuse_root_invocation "${EUID:-0}" || exit 1
 
-readonly MOLE_REPO="${MOLE_REPO:-itzmail/mole_linux}"
+if [[ -z "${MOLE_REPO:-}" ]]; then
+    if [[ "$OSTYPE" == "linux"* ]]; then
+        MOLE_REPO="itzmail/mole_linux"
+    else
+        MOLE_REPO="tw93/mole"
+    fi
+fi
 
 # Honor https://no-color.org: any non-empty NO_COLOR disables ANSI escapes.
 if [[ -n "${NO_COLOR:-}" ]]; then
@@ -283,24 +289,6 @@ run_install_probe_with_timeout() {
     ' "$duration" "$@"
 }
 
-_install_stat_uid() {
-    local target="$1"
-    if [[ "$OSTYPE" == "darwin"* ]]; then
-        /usr/bin/stat -f%u "$target" 2> /dev/null || stat -f%u "$target" 2> /dev/null || true
-    else
-        stat -c%u "$target" 2> /dev/null || /usr/bin/stat -c%u "$target" 2> /dev/null || true
-    fi
-}
-
-_install_stat_mode() {
-    local target="$1"
-    if [[ "$OSTYPE" == "darwin"* ]]; then
-        /usr/bin/stat -f%Lp "$target" 2> /dev/null || stat -f%Lp "$target" 2> /dev/null || true
-    else
-        stat -c%a "$target" 2> /dev/null || /usr/bin/stat -c%a "$target" 2> /dev/null || true
-    fi
-}
-
 install_lock_has_unsafe_ancestor() {
     local use_sudo="$1"
     local probe="$INSTALL_DIR"
@@ -315,8 +303,13 @@ install_lock_has_unsafe_ancestor() {
         INSTALL_LOCK_UNSAFE_ANCESTOR="$probe"
         INSTALL_LOCK_UNSAFE_ANCESTOR_REASON="symlink"
         [[ ! -L "$probe" ]] || return 0
-        owner_uid=$(_install_stat_uid "$probe")
-        mode=$(_install_stat_mode "$probe")
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            owner_uid=$(/usr/bin/stat -f%u "$probe" 2> /dev/null || stat -f%u "$probe" 2> /dev/null || true)
+            mode=$(/usr/bin/stat -f%Lp "$probe" 2> /dev/null || stat -f%Lp "$probe" 2> /dev/null || true)
+        else
+            owner_uid=$(stat -c%u "$probe" 2> /dev/null || /usr/bin/stat -c%u "$probe" 2> /dev/null || true)
+            mode=$(stat -c%a "$probe" 2> /dev/null || /usr/bin/stat -c%a "$probe" 2> /dev/null || true)
+        fi
         INSTALL_LOCK_UNSAFE_ANCESTOR_REASON="unreadable"
         [[ "$owner_uid" =~ ^[0-9]+$ && "$mode" =~ ^[0-7]+$ ]] || return 0
         if [[ "$use_sudo" == "true" || ${EUID:-0} -eq 0 ]]; then
@@ -431,8 +424,13 @@ install_lock_prepare_dir() {
         owner_uid=$(sudo -n stat -c%u "$lock_dir" 2> /dev/null || sudo -n /usr/bin/stat -f%u "$lock_dir" 2> /dev/null || true)
         mode=$(sudo -n stat -c%a "$lock_dir" 2> /dev/null || sudo -n /usr/bin/stat -f%Lp "$lock_dir" 2> /dev/null || true)
     else
-        owner_uid=$(_install_stat_uid "$lock_dir")
-        mode=$(_install_stat_mode "$lock_dir")
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            owner_uid=$(install_lock_command "$use_sudo" /usr/bin/stat -f%u "$lock_dir" 2> /dev/null || install_lock_command "$use_sudo" stat -f%u "$lock_dir" 2> /dev/null || true)
+            mode=$(install_lock_command "$use_sudo" /usr/bin/stat -f%Lp "$lock_dir" 2> /dev/null || install_lock_command "$use_sudo" stat -f%Lp "$lock_dir" 2> /dev/null || true)
+        else
+            owner_uid=$(install_lock_command "$use_sudo" stat -c%u "$lock_dir" 2> /dev/null || install_lock_command "$use_sudo" /usr/bin/stat -c%u "$lock_dir" 2> /dev/null || true)
+            mode=$(install_lock_command "$use_sudo" stat -c%a "$lock_dir" 2> /dev/null || install_lock_command "$use_sudo" /usr/bin/stat -c%a "$lock_dir" 2> /dev/null || true)
+        fi
     fi
     [[ "$owner_uid" == "$expected_uid" && "$mode" =~ ^[0-7]+$ ]] || return 1
     (((8#$mode & 0077) == 0)) || return 1
@@ -690,7 +688,7 @@ get_remote_main_commit_hash() {
     local response=""
     local commit_hash=""
     response=$(curl -fsSL --connect-timeout 3 --max-time 5 \
-        "https://api.github.com/repos/${MOLE_REPO}/commits/main" 2> /dev/null || true)
+        "https://api.github.com/repos/${MOLE_REPO:-tw93/mole}/commits/main" 2> /dev/null || true)
     commit_hash=$(printf '%s\n' "$response" |
         sed -n 's/.*"sha"[[:space:]]*:[[:space:]]*"\([a-f0-9]\{40\}\)".*/\1/p' | head -1)
     [[ "$commit_hash" =~ ^[0-9a-f]{40}$ ]] || return 1
@@ -702,11 +700,11 @@ source_archive_url() {
     local source_commit="${2:-}"
 
     if [[ "$branch" == "main" && "$source_commit" =~ ^[0-9a-f]{40}$ ]]; then
-        printf 'https://github.com/%s/archive/%s.tar.gz\n' "$MOLE_REPO" "$source_commit"
+        printf 'https://github.com/%s/archive/%s.tar.gz\n' "${MOLE_REPO:-tw93/mole}" "$source_commit"
     elif [[ "$branch" == "main" || "$branch" == "dev" ]]; then
-        printf 'https://github.com/%s/archive/refs/heads/%s.tar.gz\n' "$MOLE_REPO" "$branch"
+        printf 'https://github.com/%s/archive/refs/heads/%s.tar.gz\n' "${MOLE_REPO:-tw93/mole}" "$branch"
     else
-        printf 'https://github.com/%s/archive/refs/tags/%s.tar.gz\n' "$MOLE_REPO" "$branch"
+        printf 'https://github.com/%s/archive/refs/tags/%s.tar.gz\n' "${MOLE_REPO:-tw93/mole}" "$branch"
     fi
 }
 
@@ -802,7 +800,7 @@ resolve_source_dir() {
         local clone_succeeded=false
         if [[ -n "$source_commit" ]]; then
             if git init -q "$tmp/mole" > /dev/null 2>&1 &&
-                git -C "$tmp/mole" remote add origin "https://github.com/${MOLE_REPO}.git" > /dev/null 2>&1 &&
+                git -C "$tmp/mole" remote add origin "https://github.com/${MOLE_REPO:-tw93/mole}.git" > /dev/null 2>&1 &&
                 git -C "$tmp/mole" fetch -q --depth=1 origin "$source_commit" > /dev/null 2>&1 &&
                 git -C "$tmp/mole" checkout -q --detach FETCH_HEAD > /dev/null 2>&1; then
                 clone_succeeded=true
@@ -812,7 +810,7 @@ resolve_source_dir() {
             if [[ "$branch" != "main" ]]; then
                 git_args+=("--branch" "$branch")
             fi
-            if git clone "${git_args[@]}" "https://github.com/${MOLE_REPO}.git" "$tmp/mole" > /dev/null 2>&1; then
+            if git clone "${git_args[@]}" "https://github.com/${MOLE_REPO:-tw93/mole}.git" "$tmp/mole" > /dev/null 2>&1; then
                 clone_succeeded=true
             fi
         fi
@@ -856,7 +854,7 @@ get_latest_release_tag() {
         return 1
     fi
     tag=$(curl -fsSL --connect-timeout 2 --max-time 3 \
-        "https://api.github.com/repos/${MOLE_REPO}/releases/latest" 2> /dev/null |
+        "https://api.github.com/repos/${MOLE_REPO:-tw93/mole}/releases/latest" 2> /dev/null |
         sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)
     if [[ -z "$tag" ]]; then
         return 1
@@ -868,7 +866,7 @@ get_latest_release_tag_from_git() {
     if ! command -v git > /dev/null 2>&1; then
         return 1
     fi
-    git ls-remote --tags --refs "https://github.com/${MOLE_REPO}.git" 2> /dev/null |
+    git ls-remote --tags --refs "https://github.com/${MOLE_REPO:-tw93/mole}.git" 2> /dev/null |
         awk -F/ '{print $NF}' |
         grep -E '^V[0-9]' |
         sort -V |
@@ -888,7 +886,7 @@ normalize_release_tag() {
 
 release_checksums_url() {
     local tag="$1"
-    printf 'https://github.com/%s/releases/download/%s/SHA256SUMS\n' "$MOLE_REPO" "$tag"
+    printf 'https://github.com/%s/releases/download/%s/SHA256SUMS\n' "${MOLE_REPO:-tw93/mole}" "$tag"
 }
 
 download_release_checksums() {
@@ -925,7 +923,7 @@ verify_release_attestation() {
     # also blocks attestations produced by self-hosted runners, which a repo
     # compromise could otherwise introduce as a sidechannel.
     if gh attestation verify "$file" \
-        --repo "${MOLE_REPO}" \
+        --repo "${MOLE_REPO:-tw93/Mole}" \
         --deny-self-hosted-runners \
         > /dev/null 2>&1; then
         return 0
@@ -1367,7 +1365,7 @@ download_binary() {
     local release_tag
     release_tag="$(normalize_release_tag "$version")"
     local asset_name="${binary_name}-${os_suffix}-${arch_suffix}"
-    local url="https://github.com/${MOLE_REPO}/releases/download/${release_tag}/${asset_name}"
+    local url="https://github.com/${MOLE_REPO:-tw93/mole}/releases/download/${release_tag}/${asset_name}"
 
     # Skip preflight network checks to avoid false negatives.
 
@@ -1395,7 +1393,7 @@ download_binary() {
     local fallback_tag
     fallback_tag=$(get_latest_release_tag 2> /dev/null || true)
     if [[ -n "$fallback_tag" && "$fallback_tag" != "$release_tag" ]]; then
-        local fallback_url="https://github.com/${MOLE_REPO}/releases/download/${fallback_tag}/${asset_name}"
+        local fallback_url="https://github.com/${MOLE_REPO:-tw93/mole}/releases/download/${fallback_tag}/${asset_name}"
         start_line_spinner "Retrying ${binary_name} from ${fallback_tag}..."
         if curl_download_with_retry "$fallback_url" "$staged_path" 2> /dev/null; then
             if [[ -t 1 ]]; then stop_line_spinner; fi
