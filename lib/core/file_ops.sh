@@ -2151,8 +2151,13 @@ mole_delete() {
         expected_target_id="$_MOLE_PATH_SNAPSHOT_TARGET_ID"
         local current_identity=""
         local identity_rc=0
-        current_identity=$(run_with_timeout "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
-            "$STAT_BSD" -f%d:%i:%m "$path" 2> /dev/null) || identity_rc=$?
+        if [[ "${MOLE_IS_LINUX:-false}" == "true" || "$(uname -s)" == "Linux" ]]; then
+            current_identity=$(run_with_timeout "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
+                stat -c '%d:%i:%Y' "$path" 2> /dev/null) || identity_rc=$?
+        else
+            current_identity=$(run_with_timeout "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
+                "$STAT_BSD" -f%d:%i:%m "$path" 2> /dev/null) || identity_rc=$?
+        fi
         if [[ $identity_rc -eq 124 || $identity_rc -ge 128 ]]; then
             local identity_status="interrupted"
             [[ $identity_rc -eq 124 ]] && identity_status="timed-out"
@@ -2797,7 +2802,11 @@ _mole_snapshot_path_identity() {
     local parent_id=""
     local target_id=""
     local identities=""
-    identities=$("$STAT_BSD" -f '%d:%i' "$physical_parent" "$path" 2> /dev/null) || return 1
+    if [[ "${MOLE_IS_LINUX:-false}" == "true" || "$(uname -s)" == "Linux" ]]; then
+        identities=$(stat -c '%d:%i' "$physical_parent" "$path" 2> /dev/null) || return 1
+    else
+        identities=$("$STAT_BSD" -f '%d:%i' "$physical_parent" "$path" 2> /dev/null) || return 1
+    fi
     [[ "$identities" == *$'\n'* ]] || return 1
     parent_id="${identities%%$'\n'*}"
     target_id="${identities#*$'\n'}"
