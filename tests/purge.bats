@@ -24,6 +24,7 @@ teardown_file() {
 }
 
 setup() {
+	export MOLE_PURGE_YES=1
 	PROJECT_ROOT="${PROJECT_ROOT:-$(cd "${BATS_TEST_DIRNAME}/.." && pwd)}"
 	export PROJECT_ROOT
 

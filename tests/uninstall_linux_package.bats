@@ -60,7 +60,7 @@ run_with_timeout() { shift; "$@"; }
 linux_uninstall_package "firefox"
 EOF
     [[ "$status" -eq 0 ]] || return 1
-    [[ "$output" == *"would run: pacman -R --noconfirm firefox"* ]] || return 1
+    [[ "$output" == *"would run: pacman -Rns --noconfirm firefox"* ]] || return 1
     [[ "$output" != *"PACMAN CALLED"* ]] || return 1
 }
 

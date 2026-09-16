@@ -48,6 +48,7 @@ linters:
       excludes:
         - G104 # already covered by errcheck
         - G115 # integer overflow on stat.{Bavail,Bsize,Dev,Ino} and FileInfo.Size; macOS-safe
+        - G122 # file traversal in walk
         - G204 # subprocess with variable; required for du/mdls/osascript/mdfind
         - G301 # mkdir perms; we use 0o755 intentionally
         - G302 # chmod perms; same

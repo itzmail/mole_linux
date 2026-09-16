@@ -31,7 +31,9 @@ func runList(w io.Writer) error {
 		return err
 	}
 	if len(items) == 0 {
-		fmt.Fprintln(w, "Trash is empty.")
+		if _, err := fmt.Fprintln(w, "Trash is empty."); err != nil {
+			return err
+		}
 		return nil
 	}
 
@@ -39,15 +41,19 @@ func runList(w io.Writer) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(w, "Trash: %s in %d item(s)\n\n", humanBytes(total), len(items))
+	if _, err := fmt.Fprintf(w, "Trash: %s in %d item(s)\n\n", humanBytes(total), len(items)); err != nil {
+		return err
+	}
 	for _, item := range items {
 		kind := "file"
 		if item.IsDir {
 			kind = "dir"
 		}
-		fmt.Fprintf(w, "  %-30s %8s  %s  (%s, deleted %s)\n",
+		if _, err := fmt.Fprintf(w, "  %-30s %8s  %s  (%s, deleted %s)\n",
 			item.Name, humanBytes(item.Size), item.OriginalPath, kind,
-			item.DeletedAt.Format("2006-01-02 15:04"))
+			item.DeletedAt.Format("2006-01-02 15:04")); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -79,12 +85,12 @@ func main() {
 			fmt.Printf("Removed %s from trash.\n", args[1])
 		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: mole trash [empty [<item-name>]]")
+		_, _ = fmt.Fprintln(os.Stderr, "usage: mole trash [empty [<item-name>]]")
 		os.Exit(1)
 	}
 
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		_, _ = fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }

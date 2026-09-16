@@ -177,14 +177,15 @@ linux_uninstall_package() {
         return 0
     fi
 
-    local -a sudo_prefix=()
     if [[ "${MOLE_TEST_NO_AUTH:-0}" != "1" && "${MOLE_TEST_MODE:-0}" != "1" ]]; then
         sudo -v
-        sudo_prefix=(sudo)
-    fi
-
-    if run_with_timeout "$MOLE_TIMEOUT_PKG_CLEANUP_SEC" "${sudo_prefix[@]}" "${remove_cmd[@]}"; then
-        return 0
+        if run_with_timeout "$MOLE_TIMEOUT_PKG_CLEANUP_SEC" sudo "${remove_cmd[@]}"; then
+            return 0
+        fi
+    else
+        if run_with_timeout "$MOLE_TIMEOUT_PKG_CLEANUP_SEC" "${remove_cmd[@]}"; then
+            return 0
+        fi
     fi
     echo "Error: package removal failed for $pkgname" >&2
     return 1
@@ -216,7 +217,7 @@ linux_clean_package_leftovers() {
 _linux_uninstall_require_supported_pm() {
     local pm
     pm=$(_linux_detect_pkg_manager)
-    if [[ "$pm" == "none" ]]; then
+    if [[ "$pm" == "none" || -z "$pm" ]]; then
         echo "Error: mole uninstall is not supported on this system (pacman or apt-get/dpkg-query not found)." >&2
         return 1
     fi
@@ -352,6 +353,11 @@ EOF
 }
 
 linux_uninstall_main() {
+    if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+        _linux_uninstall_usage
+        return 0
+    fi
+
     _linux_uninstall_require_supported_pm || return 1
 
     local -a targets=()

@@ -70,7 +70,7 @@ EOF
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/linux.sh"
-_linux_detect_pkg_manager() { echo ""; }
+_linux_detect_pkg_manager() { echo "none"; }
 linux_uninstall_main --list
 EOF
     [[ "$status" -eq 1 ]] || return 1
