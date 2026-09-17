@@ -20,8 +20,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$SCRIPT_DIR/lib/core/common.sh"
 
 if [[ "$MOLE_IS_LINUX" == "true" ]]; then
-    echo "Error: mole optimize is not supported on Linux (macOS-specific maintenance: Spotlight, launchctl, TimeMachine)." >&2
-    exit 1
+    source "$SCRIPT_DIR/lib/optimize/linux.sh"
+    linux_optimize_main "$@"
+    exit $?
 fi
 
 # Clean temp files on exit.
