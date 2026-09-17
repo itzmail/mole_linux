@@ -133,7 +133,7 @@ Format: `[MODULE_NAME] message` output to stderr.
 - macOS 12 or newer, works on Intel and Apple Silicon
 - Default macOS Bash 3.2+ plus administrator privileges for cleanup tasks
 - Install Command Line Tools with `xcode-select --install` for curl, tar, and related utilities
-- Go 1.25+ is required to build the `mo status` or `mo analyze` TUI binaries locally.
+- Go 1.26+ is required to build the `mo status` or `mo analyze` TUI binaries locally.
 
 ## Go Components
 
