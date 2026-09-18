@@ -296,6 +296,7 @@ source "$PROJECT_ROOT/lib/optimize/tasks.sh"
 unset MOLE_TEST_NO_AUTH MOLE_TEST_MODE
 
 _login_items_snapshot() { printf 'Confirmed Missing\t\n'; }
+_login_item_build_app_inventory() { : > "$1"; return 0; }
 _login_item_app_exists() { return 1; }
 
 execute_optimization login_items_audit
