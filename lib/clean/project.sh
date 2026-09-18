@@ -9,6 +9,10 @@ if ! command -v ensure_user_dir > /dev/null 2>&1; then
     # shellcheck disable=SC1090
     source "$CORE_LIB_DIR/common.sh"
 fi
+if ! declare -F _mole_snapshot_path_identity > /dev/null 2>&1; then
+    # shellcheck disable=SC1090
+    source "$CORE_LIB_DIR/file_ops.sh"
+fi
 # shellcheck disable=SC1090
 source "$PROJECT_LIB_DIR/purge_shared.sh"
 
@@ -172,7 +176,7 @@ write_purge_config() {
     if [[ ${#paths[@]} -gt 0 ]]; then
         for path in "${paths[@]}"; do
             # Convert $HOME to ~ for portability
-            path="${path/#$HOME/~}"
+            path="${path/#$HOME/\~}"
             if ! printf '%s\n' "$path" >> "$tmp_file"; then
                 rm -f "$tmp_file" 2> /dev/null || true
                 return 1
@@ -191,7 +195,7 @@ write_purge_config() {
 warn_purge_config_write_failure() {
     [[ -t 1 ]] || return 0
     [[ -z "${_PURGE_DISCOVERY_SILENT:-}" ]] || return 0
-    echo -e "${YELLOW}${ICON_WARNING}${NC} Could not save purge paths to ${PURGE_CONFIG_FILE/#$HOME/~}, using discovered paths for this run" >&2
+    echo -e "${YELLOW}${ICON_WARNING}${NC} Could not save purge paths to ${PURGE_CONFIG_FILE/#$HOME/\~}, using discovered paths for this run" >&2
 }
 
 format_purge_target_path() {
@@ -1958,7 +1962,7 @@ clean_project_artifacts() {
         echo ""
         echo -e "${YELLOW}${ICON_WARNING}${NC} Skipped ${failed_scan_count} project scan ${root_text} because scanning did not complete:"
         for ((scan_index = 0; scan_index < ${#failed_scan_roots[@]}; scan_index++)); do
-            local display_root="${failed_scan_roots[$scan_index]/#$HOME/~}"
+            local display_root="${failed_scan_roots[$scan_index]/#$HOME/\~}"
             echo -e "  ${GRAY}${display_root}${NC} (status ${failed_scan_statuses[$scan_index]:-1})"
         done
         echo -e "${GRAY}Re-run with 'mo purge --debug' to inspect the scan failure.${NC}"
@@ -2072,7 +2076,7 @@ clean_project_artifacts() {
         stop_inline_spinner
     fi
     for item in "${uninspected_paths[@]+"${uninspected_paths[@]}"}"; do
-        echo -e "${YELLOW}${ICON_WARNING}${NC} Could not inspect ${item/#$HOME/~}; kept" >&2
+        echo -e "${YELLOW}${ICON_WARNING}${NC} Could not inspect ${item/#$HOME/\~}; kept" >&2
     done
     if [[ ${#safe_to_clean[@]} -eq 0 ]]; then
         echo -e "${GRAY}No eligible project artifacts to purge${NC}"
@@ -2286,7 +2290,7 @@ clean_project_artifacts() {
     for item in "${safe_to_clean[@]}"; do
         local item_index=$_sz_idx
         local project_root="${project_roots[$item_index]}"
-        local project_path="${project_root/#$HOME/~}"
+        local project_path="${project_root/#$HOME/\~}"
         local artifact_type="${item#"$project_root/"}"
         local size_raw
         size_raw=$(cat "${_size_tmpfiles[$item_index]}" 2> /dev/null || echo "0")
@@ -2480,7 +2484,7 @@ clean_project_artifacts() {
         stop_inline_spinner
     fi
     for item in "${size_failed_paths[@]+"${size_failed_paths[@]}"}"; do
-        echo -e "${YELLOW}${ICON_WARNING}${NC} Could not measure ${item/#$HOME/~}; skipped" >&2
+        echo -e "${YELLOW}${ICON_WARNING}${NC} Could not measure ${item/#$HOME/\~}; skipped" >&2
     done
     # Exit early if no artifacts were found to avoid unbound variable errors
     # when expanding empty arrays with set -u active.
