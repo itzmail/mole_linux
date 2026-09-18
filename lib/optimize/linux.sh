@@ -13,15 +13,6 @@ readonly MOLE_OPTIMIZE_LINUX_LOADED=1
 _MOLE_OPTIMIZE_LINUX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$_MOLE_OPTIMIZE_LINUX_DIR/outcomes.sh"
 
-opt_msg() {
-    local message="$1"
-    if [[ "${MOLE_DRY_RUN:-0}" == "1" ]]; then
-        echo -e "  ${YELLOW}${ICON_DRY_RUN}${NC} $message"
-    else
-        echo -e "  ${GREEN}${ICON_SUCCESS}${NC} $message"
-    fi
-}
-
 opt_warn_msg() {
     local message="$1"
     echo -e "  ${YELLOW}${ICON_WARNING}${NC} $message"
@@ -286,16 +277,6 @@ opt_linux_sqlite_vacuum() {
         opt_msg "All SQLite databases already optimal"
         optimize_task_result "$MOLE_OPTIMIZE_OUTCOME_UNCHANGED"
     fi
-}
-
-announce_action() {
-    local name="$1"
-    if [[ "${FIRST_ACTION:-true}" == "true" ]]; then
-        export FIRST_ACTION=false
-    else
-        echo ""
-    fi
-    echo -e "${BLUE}${ICON_ARROW} ${name}${NC}"
 }
 
 linux_show_optimization_summary() {

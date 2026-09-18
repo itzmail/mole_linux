@@ -160,17 +160,6 @@ show_system_health() {
         "$mem_used" "$mem_total" "$disk_used" "$disk_total" "$uptime"
 }
 
-announce_action() {
-    local name="$1"
-
-    if [[ "${FIRST_ACTION:-true}" == "true" ]]; then
-        export FIRST_ACTION=false
-    else
-        echo ""
-    fi
-    echo -e "${BLUE}${ICON_ARROW} ${name}${NC}"
-}
-
 cleanup_all() {
     local exit_status="${1:-0}"
     stop_inline_spinner 2> /dev/null || true

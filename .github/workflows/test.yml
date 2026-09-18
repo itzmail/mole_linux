@@ -86,6 +86,7 @@ jobs:
                tests/uninstall_linux_package.bats \
                tests/uninstall_linux_leftovers.bats \
                tests/uninstall_linux_wiring.bats \
+               tests/optimize_linux.bats \
                tests/purge.bats \
                tests/purge_config_paths.bats \
                tests/linux_unsupported_commands.bats
