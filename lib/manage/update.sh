@@ -850,9 +850,25 @@ read_update_message_cache() {
 
 # Background update notice
 check_for_updates() {
+    [[ "${MOLE_TEST_MODE:-0}" == "1" ]] && return 0
+
     local msg_cache="$HOME/.cache/mole/update_message"
+    local timestamp_file="$HOME/.cache/mole/version_check"
     ensure_user_dir "$(dirname "$msg_cache")"
     ensure_user_file "$msg_cache"
+
+    local last_check
+    last_check=$(get_file_mtime "$timestamp_file" 2> /dev/null || echo 0)
+    local now
+    now=$(get_epoch_seconds 2> /dev/null || date +%s)
+    local check_interval="${MOLE_UPDATE_CHECK_INTERVAL:-3600}"
+
+    if [[ "$last_check" =~ ^[0-9]+$ && "$now" =~ ^[0-9]+$ && "$last_check" -gt 0 ]] &&
+        ((now - last_check < check_interval)); then
+        return 0
+    fi
+
+    touch "$timestamp_file" 2> /dev/null || true
 
     (
         (
@@ -897,6 +913,18 @@ check_for_updates() {
             fi
         ) > /dev/null 2>&1 < /dev/null &
     )
+}
+
+show_cli_update_notice() {
+    [[ "${MOLE_TEST_MODE:-0}" == "1" ]] && return 0
+    [[ -t 1 ]] || return 0
+
+    local msg_cache="$HOME/.cache/mole/update_message"
+    local update_message
+    update_message="$(read_update_message_cache "$msg_cache")"
+    if [[ -n "$update_message" ]]; then
+        printf '%s\n' "$update_message"
+    fi
 }
 
 # UI helpers

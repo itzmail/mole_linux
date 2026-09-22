@@ -61,7 +61,7 @@ source "$SCRIPT_DIR/lib/core/commands.sh"
 trap cleanup_temp_files EXIT INT TERM
 
 # Version and update helpers
-VERSION="1.54.0"
+VERSION="1.55.0"
 MOLE_TAGLINE="Deep clean and optimize your Mac."
 
 is_touchid_configured() {
@@ -234,6 +234,20 @@ interactive_main_menu() {
     done
 }
 
+mole_run_subcommand() {
+    local script="$1"
+    shift
+
+    check_for_updates
+
+    local rc=0
+    "$script" "$@" || rc=$?
+    if [[ "$rc" -ne 130 && "$rc" -ne 143 ]]; then
+        show_cli_update_notice
+    fi
+    exit "$rc"
+}
+
 # CLI dispatch
 main() {
     local -a args=()
@@ -245,34 +259,34 @@ main() {
 
     case "${args[0]:-""}" in
         "optimize" | "optimise")
-            exec "$SCRIPT_DIR/bin/optimize.sh" "${args[@]:1}"
+            mole_run_subcommand "$SCRIPT_DIR/bin/optimize.sh" "${args[@]:1}"
             ;;
         "clean")
-            exec "$SCRIPT_DIR/bin/clean.sh" "${args[@]:1}"
+            mole_run_subcommand "$SCRIPT_DIR/bin/clean.sh" "${args[@]:1}"
             ;;
         "uninstall")
-            exec "$SCRIPT_DIR/bin/uninstall.sh" "${args[@]:1}"
+            mole_run_subcommand "$SCRIPT_DIR/bin/uninstall.sh" "${args[@]:1}"
             ;;
         "analyze" | "analyse")
-            exec "$SCRIPT_DIR/bin/analyze.sh" "${args[@]:1}"
+            mole_run_subcommand "$SCRIPT_DIR/bin/analyze.sh" "${args[@]:1}"
             ;;
         "status")
-            exec "$SCRIPT_DIR/bin/status.sh" "${args[@]:1}"
+            mole_run_subcommand "$SCRIPT_DIR/bin/status.sh" "${args[@]:1}"
             ;;
         "trash")
-            exec "$SCRIPT_DIR/bin/trash.sh" "${args[@]:1}"
+            mole_run_subcommand "$SCRIPT_DIR/bin/trash.sh" "${args[@]:1}"
             ;;
         "purge")
-            exec "$SCRIPT_DIR/bin/purge.sh" "${args[@]:1}"
+            mole_run_subcommand "$SCRIPT_DIR/bin/purge.sh" "${args[@]:1}"
             ;;
         "installer")
-            exec "$SCRIPT_DIR/bin/installer.sh" "${args[@]:1}"
+            mole_run_subcommand "$SCRIPT_DIR/bin/installer.sh" "${args[@]:1}"
             ;;
         "touchid")
-            exec "$SCRIPT_DIR/bin/touchid.sh" "${args[@]:1}"
+            mole_run_subcommand "$SCRIPT_DIR/bin/touchid.sh" "${args[@]:1}"
             ;;
         "completion")
-            exec "$SCRIPT_DIR/bin/completion.sh" "${args[@]:1}"
+            mole_run_subcommand "$SCRIPT_DIR/bin/completion.sh" "${args[@]:1}"
             ;;
         "update")
             local force_update=false
