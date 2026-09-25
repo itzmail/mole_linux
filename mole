@@ -83,8 +83,9 @@ _main_menu_controls_line() {
     local controls="${GRAY}↑↓  |  Enter  |  M More  |  V Version"
     if [[ "$touchid_configured" != "true" ]]; then
         controls="${controls}  |  T TouchID"
-    elif [[ "$show_update" == "true" ]]; then
-        controls="${controls}  |  U Update"
+    fi
+    if [[ "$show_update" == "true" ]]; then
+        controls="${controls}  |  ${GREEN}U Update${GRAY}"
     fi
     controls="${controls}  |  Q Quit${NC}"
     printf '%s' "$controls"
