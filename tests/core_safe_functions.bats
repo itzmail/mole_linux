@@ -3142,3 +3142,67 @@ EOF
     }
     [[ "$output" == *"UNREADABLE=2"* ]]
 }
+
+@test "the debug flag never changes an open-handle verdict (#1439)" {
+    # The probe folds lsof stderr into the buffer whose emptiness is what makes
+    # rc=1 mean "conclusively idle". run_with_timeout traces to that same stream
+    # under MO_DEBUG=1, so --debug left the buffer never empty and downgraded
+    # every probe to "could not tell". Measured before the fix: 10 of 25 real
+    # cache databases flipped from cleanable to kept, which means the flag meant
+    # to explain a run was quietly changing it. The stub below reproduces the
+    # trace on purpose; a stub that swallows it cannot see this class at all.
+    local idle="$HOME/Library/Caches/example.idle/Cache.db"
+    mkdir -p "$(dirname "$idle")"
+    printf 'idle\n' > "$idle"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" idle="$idle" \
+        /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+_MOLE_COMPLETE_LSOF_MODE=direct
+lsof() { return 1; }
+run_with_timeout() {
+    local duration="$1"
+    shift
+    if [[ "${MO_DEBUG:-0}" == "1" ]]; then
+        echo "[TIMEOUT] Running with ${duration}s timeout: $*" >&2
+    fi
+    "$@"
+}
+export MO_DEBUG=0
+quiet=0
+_mole_paths_have_open_handle "$idle" || quiet=$?
+export MO_DEBUG=1
+loud=0
+_mole_paths_have_open_handle "$idle" || loud=$?
+printf 'QUIET=%s LOUD=%s\n' "$quiet" "$loud"
+EOF
+
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [[ "$output" == *"QUIET=1"* ]] || { echo "$output"; return 1; }
+    [[ "$output" == *"LOUD=1"* ]] || { echo "$output"; return 1; }
+}
+
+@test "SQLite timeout after sizing keeps the file without cancellation (#1595)" {
+    local database="$TEST_DIR/final-timeout.sqlite"
+    printf 'database' > "$database"
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" database="$database" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+MOLE_CURRENT_COMMAND=clean
+MOLE_CLEAN_CANCEL_STATUS=0
+_MOLE_COMPLETE_LSOF_MODE=direct
+_mole_run_complete_lsof() {
+    [[ -e "${database}.sized" ]] && return 124
+    return 1
+}
+oplog_enabled() { return 0; }
+get_path_size_kb() { touch "${database}.sized"; printf '1\n'; }
+rc=0
+safe_remove "$database" true || rc=$?
+printf 'RC=%s CANCEL=%s EXISTS=%s SIZED=%s\n' "$rc" "$MOLE_CLEAN_CANCEL_STATUS" \
+    "$(test -f "$database" && echo yes || echo no)" "$(test -f "${database}.sized" && echo yes || echo no)"
+EOF
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"RC=1 CANCEL=0 EXISTS=yes SIZED=yes"* ]]
+}

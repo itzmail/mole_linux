@@ -2627,6 +2627,34 @@ report_agent_worktree_candidates() {
     return 0
 }
 
+# One `docker system df` row for the Large files Docker line. Docker's
+# Reclaimable is swapped for the active/total count when it contradicts the
+# row's own counts: something reclaimable while every item is in use, or all
+# images reclaimable while a container still uses one. Engine 29.0 through
+# 29.3 reports in-use images as reclaimable (moby/moby#51775), and older
+# clients count shared layers of in-use images the same way. Rows whose
+# counts do not parse keep Docker's text.
+docker_df_review_segment() {
+    local type="$1"
+    local size="$2"
+    local reclaimable="$3"
+    local total="$4"
+    local active="$5"
+    local contradicts=false
+    if [[ "$total" =~ ^[0-9]+$ && "$active" =~ ^[0-9]+$ ]]; then
+        if [[ $total -gt 0 && $active -eq $total && "$reclaimable" != 0B* ]]; then
+            contradicts=true
+        elif [[ "$type" == "Images" && $active -gt 0 && "$reclaimable" == *"(100%)"* ]]; then
+            contradicts=true
+        fi
+    fi
+    if [[ "$contradicts" == "true" ]]; then
+        printf '%s %s (%s/%s in use)\n' "$type" "$size" "$active" "$total"
+    else
+        printf '%s %s (%s reclaimable)\n' "$type" "$size" "$reclaimable"
+    fi
+}
+
 # Large file candidates (report only, no deletion).
 check_large_file_candidates() {
     local threshold_kb=$((1024 * 1024)) # 1GB
@@ -2794,12 +2822,14 @@ check_large_file_candidates() {
     local docker_reported=false
     if command -v docker > /dev/null 2>&1; then
         local docker_output
-        docker_output=$(run_with_timeout "$MOLE_TIMEOUT_SHORT_QUERY_SEC" docker system df --format '{{.Type}}\t{{.Size}}\t{{.Reclaimable}}' 2> /dev/null || true)
+        # The counts go last: tab is IFS whitespace, so an empty trailing
+        # field cannot shift Size or Reclaimable out of place.
+        docker_output=$(run_with_timeout "$MOLE_TIMEOUT_SHORT_QUERY_SEC" docker system df --format '{{.Type}}\t{{.Size}}\t{{.Reclaimable}}\t{{.TotalCount}}\t{{.Active}}' 2> /dev/null || true)
         if [[ -n "$docker_output" ]]; then
             local docker_detail=""
-            while IFS=$'\t' read -r dtype dsize dreclaim; do
+            while IFS=$'\t' read -r dtype dsize dreclaim dtotal dactive; do
                 [[ -z "$dtype" ]] && continue
-                docker_detail+="${docker_detail:+ · }${dtype} ${dsize} (${dreclaim} reclaimable)"
+                docker_detail+="${docker_detail:+ · }$(docker_df_review_segment "$dtype" "$dsize" "$dreclaim" "$dtotal" "$dactive")"
             done <<< "$docker_output"
             if [[ -n "$docker_detail" ]]; then
                 stop_section_spinner

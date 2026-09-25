@@ -616,16 +616,8 @@ func ioBar(rate float64) string {
 }
 
 func renderProcessCard(procs []ProcessInfo, cardWidth int) cardData {
-	return renderProcessCardWithZombies(procs, 0, nil, cardWidth)
-}
-
-func renderProcessCardWithZombies(procs []ProcessInfo, zombieCount int, zombieParents []ZombieParent, cardWidth int) cardData {
 	var lines []string
 	maxProcs := 3
-	if zombieCount > 0 {
-		lines = append(lines, renderZombieProcessLine(zombieCount, zombieParents, cardWidth))
-		maxProcs = 2
-	}
 	for i, p := range procs {
 		if i >= maxProcs {
 			break
@@ -652,18 +644,6 @@ func renderProcessCardWithZombies(procs []ProcessInfo, zombieCount int, zombiePa
 	return cardData{icon: iconProcs, title: "Processes", lines: lines}
 }
 
-func renderZombieProcessLine(count int, parents []ZombieParent, cardWidth int) string {
-	if cardWidth <= 0 {
-		cardWidth = colWidth
-	}
-	line := fmt.Sprintf("Zombies %d", count)
-	if len(parents) > 0 {
-		owner := formatProcessLabel(ProcessInfo{PID: parents[0].PID, Name: parents[0].Name})
-		line += fmt.Sprintf(" · %s ×%d", owner, parents[0].Count)
-	}
-	return warnStyle.Render(shorten(line, cardWidth))
-}
-
 func processBar(percent float64, cardWidth int) string {
 	if cardWidth >= processWideMinWidth {
 		return progressBar(percent)
@@ -685,12 +665,12 @@ func processMemoryText(p ProcessInfo) string {
 // has completed at least once; until it has, an empty battery list means "not
 // measured yet", not "this Mac has no battery".
 func buildCards(m MetricsSnapshot, width int, cpuCores int, batteryProbed bool) []cardData {
-	zombieCount := 0
-	if m.ZombieCount != nil {
-		zombieCount = *m.ZombieCount
-	}
-	processCard := renderProcessCardWithZombies(m.TopProcesses, zombieCount, m.ZombieParents, width)
-	hasRenderedProcessData := len(m.TopProcesses) > 0 || zombieCount > 0
+	// Zombie counts stay in `status --json` for automation and out of the
+	// card: a reaped-child backlog is kernel vocabulary a reader cannot act
+	// on, the Mac app's own Status surface never showed it, and the row was
+	// spending one of three process slots to say it.
+	processCard := renderProcessCard(m.TopProcesses, width)
+	hasRenderedProcessData := len(m.TopProcesses) > 0
 	hasActiveProcessAlert := len(activeAlerts(m.ProcessAlerts)) > 0
 	switch {
 	case processSnapshotFresh(m.ProcessStale):

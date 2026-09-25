@@ -107,6 +107,76 @@ EOT2B
     [[ "$output" == *"mo purge --include-empty"* ]] || return 1
 }
 
+@test "show_project_artifact_hint_notice stays silent below the size floor" {
+    run env PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOTFLOOR'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/hints.sh"
+probe_project_artifact_hints() {
+    PROJECT_ARTIFACT_HINT_DETECTED=true
+    PROJECT_ARTIFACT_HINT_COUNT=4
+    PROJECT_ARTIFACT_HINT_TRUNCATED=false
+    PROJECT_ARTIFACT_HINT_EXAMPLES=("~/www/demo/build")
+    PROJECT_ARTIFACT_HINT_ESTIMATED_KB=20
+    PROJECT_ARTIFACT_HINT_ESTIMATE_SAMPLES=4
+    PROJECT_ARTIFACT_HINT_ESTIMATE_PARTIAL=false
+}
+bytes_to_human() { echo "20KB"; }
+note_activity() { :; }
+show_project_artifact_hint_notice
+EOTFLOOR
+
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"Build artifacts"* ]] || return 1
+}
+
+@test "show_project_artifact_hint_notice still reports a measurement above the floor" {
+    run env PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOTABOVE'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/hints.sh"
+probe_project_artifact_hints() {
+    PROJECT_ARTIFACT_HINT_DETECTED=true
+    PROJECT_ARTIFACT_HINT_COUNT=4
+    PROJECT_ARTIFACT_HINT_TRUNCATED=false
+    PROJECT_ARTIFACT_HINT_EXAMPLES=("~/www/demo/build")
+    PROJECT_ARTIFACT_HINT_ESTIMATED_KB=512000
+    PROJECT_ARTIFACT_HINT_ESTIMATE_SAMPLES=4
+    PROJECT_ARTIFACT_HINT_ESTIMATE_PARTIAL=false
+}
+bytes_to_human() { echo "500MB"; }
+note_activity() { :; }
+show_project_artifact_hint_notice
+EOTABOVE
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Build artifacts"* ]] || return 1
+    [[ "$output" == *"500MB"* ]] || return 1
+}
+
+@test "show_project_artifact_hint_notice reports a partial measurement below the floor" {
+    run env PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOTPARTIAL'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/hints.sh"
+probe_project_artifact_hints() {
+    PROJECT_ARTIFACT_HINT_DETECTED=true
+    PROJECT_ARTIFACT_HINT_COUNT=30
+    PROJECT_ARTIFACT_HINT_TRUNCATED=true
+    PROJECT_ARTIFACT_HINT_EXAMPLES=("~/www/demo/build")
+    PROJECT_ARTIFACT_HINT_ESTIMATED_KB=20
+    PROJECT_ARTIFACT_HINT_ESTIMATE_SAMPLES=1
+    PROJECT_ARTIFACT_HINT_ESTIMATE_PARTIAL=true
+}
+bytes_to_human() { echo "20KB"; }
+note_activity() { :; }
+show_project_artifact_hint_notice
+EOTPARTIAL
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Build artifacts"* ]] || return 1
+}
+
 @test "show_project_artifact_hint_notice reports skipped slow project artifact scans (#1053)" {
     local root="$HOME/Library/CloudStorage"
     mkdir -p "$root"

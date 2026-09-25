@@ -421,6 +421,26 @@ show_project_artifact_hint_notice() {
         review_command="mo purge --include-empty"
     fi
 
+    # A fully measured estimate below the floor is not worth a row: four
+    # directories holding 20KB read as "you have something to clean" and cost a
+    # `mo purge` round trip to find out they do not. 200MB is where reclaiming
+    # build output moves the number the user came for. A constant, not a knob,
+    # because this repo counts a new env var as a new setting. A truncated,
+    # partial or UNKNOWN measurement still prints: a sizing timeout has to stay
+    # visible rather than be rounded down into silence. A measured ZERO is
+    # exempt too, because that row is not about size at all: it points at empty
+    # candidate directories and the `--include-empty` command that lists them
+    # (#869).
+    local min_kb=204800
+    if [[ $PROJECT_ARTIFACT_HINT_ESTIMATE_SAMPLES -gt 0 ]] &&
+        [[ $PROJECT_ARTIFACT_HINT_ESTIMATED_KB -gt 0 ]] &&
+        [[ $PROJECT_ARTIFACT_HINT_ESTIMATED_KB -lt $min_kb ]] &&
+        [[ "$PROJECT_ARTIFACT_HINT_TRUNCATED" != "true" ]] &&
+        [[ "$PROJECT_ARTIFACT_HINT_ESTIMATE_PARTIAL" != "true" ]] &&
+        [[ $PROJECT_ARTIFACT_HINT_ESTIMATE_SAMPLES -ge $PROJECT_ARTIFACT_HINT_COUNT ]]; then
+        return 0
+    fi
+
     # One compact row: "Build artifacts · 15+ dirs, 985.6MB+ · mo purge".
     local detail="${hint_count_label} dirs"
     if [[ $PROJECT_ARTIFACT_HINT_ESTIMATE_SAMPLES -gt 0 ]]; then

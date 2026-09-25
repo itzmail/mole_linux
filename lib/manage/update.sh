@@ -717,10 +717,13 @@ is_homebrew_install() {
 }
 
 get_install_channel() {
-    # Try user config dir first (matches install.sh behavior), fallback to SCRIPT_DIR
-    local channel_file="${MOLE_CONFIG_DIR:-$HOME/.config/mole}/install_channel"
+    # This install's own receipt wins. install.sh --config can move the config
+    # dir, and the launcher records where it went in SCRIPT_DIR, so reading the
+    # default path first let a receipt left by an earlier default install decide
+    # which channel a relocated install updates from (tw93/Mole#1589).
+    local channel_file="${MOLE_CONFIG_DIR:-${SCRIPT_DIR:-}}/install_channel"
     if [[ ! -f "$channel_file" ]]; then
-        channel_file="$SCRIPT_DIR/install_channel"
+        channel_file="$HOME/.config/mole/install_channel"
     fi
     local channel="stable"
     if [[ -f "$channel_file" ]]; then
@@ -733,12 +736,12 @@ get_install_channel() {
 }
 
 # Read one field out of the install channel receipt, empty when absent.
-# User config dir first (matches install.sh), then the install directory.
+# Same precedence as get_install_channel: this install's own receipt first.
 _read_install_channel_field() {
     local key="$1"
-    local channel_file="${MOLE_CONFIG_DIR:-$HOME/.config/mole}/install_channel"
+    local channel_file="${MOLE_CONFIG_DIR:-${SCRIPT_DIR:-}}/install_channel"
     if [[ ! -f "$channel_file" ]]; then
-        channel_file="$SCRIPT_DIR/install_channel"
+        channel_file="$HOME/.config/mole/install_channel"
     fi
     if [[ -f "$channel_file" ]]; then
         sed -n "s/^${key}=\(.*\)$/\1/p" "$channel_file" | head -1

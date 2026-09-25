@@ -2786,6 +2786,80 @@ EOF
     [ -f "$HOME/.Trash/mole-config/whitelist" ] || return 1
 }
 
+@test "remove_mole trashes the relocated config directory, not the default (#1589)" {
+    # `install.sh --config` moves the whole tree, and update.sh already follows
+    # it through SCRIPT_DIR. remove.sh assumed ~/.config/mole, so a relocated
+    # install kept its real settings and lost whatever sat at the default path.
+    # setup() clears $HOME/* but not dotfiles, so a previous test's Trash
+    # would push this move to mole-config-1 and the assertion would read
+    # the earlier run's file.
+    rm -rf "$HOME/.Trash"
+    mkdir -p "$HOME/.local/bin"
+    touch "$HOME/.local/bin/mole"
+    touch "$HOME/.local/bin/mo"
+    local relocated="$HOME/Library/Application Support/mole"
+    mkdir -p "$relocated/lib/core" "$relocated/bin"
+    touch "$relocated/lib/core/common.sh" "$relocated/install_channel"
+    echo "relocated-entry" > "$relocated/whitelist"
+    mkdir -p "$HOME/.config/mole" "$HOME/.cache/mole" "$HOME/Library/Logs/mole"
+    echo "stale-default" > "$HOME/.config/mole/whitelist"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" PATH="/usr/bin:/bin" MOLE_TEST_MODE=1 \
+        MOLE_CONFIG_DIR="$relocated" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+start_inline_spinner() { :; }
+stop_inline_spinner() { :; }
+sudo() { return 0; }
+export -f start_inline_spinner stop_inline_spinner sudo
+printf '\n' | "$PROJECT_ROOT/mole" remove
+EOF
+
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [ -f "$HOME/.Trash/mole-config/whitelist" ] || return 1
+    grep -q relocated-entry "$HOME/.Trash/mole-config/whitelist" || return 1
+    [ ! -d "$relocated" ] || return 1
+    # The default path was never this install's; leave it where it is.
+    [ -f "$HOME/.config/mole/whitelist" ] || return 1
+}
+
+@test "remove_mole never adopts a config directory holding foreign files (#1589)" {
+    # --config takes any path, and install.sh creates lib/core/common.sh inside
+    # it. Treating that file as proof of ownership would trash everything
+    # beside it, which is how #1446 lost an entire ~/.local.
+    # setup() clears $HOME/* but not dotfiles, so a previous test's Trash
+    # would push this move to mole-config-1 and the assertion would read
+    # the earlier run's file.
+    rm -rf "$HOME/.Trash"
+    mkdir -p "$HOME/.local/bin"
+    touch "$HOME/.local/bin/mole"
+    touch "$HOME/.local/bin/mo"
+    local shared="$HOME/Documents"
+    mkdir -p "$shared/lib/core" "$shared/bin"
+    touch "$shared/lib/core/common.sh" "$shared/install_channel"
+    mkdir -p "$shared/taxes-2025"
+    echo "not mine" > "$shared/notes.txt"
+    mkdir -p "$HOME/.config/mole" "$HOME/.cache/mole" "$HOME/Library/Logs/mole"
+    echo "real-settings" > "$HOME/.config/mole/whitelist"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" PATH="/usr/bin:/bin" MOLE_TEST_MODE=1 \
+        MOLE_CONFIG_DIR="$shared" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+start_inline_spinner() { :; }
+stop_inline_spinner() { :; }
+sudo() { return 0; }
+export -f start_inline_spinner stop_inline_spinner sudo
+printf '\n' | "$PROJECT_ROOT/mole" remove
+EOF
+
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    # Everything the user owns stays exactly where it was.
+    [ -f "$shared/notes.txt" ] || return 1
+    [ -d "$shared/taxes-2025" ] || return 1
+    [ ! -e "$HOME/.Trash/mole-config/notes.txt" ] || return 1
+    # Removal falls back to the one path that can only be Mole's.
+    [ -f "$HOME/.Trash/mole-config/whitelist" ] || return 1
+}
+
 @test "remove_mole dry-run keeps manual binaries and caches" {
     mkdir -p "$HOME/.local/bin"
     touch "$HOME/.local/bin/mole"

@@ -2743,3 +2743,108 @@ EOF_INNER
     [[ "$output" == *"REMOVE:$volume/Photos/._IMG_0001.jpg"* ]] || return 1
     [[ "$output" != *"REMOVE:$volume/.Spotlight-V100"* ]]
 }
+
+# Runs Large files against a docker stub that renders whatever
+# `system df --format` template production asks for, from rows of
+# Type|TotalCount|Active|Size|Reclaimable. Leaves the Docker line in
+# docker_row.
+_large_files_docker_row() {
+    local review_home="$1"
+    local rows="$2"
+    mkdir -p "$review_home"
+
+    run env HOME="$review_home" PROJECT_ROOT="$PROJECT_ROOT" DOCKER_DF_ROWS="$rows" \
+        /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/user.sh"
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+note_activity() { :; }
+defaults() { return 1; }
+run_with_timeout() {
+    shift
+    "$@"
+}
+docker() {
+    [[ "${1:-} ${2:-}" == "system df" && "${3:-}" == "--format" ]] || return 1
+    local type total active size reclaimable line
+    while IFS='|' read -r type total active size reclaimable; do
+        line="$4"
+        line=${line//'{{.Type}}'/$type}
+        line=${line//'{{.TotalCount}}'/$total}
+        line=${line//'{{.Active}}'/$active}
+        line=${line//'{{.Size}}'/$size}
+        line=${line//'{{.Reclaimable}}'/$reclaimable}
+        line=${line//'\t'/$'\t'}
+        printf '%s\n' "$line"
+    done <<< "$DOCKER_DF_ROWS"
+}
+check_large_file_candidates
+EOF
+
+    docker_row=$(printf '%s\n' "$output" | grep 'Docker storage' || true)
+}
+
+@test "large files Docker row drops an in-use images reclaimable (moby#51775)" {
+    # Colima on Engine 29.2 with the containerd image store: both images back
+    # a container, yet the daemon calls all of them reclaimable.
+    local docker_row
+    _large_files_docker_row "$HOME/large-review-docker-containerd" \
+        "Images|2|2|7.093GB|7.093GB (100%)
+Containers|2|1|846.3MB|3.658MB (0%)
+Local Volumes|7|7|65.76MB|0B (0%)
+Build Cache|0|0|0B|0B"
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+    [[ "$docker_row" == *"Images 7.093GB (2/2 in use) · Containers 846.3MB (3.658MB (0%) reclaimable) · Local Volumes 65.76MB (0B (0%) reclaimable) · Build Cache 0B (0B reclaimable)"* ]] || {
+        echo "$output"
+        return 1
+    }
+    [[ "$docker_row" != *"(100%)"* ]] || {
+        echo "$docker_row"
+        return 1
+    }
+}
+
+@test "large files Docker row drops a 100% images reclaimable while one image is in use" {
+    # Same daemon bug with only part of the images in use: 100% is still
+    # impossible, because the image a container runs keeps its layers.
+    local docker_row
+    _large_files_docker_row "$HOME/large-review-docker-partial" \
+        "Images|3|1|4.2GB|4.2GB (100%)
+Containers|1|1|12MB|0B (0%)"
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+    [[ "$docker_row" == *"Images 4.2GB (1/3 in use) · Containers 12MB (0B (0%) reclaimable)"* ]] || {
+        echo "$output"
+        return 1
+    }
+}
+
+@test "large files Docker row drops a reclaimable figure when every item is in use" {
+    # Older clients count the shared layers of in-use images as reclaimable,
+    # though no prune can free them while every image backs a container.
+    local docker_row
+    _large_files_docker_row "$HOME/large-review-docker-shared" \
+        "Images|3|3|2.8GB|1.1GB (39%)"
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+    [[ "$docker_row" == *"Images 2.8GB (3/3 in use)"* ]] || {
+        echo "$output"
+        return 1
+    }
+    [[ "$docker_row" != *"reclaimable"* ]] || {
+        echo "$docker_row"
+        return 1
+    }
+}

@@ -1254,34 +1254,28 @@ func TestBuildCardsDistinguishesEmptyProcessSampleStates(t *testing.T) {
 	}
 }
 
-func TestRenderProcessCardShowsBoundedZombieGuidance(t *testing.T) {
-	card := renderProcessCardWithZombies(
+func TestRenderProcessCardKeepsThreeProcessRowsWithZombiesPresent(t *testing.T) {
+	// The zombie row used to take one of the three slots and spend it on
+	// kernel vocabulary. The count stays in `status --json`; the card shows
+	// processes.
+	card := renderProcessCard(
 		[]ProcessInfo{
 			{Name: "Chrome", CPU: 12, MemoryBytes: 512 << 20},
 			{Name: "WindowServer", CPU: 8, MemoryBytes: 256 << 20},
 			{Name: "Xcode", CPU: 4, MemoryBytes: 128 << 20},
 		},
-		94,
-		[]ZombieParent{{PID: 42, Name: "Chrome", Count: 6}},
 		colWidth,
 	)
 
 	if len(card.lines) != 3 {
-		t.Fatalf("renderProcessCardWithZombies() lines = %d, want 3", len(card.lines))
-	}
-	plain := stripANSI(card.lines[0])
-	if !strings.Contains(plain, "Zombies 94") || !strings.Contains(plain, "Chrome (42)") {
-		t.Fatalf("zombie summary missing count or parent: %q", plain)
-	}
-	if strings.Contains(strings.ToLower(plain), "restart") || strings.Contains(strings.ToLower(plain), "quit") {
-		t.Fatalf("zombie summary should attribute without indiscriminate process advice: %q", plain)
-	}
-	if lipgloss.Width(plain) > colWidth {
-		t.Fatalf("zombie summary exceeds card width: %q", plain)
+		t.Fatalf("renderProcessCard() lines = %d, want 3", len(card.lines))
 	}
 	joined := stripANSI(strings.Join(card.lines, "\n"))
-	if strings.Contains(joined, "Xcode") {
-		t.Fatalf("zombie guidance should keep card at three rows, got %q", joined)
+	if !strings.Contains(joined, "Xcode") {
+		t.Fatalf("third process row should be rendered, got %q", joined)
+	}
+	if strings.Contains(strings.ToLower(joined), "zombie") {
+		t.Fatalf("the card must not carry zombie vocabulary: %q", joined)
 	}
 }
 

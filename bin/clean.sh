@@ -296,9 +296,20 @@ record_dry_run_cleanup_target() {
     append_dry_run_cleanup_target "$@"
 }
 
-# Emit the first complete ledger record for each path identity. Perl keeps the
-# normal path linear for large clean previews; the Bash fallback preserves the
-# same NUL-safe format on systems without Perl.
+# Emit the first complete ledger record for each path identity, with a seventh
+# field naming the nearest measured ancestor that is also a candidate, or empty.
+# Sections overlap on purpose: "User essentials" sweeps ~/Library/Caches/* whole,
+# then later sections list ~/Library/Caches/Yarn/v6 or Homebrew/downloads/*
+# again. The preview measured both, so Potential space counted those bytes
+# twice; a real run only ever frees them once, whichever order the sections
+# reach them in. The row stays in the preview, because a whitelist entry for
+# the child is how a user protects it, but the renderer counts it under the
+# ancestor. An ancestor with unknown size covers nothing: its children's
+# measured bytes are the only figure the "At least" total has for that tree.
+# Identity duplicates are dropped before coverage is decided, so a stale
+# unknown-size duplicate of an ancestor cannot hide a measured child.
+# Perl keeps the normal path linear for large clean previews; the Bash
+# fallback preserves the same NUL-safe format on systems without Perl.
 emit_deduplicated_dry_run_ledger() {
     if [[ -z "${CLEAN_PREVIEW_LEDGER_FILE:-}" || ! -f "$CLEAN_PREVIEW_LEDGER_FILE" ]]; then
         return 0
@@ -314,38 +325,127 @@ emit_deduplicated_dry_run_ledger() {
             binmode STDIN;
             binmode STDOUT;
             local $/ = "\0";
+            my @records;
             my %seen;
-            while (defined(my $identity = <STDIN>)) {
+            my %measured;
+            RECORD: while (defined(my $identity = <STDIN>)) {
                 chomp $identity;
                 my @record = ($identity);
                 for (1 .. 5) {
                     my $field = <STDIN>;
-                    exit 0 unless defined $field;
+                    last RECORD unless defined $field;
                     chomp $field;
                     push @record, $field;
                 }
                 next if $seen{$identity}++;
-                print join("\0", @record), "\0";
+                push @records, \@record;
+                my $path = $record[5];
+                $path =~ s{/+$}{} if length($path) > 1;
+                $measured{$path} = 1 if $record[3] eq "true";
+            }
+            for my $record (@records) {
+                my $ancestor = $record->[5];
+                $ancestor =~ s{/+$}{} if length($ancestor) > 1;
+                my $covered_by = "";
+                while ($ancestor =~ s{/[^/]*$}{} && length $ancestor) {
+                    if ($measured{$ancestor}) {
+                        $covered_by = $ancestor;
+                        last;
+                    }
+                }
+                print join("\0", @$record, $covered_by), "\0";
             }
         ' < "$CLEAN_PREVIEW_LEDGER_FILE"
         return 0
     fi
 
     local identity size_kb count size_known section path
+    local -a record_identities=()
+    local -a record_sizes=()
+    local -a record_counts=()
+    local -a record_size_knowns=()
+    local -a record_sections=()
+    local -a record_paths=()
     local -a seen_identities=()
+    local -a measured_paths=()
+    # One joined string lets each identity or ancestor lookup be a single
+    # pattern match instead of a scan over every entry seen so far. A
+    # separator byte inside an entry would make that match ambiguous, so the
+    # exact list scan is used instead in that case.
+    local measured_separator=$'\x1f'
+    local seen_joined=""
+    local seen_joined_usable=true
+    local measured_joined=""
+    local measured_joined_usable=true
+    local trimmed_path=""
     while IFS= read -r -d '' identity &&
         IFS= read -r -d '' size_kb &&
         IFS= read -r -d '' count &&
         IFS= read -r -d '' size_known &&
         IFS= read -r -d '' section &&
         IFS= read -r -d '' path; do
-        if [[ ${#seen_identities[@]} -gt 0 ]] && mole_identity_in_list "$identity" "${seen_identities[@]}"; then
+        # The needle must be separator-free too: a value that happens to
+        # contain the separator could match across two stored entries.
+        if [[ "$seen_joined_usable" == "true" && "$identity" != *"$measured_separator"* ]]; then
+            if [[ "$seen_joined" == *"$measured_separator$identity$measured_separator"* ]]; then
+                continue
+            fi
+        elif [[ ${#seen_identities[@]} -gt 0 ]] && mole_identity_in_list "$identity" "${seen_identities[@]}"; then
             continue
         fi
         seen_identities+=("$identity")
-        printf '%s\0%s\0%s\0%s\0%s\0%s\0' \
-            "$identity" "$size_kb" "$count" "$size_known" "$section" "$path"
+        [[ "$identity" == *"$measured_separator"* ]] && seen_joined_usable=false
+        seen_joined+="$measured_separator$identity$measured_separator"
+        record_identities+=("$identity")
+        record_sizes+=("$size_kb")
+        record_counts+=("$count")
+        record_size_knowns+=("$size_known")
+        record_sections+=("$section")
+        record_paths+=("$path")
+        if [[ "$size_known" == "true" ]]; then
+            # Trim in place: a command substitution would drop a trailing
+            # newline from the path and desynchronize the two engines.
+            trimmed_path="$path"
+            while [[ ${#trimmed_path} -gt 1 && "$trimmed_path" == */ ]]; do
+                trimmed_path="${trimmed_path%/}"
+            done
+            measured_paths+=("$trimmed_path")
+            [[ "$trimmed_path" == *"$measured_separator"* ]] && measured_joined_usable=false
+            measured_joined+="$measured_separator$trimmed_path$measured_separator"
+        fi
     done < "$CLEAN_PREVIEW_LEDGER_FILE"
+
+    local record_index=0
+    local ancestor=""
+    local covered_by=""
+    while [[ $record_index -lt ${#record_identities[@]} ]]; do
+        path="${record_paths[$record_index]}"
+        ancestor="$path"
+        while [[ ${#ancestor} -gt 1 && "$ancestor" == */ ]]; do
+            ancestor="${ancestor%/}"
+        done
+        covered_by=""
+        if [[ ${#measured_paths[@]} -gt 0 ]]; then
+            while [[ "$ancestor" == */* ]]; do
+                ancestor="${ancestor%/*}"
+                [[ -n "$ancestor" ]] || break
+                if [[ "$measured_joined_usable" == "true" && "$ancestor" != *"$measured_separator"* ]]; then
+                    if [[ "$measured_joined" == *"$measured_separator$ancestor$measured_separator"* ]]; then
+                        covered_by="$ancestor"
+                        break
+                    fi
+                elif mole_identity_in_list "$ancestor" "${measured_paths[@]}"; then
+                    covered_by="$ancestor"
+                    break
+                fi
+            done
+        fi
+        printf '%s\0%s\0%s\0%s\0%s\0%s\0%s\0' \
+            "${record_identities[$record_index]}" "${record_sizes[$record_index]}" \
+            "${record_counts[$record_index]}" "${record_size_knowns[$record_index]}" \
+            "${record_sections[$record_index]}" "$path" "$covered_by"
+        record_index=$((record_index + 1))
+    done
 }
 
 write_clean_preview_header() {
@@ -366,7 +466,7 @@ EOF
 render_clean_preview_from_ledger() {
     write_clean_preview_header
 
-    local identity size_kb count size_known section path
+    local identity size_kb count size_known section path covered_by
     local current_rendered_section=""
     local known_size_kb=0
     local rendered_items=0
@@ -380,7 +480,8 @@ render_clean_preview_from_ledger() {
             IFS= read -r -d '' count &&
             IFS= read -r -d '' size_known &&
             IFS= read -r -d '' section &&
-            IFS= read -r -d '' path; do
+            IFS= read -r -d '' path &&
+            IFS= read -r -d '' covered_by; do
             if [[ "$section" != "$current_rendered_section" ]]; then
                 echo "" >> "$EXPORT_LIST_FILE"
                 echo "=== $section ===" >> "$EXPORT_LIST_FILE"
@@ -395,12 +496,19 @@ render_clean_preview_from_ledger() {
             [[ "$count" =~ ^[0-9]+$ && "$count" -gt 0 ]] || count=1
             local item_note=""
             [[ "$count" -gt 1 ]] && item_note=", $count items"
+            # A row inside another measured candidate stays visible, so the
+            # user can still copy it into the whitelist, but its bytes and
+            # items are already in the ancestor's row.
+            if [[ -n "$covered_by" ]]; then
+                item_note+=", counted under $covered_by"
+            fi
             if [[ "$size_known" == "true" ]]; then
                 echo "$path  # $(bytes_to_human "$((size_kb * 1024))")$item_note" >> "$EXPORT_LIST_FILE"
             else
                 echo "$path  # size unknown$item_note" >> "$EXPORT_LIST_FILE"
-                unknown_size_count=$((unknown_size_count + 1))
+                [[ -n "$covered_by" ]] || unknown_size_count=$((unknown_size_count + 1))
             fi
+            [[ -z "$covered_by" ]] || continue
 
             known_size_kb=$((known_size_kb + size_kb))
             rendered_items=$((rendered_items + count))
