@@ -88,7 +88,7 @@ is_project_container() {
     probe_timeout=$(_mole_timeout_with_deadline "$MOLE_TIMEOUT_MEDIUM_PROBE_SEC" "$deadline") || return $?
     probe_output=$(run_with_timeout "$probe_timeout" find "${find_args[@]}" 2> /dev/null) || probe_status=$?
     if [[ $probe_status -ne 0 ]]; then
-        [[ $probe_status -eq 124 || $probe_status -ge 128 ]] && return "$probe_status"
+        mole_rc_timeout_or_signal "$probe_status" && return "$probe_status"
         return 2
     fi
     [[ -n "$probe_output" ]]
@@ -942,7 +942,7 @@ classify_purge_activity() {
 
     if [[ $probe_status -ne 0 ]]; then
         debug_log "Purge activity scan failed closed (exit $probe_status): $path"
-        if [[ $probe_status -eq 124 || $probe_status -ge 128 ]]; then
+        if mole_rc_timeout_or_signal "$probe_status"; then
             return "$probe_status"
         fi
         return 0
@@ -976,7 +976,7 @@ purge_target_activity_still_safe() {
     local activity_status=0
     is_recently_modified "$path" "$(get_epoch_seconds)" || activity_status=$?
     [[ $activity_status -eq 1 ]] && return 0
-    if [[ $activity_status -eq 124 || $activity_status -ge 128 ]]; then
+    if mole_rc_timeout_or_signal "$activity_status"; then
         return "$activity_status"
     fi
     return 1
@@ -1047,7 +1047,7 @@ get_dir_size_kb() {
     fi
     rm -f "$du_tmp"
 
-    if [[ $du_exit -eq 124 ]]; then
+    if mole_rc_timeout "$du_exit"; then
         debug_log "Size calculation timed out (${timeout_seconds}s): $path"
         echo "TIMEOUT"
         return
@@ -2645,7 +2645,7 @@ clean_project_artifacts() {
         fi
         local activity_status=0
         purge_target_activity_still_safe "$item_path" "${item_activity_states[idx]:-uncertain}" || activity_status=$?
-        if [[ $activity_status -eq 124 || $activity_status -ge 128 ]]; then
+        if mole_rc_timeout_or_signal "$activity_status"; then
             PURGE_RUN_OUTCOME="cancelled"
             echo "$cleaned_count" > "$stats_dir/purge_count"
             return "$activity_status"
@@ -2686,7 +2686,7 @@ clean_project_artifacts() {
                 fi
             else
                 local removal_status=$?
-                if [[ $removal_status -eq 124 || $removal_status -ge 128 ]]; then
+                if mole_rc_timeout_or_signal "$removal_status"; then
                     PURGE_RUN_OUTCOME="cancelled"
                     echo "$cleaned_count" > "$stats_dir/purge_count"
                     if [[ -t 1 ]]; then

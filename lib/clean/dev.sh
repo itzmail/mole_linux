@@ -112,7 +112,7 @@ _run_github_cli_clear_cache_bound() {
     local command_status=0
     run_with_timeout "$MOLE_TIMEOUT_PKG_CLEANUP_SEC" \
         env XDG_CACHE_HOME="$expected_parent" gh config clear-cache || command_status=$?
-    if [[ $command_status -ne 0 && $command_status -ne 124 && $command_status -lt 128 ]]; then
+    if [[ $command_status -ne 0 ]] && ! mole_rc_timeout_or_signal "$command_status"; then
         _MOLE_GITHUB_CLI_CLEAR_REASON="owner cleanup failed"
     fi
     return "$command_status"
@@ -187,7 +187,7 @@ clean_github_cli_cache() {
     local probe_status=0
     run_with_timeout "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
         env XDG_CACHE_HOME="$physical_parent" gh config clear-cache --help > /dev/null 2>&1 || probe_status=$?
-    if [[ $probe_status -eq 124 || $probe_status -ge 128 ]]; then
+    if mole_rc_timeout_or_signal "$probe_status"; then
         return "$probe_status"
     fi
     if [[ $probe_status -ne 0 ]]; then
@@ -218,7 +218,7 @@ clean_github_cli_cache() {
         note_activity
         return 0
     fi
-    if [[ $clear_status -eq 124 || $clear_status -ge 128 ]]; then
+    if mole_rc_timeout_or_signal "$clear_status"; then
         return "$clear_status"
     fi
 
@@ -740,7 +740,7 @@ clean_clang_module_cache() {
     local resolver_rc=0
     darwin_user_cache=$(mole_darwin_user_cache_root) || resolver_rc=$?
     if [[ $resolver_rc -ne 0 ]]; then
-        [[ $resolver_rc -eq 124 || $resolver_rc -ge 128 ]] && return "$resolver_rc"
+        mole_rc_timeout_or_signal "$resolver_rc" && return "$resolver_rc"
         return 0
     fi
 
@@ -981,7 +981,7 @@ clean_go_cache_root() {
         note_activity
         return 0
     fi
-    if [[ $command_status -eq 124 || $command_status -ge 128 ]]; then
+    if mole_rc_timeout_or_signal "$command_status"; then
         return "$command_status"
     fi
 
@@ -1008,12 +1008,12 @@ clean_dev_go() {
     local go_build_cache=""
     local resolver_rc=0
     go_mod_cache=$(mole_go_cache_root GOMODCACHE) || resolver_rc=$?
-    if [[ $resolver_rc -eq 124 || $resolver_rc -ge 128 ]]; then
+    if mole_rc_timeout_or_signal "$resolver_rc"; then
         return "$resolver_rc"
     fi
     resolver_rc=0
     go_build_cache=$(mole_go_cache_root GOCACHE) || resolver_rc=$?
-    if [[ $resolver_rc -eq 124 || $resolver_rc -ge 128 ]]; then
+    if mole_rc_timeout_or_signal "$resolver_rc"; then
         return "$resolver_rc"
     fi
 
@@ -2676,11 +2676,11 @@ clean_dev_mobile() {
                 rm -f -- "$simctl_probe_stderr_file" 2> /dev/null || true # SAFE: exact temporary file created by mktemp above
             fi
             if [[ "$simctl_probe_ok" != "true" ]]; then
-                if [[ $simctl_probe_first_status -eq 124 && $simctl_probe_retry_status -eq 124 ]]; then
+                if mole_rc_timeout "$simctl_probe_first_status" && mole_rc_timeout "$simctl_probe_retry_status"; then
                     echo -e "  ${GRAY}${ICON_WARNING}${NC} Xcode unavailable simulators · simctl probe timed out"
                 else
                     local simctl_probe_exit_code=$simctl_probe_retry_status
-                    if [[ $simctl_probe_exit_code -eq 124 ]]; then
+                    if mole_rc_timeout "$simctl_probe_exit_code"; then
                         simctl_probe_exit_code=$simctl_probe_first_status
                     fi
                     echo -e "  ${GRAY}${ICON_WARNING}${NC} Xcode unavailable simulators · simctl probe failed (exit=${simctl_probe_exit_code})"
@@ -2789,7 +2789,7 @@ clean_dev_mobile() {
                             # Native simctl owns simulator state. A nonzero result can
                             # mean the device became active after the list, so never
                             # bypass it with direct directory removal.
-                            if [[ $delete_exit_code -eq 124 ]]; then
+                            if mole_rc_timeout "$delete_exit_code"; then
                                 echo -e "  ${GRAY}${ICON_WARNING}${NC} Xcode unavailable simulators · cleanup timed out"
                                 debug_log "simctl delete unavailable timed out"
                             else
@@ -3223,7 +3223,7 @@ _versioned_agent_delete_guard_allows() {
         _resolve_versioned_agent_active_path \
             "$_MOLE_VERSIONED_AGENT_GUARD_ROOT" \
             "$_MOLE_VERSIONED_AGENT_GUARD_ACTIVE_SYMLINK" || active_status=$?
-        if [[ $active_status -eq 124 || $active_status -ge 128 ]]; then
+        if mole_rc_timeout_or_signal "$active_status"; then
             _MOLE_CLEAN_GUARD_REASON="inventory interrupted"
             return "$active_status"
         fi
@@ -3250,7 +3250,7 @@ _versioned_agent_delete_guard_allows() {
         "$active_path" || plan_rc=$?
     if [[ $plan_rc -ne 0 ]]; then
         _MOLE_CLEAN_GUARD_REASON="inventory unknown"
-        [[ $plan_rc -eq 124 || $plan_rc -ge 128 ]] && return "$plan_rc"
+        mole_rc_timeout_or_signal "$plan_rc" && return "$plan_rc"
         return 1
     fi
 
@@ -3260,7 +3260,7 @@ _versioned_agent_delete_guard_allows() {
         _resolve_versioned_agent_active_path \
             "$_MOLE_VERSIONED_AGENT_GUARD_ROOT" \
             "$_MOLE_VERSIONED_AGENT_GUARD_ACTIVE_SYMLINK" || verified_active_status=$?
-        if [[ $verified_active_status -eq 124 || $verified_active_status -ge 128 ]]; then
+        if mole_rc_timeout_or_signal "$verified_active_status"; then
             _MOLE_CLEAN_GUARD_REASON="inventory interrupted"
             return "$verified_active_status"
         fi
@@ -3308,7 +3308,7 @@ clean_versioned_agent_root() {
         "$versions_root" "$keep_previous" "$active_path" || plan_rc=$?
     if [[ $plan_rc -ne 0 ]]; then
         _MOLE_CLEAN_GUARD_REASON="inventory unknown"
-        [[ $plan_rc -eq 124 || $plan_rc -ge 128 ]] && return "$plan_rc"
+        mole_rc_timeout_or_signal "$plan_rc" && return "$plan_rc"
         _report_versioned_agent_guard_stop "$label"
         return "$plan_rc"
     fi
@@ -3339,7 +3339,7 @@ clean_versioned_agent_root() {
         local guard_rc=0
         _versioned_agent_delete_guard_allows "$target" || guard_rc=$?
         if [[ $guard_rc -ne 0 ]]; then
-            [[ $guard_rc -eq 124 || $guard_rc -ge 128 ]] && return "$guard_rc"
+            mole_rc_timeout_or_signal "$guard_rc" && return "$guard_rc"
             _report_versioned_agent_guard_stop "$label"
             return 0
         fi
@@ -3450,7 +3450,7 @@ _claude_desktop_delete_guard_allows() {
         "$_MOLE_CLAUDE_DESKTOP_GUARD_VERSIONS_ROOT/$current_sdk" || plan_rc=$?
     if [[ $plan_rc -ne 0 ]]; then
         _MOLE_CLEAN_GUARD_REASON="inventory unknown"
-        [[ $plan_rc -eq 124 || $plan_rc -ge 128 ]] && return "$plan_rc"
+        mole_rc_timeout_or_signal "$plan_rc" && return "$plan_rc"
         return 1
     fi
 
@@ -3501,7 +3501,7 @@ _claude_desktop_safe_clean_guarded() {
             local guard_rc=0
             _claude_desktop_delete_guard_allows "$target" || guard_rc=$?
             if [[ $guard_rc -ne 0 ]]; then
-                [[ $guard_rc -eq 124 || $guard_rc -ge 128 ]] && return "$guard_rc"
+                mole_rc_timeout_or_signal "$guard_rc" && return "$guard_rc"
                 if [[ "$_MOLE_CLEAN_GUARD_REASON" == "Claude Desktop started" ]]; then
                     mole_defer_cleanup_family "Claude Desktop"
                 else
@@ -3738,7 +3738,7 @@ clean_dev_automation_browsers() {
     local ps_rc=0
     process_rows=$(LC_ALL=C run_with_timeout "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
         ps -Ao pid=,ppid=,etime=,lstart=,command= -ww 2> /dev/null) || ps_rc=$?
-    if [[ $ps_rc -eq 124 || $ps_rc -ge 128 ]]; then
+    if mole_rc_timeout_or_signal "$ps_rc"; then
         return "$ps_rc"
     elif [[ $ps_rc -eq 0 ]]; then
         local process_record
@@ -3780,7 +3780,7 @@ clean_dev_automation_browsers() {
                 match_rc=0
                 _automation_browser_process_matches_record \
                     "$pid" "$expected_start" || match_rc=$?
-                if [[ $match_rc -eq 124 || $match_rc -ge 128 ]]; then
+                if mole_rc_timeout_or_signal "$match_rc"; then
                     return "$match_rc"
                 elif [[ $match_rc -ne 0 ]]; then
                     continue
@@ -3800,7 +3800,7 @@ clean_dev_automation_browsers() {
                     match_rc=0
                     _automation_browser_process_matches_record \
                         "$pid" "$expected_start" || match_rc=$?
-                    if [[ $match_rc -eq 124 || $match_rc -ge 128 ]]; then
+                    if mole_rc_timeout_or_signal "$match_rc"; then
                         return "$match_rc"
                     elif [[ $match_rc -eq 0 ]]; then
                         kill -9 "$pid" 2> /dev/null || true
@@ -3842,7 +3842,7 @@ clean_dev_ai_agents() {
             local active_status=0
             _resolve_versioned_agent_active_path "$versions_root" "$active_symlink" || active_status=$?
             if [[ $active_status -ne 0 ]]; then
-                [[ $active_status -eq 124 || $active_status -ge 128 ]] && return "$active_status"
+                mole_rc_timeout_or_signal "$active_status" && return "$active_status"
                 if [[ ! -e "$active_symlink" ]]; then
                     echo -e "  ${GRAY}${ICON_WARNING}${NC} $label · skipped (active symlink broken)"
                 else
@@ -4093,7 +4093,7 @@ codex_sparkle_staging_has_open_files() {
     local staging_root="$1"
     local visibility_rc=0
     _mole_complete_lsof_mode || visibility_rc=$?
-    if [[ $visibility_rc -eq 124 || $visibility_rc -ge 128 ]]; then
+    if mole_rc_timeout_or_signal "$visibility_rc"; then
         return "$visibility_rc"
     fi
     [[ $visibility_rc -eq 0 ]] || return 2
@@ -4112,7 +4112,7 @@ codex_sparkle_staging_has_open_files() {
         lsof_rc=$?
     fi
 
-    if [[ $lsof_rc -eq 124 || $lsof_rc -ge 128 ]]; then
+    if mole_rc_timeout_or_signal "$lsof_rc"; then
         return "$lsof_rc"
     fi
 
@@ -4241,7 +4241,7 @@ _codex_staging_delete_guard_allows() {
     else
         open_file_state=$?
     fi
-    if [[ $open_file_state -eq 124 || $open_file_state -ge 128 ]]; then
+    if mole_rc_timeout_or_signal "$open_file_state"; then
         _mole_record_clean_cancellation "$open_file_state"
         _MOLE_CLEAN_GUARD_REASON="open-file check unavailable"
         return 1
@@ -4452,7 +4452,7 @@ clean_codex_desktop_staging() {
     else
         open_file_state=$?
     fi
-    if [[ $open_file_state -eq 124 || $open_file_state -ge 128 ]]; then
+    if mole_rc_timeout_or_signal "$open_file_state"; then
         _mole_record_clean_cancellation "$open_file_state"
         echo -e "  ${GRAY}${ICON_WARNING}${NC} Codex Desktop update staging · skipped (open-file check unavailable)"
         note_activity
@@ -4560,7 +4560,7 @@ clean_codex_crashpad_pending() {
     else
         open_file_state=$?
     fi
-    if [[ $open_file_state -eq 124 || $open_file_state -ge 128 ]]; then
+    if mole_rc_timeout_or_signal "$open_file_state"; then
         _mole_record_clean_cancellation "$open_file_state"
         return "$open_file_state"
     fi
@@ -4795,7 +4795,18 @@ clean_codex_runtimes() {
         fi
 
         if is_codex_runtime_stale "$runtime_dir"; then
+<<<<<<< HEAD
             _codex_runtime_safe_clean_guarded "$runtime_dir" || return 0
+=======
+            local cleanup_rc=0
+            _codex_runtime_safe_clean_guarded "$runtime_dir" || cleanup_rc=$?
+            if mole_rc_timeout_or_signal "$cleanup_rc"; then
+                _mole_record_clean_cancellation "$cleanup_rc"
+                return "$cleanup_rc"
+            elif [[ $cleanup_rc -ne 0 ]]; then
+                break
+            fi
+>>>>>>> 7d436c60 (refactor: name timeout statuses and gate raw 124 comparisons)
         else
             debug_log "Codex runtime left for manual review: $runtime_dir"
         fi
@@ -4843,7 +4854,7 @@ _codex_marketplace_staging_delete_guard_allows() {
         return 1
     else
         local open_file_state=$?
-        if [[ "$open_file_state" -eq 124 || "$open_file_state" -ge 128 ]]; then
+        if mole_rc_timeout_or_signal "$open_file_state"; then
             _mole_record_clean_cancellation "$open_file_state"
             _MOLE_CLEAN_GUARD_REASON="open-file check unavailable"
             return 1
@@ -4972,7 +4983,7 @@ clean_codex_marketplace_staging() {
         else
             open_file_state=$?
         fi
-        if [[ "$open_file_state" -eq 124 || "$open_file_state" -ge 128 ]]; then
+        if mole_rc_timeout_or_signal "$open_file_state"; then
             _mole_record_clean_cancellation "$open_file_state"
             echo -e "  ${GRAY}${ICON_WARNING}${NC} Codex marketplace staging · skipped (open-file check unavailable)"
             note_activity
@@ -5261,7 +5272,7 @@ _run_developer_cleanup_step() {
     fi
 
     local pending_clean_cancel="${MOLE_CLEAN_CANCEL_STATUS:-0}"
-    if [[ $pending_clean_cancel -eq 124 || $pending_clean_cancel -ge 128 ]]; then
+    if mole_rc_timeout_or_signal "$pending_clean_cancel"; then
         return "$pending_clean_cancel"
     fi
 
@@ -5271,13 +5282,13 @@ _run_developer_cleanup_step() {
     local step_rc=0
     "$@" || step_rc=$?
     debug_timer_end "developer cleanup step: $step_name" _perf_step_start
-    if [[ $step_rc -eq 124 || $step_rc -ge 128 ]]; then
+    if mole_rc_timeout_or_signal "$step_rc"; then
         _mole_record_clean_cancellation "$step_rc"
         return "$step_rc"
     fi
 
     pending_clean_cancel="${MOLE_CLEAN_CANCEL_STATUS:-0}"
-    if [[ $pending_clean_cancel -eq 124 || $pending_clean_cancel -ge 128 ]]; then
+    if mole_rc_timeout_or_signal "$pending_clean_cancel"; then
         return "$pending_clean_cancel"
     fi
     [[ "$strict" == "true" && $step_rc -ne 0 ]] && return "$step_rc"

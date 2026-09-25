@@ -67,6 +67,19 @@ fi
 # Timeout Execution
 # ============================================================================
 
+# run_with_timeout reports 124 when the command timed out and 128+N when a
+# signal killed it (Ctrl-C included). Whether a timeout stops the whole run or
+# only skips one item is each caller's contract (bugs reference, section 15);
+# these two predicates name the question so no caller spells the numbers again.
+# scripts/audit_timeout_status.py rejects raw 124 comparisons outside this file.
+mole_rc_timeout() {
+    [[ "${1:-0}" -eq 124 ]]
+}
+
+mole_rc_timeout_or_signal() {
+    [[ "${1:-0}" -eq 124 || "${1:-0}" -ge 128 ]]
+}
+
 _mole_cleanup_timeout_killer() {
     local killer_pid="${1:-}"
     [[ "$killer_pid" =~ ^[0-9]+$ ]] || return 0

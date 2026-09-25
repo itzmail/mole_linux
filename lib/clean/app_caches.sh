@@ -1087,7 +1087,7 @@ _autodesk_fusion_version_dir_version() {
     local bundle_id=""
     bundle_id=$(run_with_timeout "$probe_timeout" /usr/bin/plutil \
         -extract CFBundleIdentifier raw "$info_plist" < /dev/null 2> /dev/null) || probe_rc=$?
-    [[ $probe_rc -eq 124 || $probe_rc -ge 128 ]] && return "$probe_rc"
+    mole_rc_timeout_or_signal "$probe_rc" && return "$probe_rc"
     [[ $probe_rc -eq 0 && "$bundle_id" == "com.autodesk.fusion360" ]] || return 1
 
     probe_timeout=$(_mole_timeout_with_deadline \
@@ -1096,7 +1096,7 @@ _autodesk_fusion_version_dir_version() {
     local version=""
     version=$(run_with_timeout "$probe_timeout" /usr/bin/plutil \
         -extract CFBundleVersion raw "$info_plist" < /dev/null 2> /dev/null) || probe_rc=$?
-    [[ $probe_rc -eq 124 || $probe_rc -ge 128 ]] && return "$probe_rc"
+    mole_rc_timeout_or_signal "$probe_rc" && return "$probe_rc"
     [[ $probe_rc -eq 0 && "$version" =~ ^[0-9]+([.][0-9]+)*$ ]] || return 1
 
     probe_timeout=$(_mole_timeout_with_deadline \
@@ -1105,7 +1105,7 @@ _autodesk_fusion_version_dir_version() {
     local executable=""
     executable=$(run_with_timeout "$probe_timeout" /usr/bin/plutil \
         -extract CFBundleExecutable raw "$info_plist" < /dev/null 2> /dev/null) || probe_rc=$?
-    [[ $probe_rc -eq 124 || $probe_rc -ge 128 ]] && return "$probe_rc"
+    mole_rc_timeout_or_signal "$probe_rc" && return "$probe_rc"
     [[ $probe_rc -eq 0 &&
         ("$executable" == "Autodesk Fusion" || "$executable" == "Autodesk Fusion 360") ]] || return 1
     local executable_path="$macos_dir/$executable"
@@ -1288,7 +1288,7 @@ _autodesk_fusion_plan_old_versions() {
         version_rc=0
         _autodesk_fusion_version_dir_version \
             "$dir" "$deadline_seconds" || version_rc=$?
-        if [[ $version_rc -eq 124 || $version_rc -ge 128 ]]; then
+        if mole_rc_timeout_or_signal "$version_rc"; then
             inventory_rc=$version_rc
             break
         elif [[ $version_rc -ne 0 ]]; then
@@ -1330,7 +1330,7 @@ _autodesk_fusion_guard_current_is_unchanged() {
         "$_MOLE_AUTODESK_FUSION_GUARD_DEADLINE" || resolve_rc=$?
     if [[ $resolve_rc -ne 0 ]]; then
         _MOLE_AUTODESK_FUSION_GUARD_REASON="current version unknown"
-        [[ $resolve_rc -eq 124 || $resolve_rc -ge 128 ]] && return "$resolve_rc"
+        mole_rc_timeout_or_signal "$resolve_rc" && return "$resolve_rc"
         return 1
     fi
     if [[ "$_MOLE_AUTODESK_FUSION_RESOLVED_DIR" != "$_MOLE_AUTODESK_FUSION_GUARD_CURRENT_DIR" ||
@@ -1374,7 +1374,7 @@ _autodesk_fusion_delete_guard_allows() {
         "$target" "$_MOLE_AUTODESK_FUSION_GUARD_DEADLINE" || version_rc=$?
     if [[ $version_rc -ne 0 ]]; then
         _MOLE_AUTODESK_FUSION_GUARD_REASON="candidate identity changed"
-        [[ $version_rc -eq 124 || $version_rc -ge 128 ]] && return "$version_rc"
+        mole_rc_timeout_or_signal "$version_rc" && return "$version_rc"
         return 1
     fi
     if ! _autodesk_fusion_version_is_older \
@@ -1436,7 +1436,7 @@ clean_autodesk_fusion_old_bundles() {
     local current_rc=0
     _autodesk_fusion_resolve_current_version \
         "$production_root" "$cleanup_deadline" || current_rc=$?
-    if [[ $current_rc -eq 124 ]]; then
+    if mole_rc_timeout "$current_rc"; then
         echo -e "  ${GRAY}${ICON_WARNING}${NC} Autodesk Fusion old versions · skipped (current version probe timed out)"
         note_activity
         return 0
@@ -1454,7 +1454,7 @@ clean_autodesk_fusion_old_bundles() {
     _autodesk_fusion_plan_old_versions \
         "$production_root" "$current_dir" "$current_version" \
         "$cleanup_deadline" || plan_rc=$?
-    if [[ $plan_rc -eq 124 ]]; then
+    if mole_rc_timeout "$plan_rc"; then
         echo -e "  ${GRAY}${ICON_WARNING}${NC} Autodesk Fusion old versions · skipped (inventory timed out)"
         note_activity
         return 0
@@ -1496,7 +1496,7 @@ clean_autodesk_fusion_old_bundles() {
 
         guard_rc=0
         _autodesk_fusion_delete_guard_allows "$dir" || guard_rc=$?
-        if [[ $guard_rc -eq 124 ]]; then
+        if mole_rc_timeout "$guard_rc"; then
             stopped_reason="verification timed out"
             break
         elif [[ $guard_rc -ge 128 ]]; then
@@ -1513,7 +1513,7 @@ clean_autodesk_fusion_old_bundles() {
         if [[ $size_rc -eq 0 ]]; then
             size_kb=$(get_path_size_kb "$dir" "$size_timeout") || size_rc=$?
         fi
-        if [[ $size_rc -eq 124 ]]; then
+        if mole_rc_timeout "$size_rc"; then
             stopped_reason="size probe timed out"
             break
         elif [[ $size_rc -ge 128 ]]; then
@@ -1529,7 +1529,7 @@ clean_autodesk_fusion_old_bundles() {
             # that a real safe_remove final guard would enforce.
             guard_rc=0
             _autodesk_fusion_delete_guard_allows "$dir" || guard_rc=$?
-            if [[ $guard_rc -eq 124 ]]; then
+            if mole_rc_timeout "$guard_rc"; then
                 stopped_reason="verification timed out"
                 break
             elif [[ $guard_rc -ge 128 ]]; then
@@ -1556,7 +1556,7 @@ clean_autodesk_fusion_old_bundles() {
         if [[ $remove_rc -eq 0 ]]; then
             total_size=$((total_size + size_kb))
             cleaned_count=$((cleaned_count + 1))
-        elif [[ $remove_rc -eq 124 ]]; then
+        elif mole_rc_timeout "$remove_rc"; then
             stopped_reason="removal timed out"
             break
         elif [[ $remove_rc -ge 128 ]]; then

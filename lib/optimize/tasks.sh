@@ -55,7 +55,7 @@ opt_existing_path_size_kb() {
     local size_kb=0
     local size_rc=0
     size_kb=$(get_path_size_kb "$path" 2> /dev/null) || size_rc=$?
-    [[ $size_rc -eq 124 || $size_rc -ge 128 ]] && return "$size_rc"
+    mole_rc_timeout_or_signal "$size_rc" && return "$size_rc"
     [[ $size_rc -eq 0 ]] || size_kb=0
     opt_numeric_kb "$size_kb"
 }
@@ -274,7 +274,7 @@ opt_cache_refresh() {
         local size_kb=0
         local size_rc=0
         size_kb=$(opt_existing_path_size_kb "$target_path") || size_rc=$?
-        [[ $size_rc -eq 124 || $size_rc -ge 128 ]] && return "$size_rc"
+        mole_rc_timeout_or_signal "$size_rc" && return "$size_rc"
         [[ $size_rc -eq 0 ]] || size_kb=0
         removable_targets+=("$target_path")
         removable_sizes+=("$size_kb")
@@ -301,7 +301,7 @@ opt_cache_refresh() {
         local remove_rc=0
         safe_remove "${removable_targets[$index]}" true \
             "${removable_sizes[$index]}" > /dev/null 2>&1 || remove_rc=$?
-        if [[ $remove_rc -eq 124 || $remove_rc -ge 128 ]]; then
+        if mole_rc_timeout_or_signal "$remove_rc"; then
             return "$remove_rc"
         elif [[ $remove_rc -eq 0 ]]; then
             removed_count=$((removed_count + 1))
@@ -362,7 +362,7 @@ opt_saved_state_cleanup() {
             > "$scan_file" 2> /dev/null || scan_rc=$?
         if [[ $scan_rc -ne 0 ]]; then
             : > "$scan_file" || true
-            [[ $scan_rc -eq 124 || $scan_rc -ge 128 ]] && return "$scan_rc"
+            mole_rc_timeout_or_signal "$scan_rc" && return "$scan_rc"
             echo -e "  ${YELLOW}${ICON_WARNING}${NC} Failed to scan old saved states"
             scan_failed=1
         fi
@@ -372,7 +372,7 @@ opt_saved_state_cleanup() {
             fi
             local remove_rc=0
             safe_remove "$state_path" true > /dev/null 2>&1 || remove_rc=$?
-            if [[ $remove_rc -eq 124 || $remove_rc -ge 128 ]]; then
+            if mole_rc_timeout_or_signal "$remove_rc"; then
                 return "$remove_rc"
             elif [[ $remove_rc -eq 0 ]]; then
                 removed=$((removed + 1))
@@ -663,7 +663,7 @@ opt_sqlite_vacuum() {
 
                 if [[ $exit_code -eq 0 ]]; then
                     vacuumed=$((vacuumed + 1))
-                elif [[ $exit_code -eq 124 ]]; then
+                elif mole_rc_timeout "$exit_code"; then
                     timed_out=$((timed_out + 1))
                 else
                     failed=$((failed + 1))
@@ -821,7 +821,7 @@ opt_network_stack_optimize() {
         dns_status=$?
     fi
 
-    if [[ $route_status -eq 124 || $dns_status -eq 124 ]]; then
+    if mole_rc_timeout "$route_status" || mole_rc_timeout "$dns_status"; then
         echo -e "  ${YELLOW}${ICON_WARNING}${NC} Network health check timed out"
         optimize_task_result "$MOLE_OPTIMIZE_OUTCOME_FAILED"
         return 0
@@ -988,7 +988,7 @@ opt_spotlight_index_optimize() {
             run_with_timeout "$MOLE_TIMEOUT_MEDIUM_PROBE_SEC" mdfind "kMDItemFSName == 'Applications'" > /dev/null 2>&1 || probe_status=$?
             test_end=$(get_epoch_seconds)
             test_duration=$((test_end - test_start))
-            if [[ $probe_status -eq 124 ]]; then
+            if mole_rc_timeout "$probe_status"; then
                 slow_count=$((slow_count + 1))
             elif [[ $probe_status -ne 0 ]]; then
                 probe_failed=$((probe_failed + 1))
@@ -1274,13 +1274,13 @@ opt_launch_agents_cleanup() {
         binary=$(run_with_timeout "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
             /usr/libexec/PlistBuddy -c "Print :ProgramArguments:0" \
             "$plist" 2> /dev/null) || plist_rc=$?
-        [[ $plist_rc -eq 124 || $plist_rc -ge 128 ]] && return "$plist_rc"
+        mole_rc_timeout_or_signal "$plist_rc" && return "$plist_rc"
         if [[ -z "$binary" ]]; then
             plist_rc=0
             binary=$(run_with_timeout "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
                 /usr/libexec/PlistBuddy -c "Print :Program" \
                 "$plist" 2> /dev/null) || plist_rc=$?
-            [[ $plist_rc -eq 124 || $plist_rc -ge 128 ]] && return "$plist_rc"
+            mole_rc_timeout_or_signal "$plist_rc" && return "$plist_rc"
         fi
 
         # Only an absolute path that is genuinely missing counts as broken.
@@ -1289,6 +1289,20 @@ opt_launch_agents_cleanup() {
         # unplugged -- neither is a broken agent.
         if [[ -n "$binary" && "$binary" == /* && ! -e "$binary" ]] &&
             launch_agent_volume_mounted "$binary"; then
+<<<<<<< HEAD
+=======
+            local label=""
+            plist_rc=0
+            label=$(run_with_timeout "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
+                /usr/libexec/PlistBuddy -c "Print :Label" \
+                "$plist" 2> /dev/null) || plist_rc=$?
+            mole_rc_timeout_or_signal "$plist_rc" && return "$plist_rc"
+            [[ -n "$label" ]] || label="$(basename "$plist" .plist)"
+            # Label and Program come from a third-party plist, so escape
+            # sequences in them must not reach the terminal.
+            printf '  %b %s\n' "${YELLOW}${ICON_WARNING}${NC}" \
+                "Launch Agent $(mole_terminal_safe_text "$label"): program missing at $(mole_terminal_safe_text "${binary/#$HOME/~}")"
+>>>>>>> 7d436c60 (refactor: name timeout statuses and gate raw 124 comparisons)
             broken_count=$((broken_count + 1))
             broken_plists+=("$plist")
         fi
@@ -1404,7 +1418,7 @@ opt_shared_file_list_repair() {
         > "$scan_file" 2> /dev/null || scan_rc=$?
     if [[ $scan_rc -ne 0 ]]; then
         : > "$scan_file" || true
-        [[ $scan_rc -eq 124 || $scan_rc -ge 128 ]] && return "$scan_rc"
+        mole_rc_timeout_or_signal "$scan_rc" && return "$scan_rc"
         echo -e "  ${YELLOW}${ICON_WARNING}${NC} Failed to scan shared file lists"
         scan_failed=1
     fi
@@ -1417,7 +1431,7 @@ opt_shared_file_list_repair() {
             if [[ "${MOLE_DRY_RUN:-0}" != "1" ]]; then
                 safe_remove "$sfl_file" true > /dev/null 2>&1 || remove_rc=$?
             fi
-            if [[ $remove_rc -eq 124 || $remove_rc -ge 128 ]]; then
+            if mole_rc_timeout_or_signal "$remove_rc"; then
                 return "$remove_rc"
             elif [[ $remove_rc -eq 0 ]]; then
                 repaired=$((repaired + 1))
@@ -1538,7 +1552,7 @@ opt_disk_verify() {
         stop_inline_spinner
     fi
 
-    if [[ $verify_status -eq 124 ]]; then
+    if mole_rc_timeout "$verify_status"; then
         echo -e "  ${YELLOW}${ICON_WARNING}${NC} Disk verification timed out"
         optimize_task_result "$MOLE_OPTIMIZE_OUTCOME_FAILED"
     elif [[ $verify_status -ne 0 ]]; then
@@ -1608,7 +1622,7 @@ opt_coreduet_cleanup() {
             if [[ -f "$f" ]]; then
                 local remove_rc=0
                 safe_remove "$f" true > /dev/null 2>&1 || remove_rc=$?
-                if [[ $remove_rc -eq 124 || $remove_rc -ge 128 ]]; then
+                if mole_rc_timeout_or_signal "$remove_rc"; then
                     return "$remove_rc"
                 elif [[ $remove_rc -eq 0 ]]; then
                     removed_count=$((removed_count + 1))
@@ -1810,7 +1824,7 @@ _login_item_build_app_inventory() {
             -type d -iname "*.app" -print0 > "$app_scan_file" 2> /dev/null || probe_rc=$?
         if [[ $probe_rc -ne 0 ]]; then
             : > "$inventory_file" || true
-            if [[ $probe_rc -eq 124 || $probe_rc -ge 128 ]]; then
+            if mole_rc_timeout_or_signal "$probe_rc"; then
                 return "$probe_rc"
             fi
             return 2
@@ -1822,7 +1836,7 @@ _login_item_build_app_inventory() {
             "$deadline_seconds" || metadata_rc=$?
         if [[ $metadata_rc -ne 0 ]]; then
             : > "$inventory_file" || true
-            if [[ $metadata_rc -eq 124 || $metadata_rc -ge 128 ]]; then
+            if mole_rc_timeout_or_signal "$metadata_rc"; then
                 return "$metadata_rc"
             fi
             return 2
@@ -1874,7 +1888,7 @@ _login_item_app_exists() {
         probe_rc=0
         spotlight_output=$(run_with_timeout "$probe_timeout" \
             mdfind "kMDItemFSName == '${lookup_name}.app'" 2> /dev/null) || probe_rc=$?
-        if [[ $probe_rc -eq 124 || $probe_rc -ge 128 ]]; then
+        if mole_rc_timeout_or_signal "$probe_rc"; then
             return "$probe_rc"
         elif [[ $probe_rc -ne 0 ]]; then
             probe_uncertain=true
@@ -1947,7 +1961,7 @@ _login_item_app_exists() {
         probe_timeout=$(_mole_timeout_with_deadline \
             "$MOLE_TIMEOUT_QUICK_DETECT_SEC" "$deadline_seconds") || return $?
         run_with_timeout "$probe_timeout" sudo -n true 2> /dev/null || sudo_ready_rc=$?
-        if [[ $sudo_ready_rc -eq 124 || $sudo_ready_rc -ge 128 ]]; then
+        if mole_rc_timeout_or_signal "$sudo_ready_rc"; then
             return "$sudo_ready_rc"
         elif [[ $sudo_ready_rc -eq 0 ]]; then
             local btm_output=""
@@ -1956,7 +1970,7 @@ _login_item_app_exists() {
             probe_rc=0
             btm_output=$(run_with_timeout "$probe_timeout" \
                 sudo -n sfltool dumpbtm 2> /dev/null) || probe_rc=$?
-            if [[ $probe_rc -eq 124 || $probe_rc -ge 128 ]]; then
+            if mole_rc_timeout_or_signal "$probe_rc"; then
                 return "$probe_rc"
             elif [[ $probe_rc -ne 0 ]]; then
                 probe_uncertain=true
@@ -2003,7 +2017,7 @@ opt_login_items_audit() {
     fi
 
     if [[ $snapshot_status -ne 0 ]]; then
-        if [[ $snapshot_status -eq 124 ]]; then
+        if mole_rc_timeout "$snapshot_status"; then
             echo -e "  ${YELLOW}${ICON_WARNING}${NC} Failed to inspect login items (snapshot timed out)"
         elif [[ $snapshot_status -ge 128 ]]; then
             echo -e "  ${YELLOW}${ICON_WARNING}${NC} Failed to inspect login items (snapshot interrupted)"
@@ -2052,7 +2066,7 @@ opt_login_items_audit() {
         _login_item_build_app_inventory \
             "$app_inventory_file" "$audit_deadline" || inventory_status=$?
         if [[ $inventory_status -ne 0 ]]; then
-            if [[ $inventory_status -eq 124 ]]; then
+            if mole_rc_timeout "$inventory_status"; then
                 echo -e "  ${YELLOW}${ICON_WARNING}${NC} Login items audit incomplete (app inventory timed out; no conclusions published)"
             elif [[ $inventory_status -ge 128 ]]; then
                 echo -e "  ${YELLOW}${ICON_WARNING}${NC} Login items audit incomplete (app inventory interrupted; no conclusions published)"
@@ -2091,7 +2105,7 @@ opt_login_items_audit() {
     done
 
     if [[ $audit_status -ne 0 ]]; then
-        if [[ $audit_status -eq 124 ]]; then
+        if mole_rc_timeout "$audit_status"; then
             echo -e "  ${YELLOW}${ICON_WARNING}${NC} Login items audit incomplete (time limit reached; no conclusions published)"
         elif [[ $audit_status -ge 128 ]]; then
             echo -e "  ${YELLOW}${ICON_WARNING}${NC} Login items audit incomplete (probe interrupted; no conclusions published)"

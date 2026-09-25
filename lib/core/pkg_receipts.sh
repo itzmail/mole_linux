@@ -39,7 +39,7 @@ pkg_receipt_nonstandard_app_paths() {
     fi
     if [[ $pkgs_rc -ne 0 ]]; then
         if [[ "$require_complete" == "1" ]]; then
-            [[ $pkgs_rc -eq 124 || $pkgs_rc -ge 128 ]] && return "$pkgs_rc"
+            mole_rc_timeout_or_signal "$pkgs_rc" && return "$pkgs_rc"
             return 2
         fi
         return 0
@@ -112,7 +112,7 @@ pkg_receipt_nonstandard_app_paths() {
                 pkg_files=$(pkgutil --files "$pkg_id" 2> /dev/null) || pkg_files_rc=$?
             fi
             if [[ $pkg_files_rc -ne 0 ]]; then
-                [[ $pkg_files_rc -eq 124 || $pkg_files_rc -ge 128 ]] && return "$pkg_files_rc"
+                mole_rc_timeout_or_signal "$pkg_files_rc" && return "$pkg_files_rc"
                 return 2
             fi
         else

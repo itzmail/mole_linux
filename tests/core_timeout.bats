@@ -430,3 +430,20 @@ _tty_bg_field() {
         return 1
     fi
 }
+
+@test "timeout status predicates name the two questions callers ask" {
+    run /bin/bash --noprofile --norc -c '
+        set -euo pipefail
+        source "$1/lib/core/timeout.sh"
+        for rc in 0 1 2 123 124 125 127 128 130 143 ""; do
+            a=no
+            b=no
+            mole_rc_timeout "$rc" && a=yes
+            mole_rc_timeout_or_signal "$rc" && b=yes
+            printf "%s:%s:%s " "${rc:-empty}" "$a" "$b"
+        done
+    ' _ "${BATS_TEST_DIRNAME}/.."
+
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [[ "$output" == "0:no:no 1:no:no 2:no:no 123:no:no 124:yes:yes 125:no:no 127:no:no 128:no:yes 130:no:yes 143:no:yes empty:no:no " ]]
+}

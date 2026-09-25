@@ -737,7 +737,7 @@ _mole_uninstall_materialize_find0() {
         "$@" < /dev/null > "$output_file" 2> /dev/null || scan_rc=$?
     if [[ $scan_rc -ne 0 ]]; then
         : > "$output_file" || true
-        if [[ $scan_rc -eq 124 || $scan_rc -ge 128 ]]; then
+        if mole_rc_timeout_or_signal "$scan_rc"; then
             return "$scan_rc"
         fi
         debug_log "Skipping incomplete uninstall discovery root: ${1:-unknown}"
@@ -2053,7 +2053,7 @@ find_app_receipt_files() {
                     -f -s "$bom_file" < /dev/null 2> /dev/null) || bom_rc=$?
             fi
             if [[ $bom_rc -ne 0 ]]; then
-                if [[ $bom_rc -eq 124 || $bom_rc -ge 128 ]]; then
+                if mole_rc_timeout_or_signal "$bom_rc"; then
                     rm -f -- "$receipt_scan_file" 2> /dev/null || true # SAFE: exact tracked temp file created above
                     return "$bom_rc"
                 fi

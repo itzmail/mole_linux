@@ -215,7 +215,7 @@ format_uninstall_preview_path() {
     local size_kb="0"
     local size_rc=0
     size_kb=$(get_path_size_kb "$path" 2> /dev/null) || size_rc=$?
-    [[ $size_rc -eq 124 || $size_rc -ge 128 ]] && return "$size_rc"
+    mole_rc_timeout_or_signal "$size_rc" && return "$size_rc"
     [[ $size_rc -eq 0 ]] || size_kb="0"
 
     if [[ "$size_kb" =~ ^[0-9]+$ && "$size_kb" -gt 0 ]]; then
@@ -257,7 +257,7 @@ discover_login_item_helper_bundle_ids() {
                 -extract CFBundleIdentifier raw "$info" \
                 2> /dev/null) || plist_rc=$?
         fi
-        if [[ $plist_rc -eq 124 || $plist_rc -ge 128 ]]; then
+        if mole_rc_timeout_or_signal "$plist_rc"; then
             result_rc=$plist_rc
             break
         fi
@@ -293,7 +293,7 @@ bootout_login_item_helpers() {
         local bootout_rc=0
         run_with_timeout "$MOLE_TIMEOUT_MEDIUM_PROBE_SEC" launchctl \
             bootout "gui/$uid/$helper_id" > /dev/null 2>&1 || bootout_rc=$?
-        [[ $bootout_rc -eq 124 || $bootout_rc -ge 128 ]] && return "$bootout_rc"
+        mole_rc_timeout_or_signal "$bootout_rc" && return "$bootout_rc"
     done <<< "$helper_ids"
     return 0
 }
@@ -327,7 +327,7 @@ unload_launch_plist() {
         run_with_timeout "$unload_timeout" launchctl \
             unload "$plist" > /dev/null 2>&1 || unload_rc=$?
     fi
-    [[ $unload_rc -eq 124 || $unload_rc -ge 128 ]] && return "$unload_rc"
+    mole_rc_timeout_or_signal "$unload_rc" && return "$unload_rc"
     return 0
 }
 
@@ -368,7 +368,7 @@ _uninstall_unload_launch_plists() {
                 run_with_timeout "$grep_timeout" grep -qF -- \
                     "$app_path" "$plist" 2> /dev/null || grep_rc=$?
             fi
-            [[ $grep_rc -eq 124 || $grep_rc -ge 128 ]] && {
+            mole_rc_timeout_or_signal "$grep_rc" && {
                 result_rc=$grep_rc
                 break
             }
@@ -377,7 +377,7 @@ _uninstall_unload_launch_plists() {
         local unload_rc=0
         unload_launch_plist "$plist" "$needs_sudo" \
             "$_MOLE_UNINSTALL_DISCOVERY_DEADLINE" || unload_rc=$?
-        if [[ $unload_rc -eq 124 || $unload_rc -ge 128 ]]; then
+        if mole_rc_timeout_or_signal "$unload_rc"; then
             result_rc=$unload_rc
             break
         fi
@@ -476,7 +476,7 @@ unregister_app_bundle() {
     local unregister_rc=0
     run_with_timeout "$MOLE_TIMEOUT_MEDIUM_PROBE_SEC" "$lsregister" \
         -u "$app_path" > /dev/null 2>&1 || unregister_rc=$?
-    [[ $unregister_rc -eq 124 || $unregister_rc -ge 128 ]] && return "$unregister_rc"
+    mole_rc_timeout_or_signal "$unregister_rc" && return "$unregister_rc"
     return 0
 }
 
@@ -538,7 +538,7 @@ remove_login_item() {
 				    end try
 				end tell
 			EOF
-            [[ $login_item_rc -eq 124 || $login_item_rc -ge 128 ]] && return "$login_item_rc"
+            mole_rc_timeout_or_signal "$login_item_rc" && return "$login_item_rc"
         fi
     fi
 }
@@ -618,7 +618,7 @@ remove_file_list() {
             # A failed direct move leaves that item in place for manual review.
             debug_log "Trash batch stopped; unmoved paths were preserved"
         fi
-        [[ $batch_rc -eq 124 || $batch_rc -ge 128 ]] && return "$batch_rc"
+        mole_rc_timeout_or_signal "$batch_rc" && return "$batch_rc"
     fi
 
     if [[ ${#fallback_paths[@]} -gt 0 ]]; then
@@ -629,7 +629,7 @@ remove_file_list() {
             # the caller explicitly selected permanent mode. See #723.
             local delete_rc=0
             mole_delete "$fb" "$use_sudo" || delete_rc=$?
-            [[ $delete_rc -eq 124 || $delete_rc -ge 128 ]] && return "$delete_rc"
+            mole_rc_timeout_or_signal "$delete_rc" && return "$delete_rc"
             [[ $delete_rc -eq 0 ]] && count=$((count + 1))
         done
     fi
@@ -899,7 +899,7 @@ _uninstall_collect_live_sibling_candidate() {
             2> /dev/null) || plist_rc=$?
     fi
     if [[ $plist_rc -ne 0 || -z "$app_bundle" ]]; then
-        [[ $plist_rc -eq 124 || $plist_rc -ge 128 ]] && return "$plist_rc"
+        mole_rc_timeout_or_signal "$plist_rc" && return "$plist_rc"
         # A plist that parses and simply carries no CFBundleIdentifier is a
         # complete answer, not a failed probe: vendor uninstallers and Steam
         # launchers ship bundles like that, and one with no id cannot share an
@@ -913,7 +913,7 @@ _uninstall_collect_live_sibling_candidate() {
             "$MOLE_TIMEOUT_QUICK_DETECT_SEC" "$deadline_seconds"); then
             run_with_timeout "$lint_timeout" plutil -lint "$info" \
                 > /dev/null 2>&1 || lint_rc=$?
-            [[ $lint_rc -eq 124 || $lint_rc -ge 128 ]] && return "$lint_rc"
+            mole_rc_timeout_or_signal "$lint_rc" && return "$lint_rc"
             [[ $lint_rc -eq 0 ]] && return 1
         fi
         return 2
@@ -960,7 +960,7 @@ uninstall_live_bundle_has_other_install() {
     local pkg_scan_rc=0
     _uninstall_materialize_complete_pkg_apps "$pkg_paths_file" \
         "$deadline_seconds" || pkg_scan_rc=$?
-    if [[ $pkg_scan_rc -eq 124 ]]; then
+    if mole_rc_timeout "$pkg_scan_rc"; then
         # Receipt enumeration walks every pkgutil receipt on the machine, and
         # a single vendor receipt can hold tens of thousands of paths, so it
         # can outlive the budget on a healthy Mac (#1340). That is the same
@@ -992,7 +992,7 @@ uninstall_live_bundle_has_other_install() {
             \( -type d -name Applications \) -o \
             \( \( -type d -o -type l \) -iname '*.app' \) \
             \) || volume_scan_rc=$?
-        if [[ $volume_scan_rc -eq $MOLE_UNINSTALL_SCAN_PARTIAL || $volume_scan_rc -eq 124 ]]; then
+        if [[ $volume_scan_rc -eq $MOLE_UNINSTALL_SCAN_PARTIAL ]] || mole_rc_timeout "$volume_scan_rc"; then
             # Some volume was unreadable, or the budget ran out before every
             # volume was listed. Keep the roots we did see and carry the
             # doubt forward: absence can no longer be proven from here.
@@ -1031,7 +1031,7 @@ uninstall_live_bundle_has_other_install() {
             # verdict at the end rather than discarding the whole scan.
             scan_indeterminate=true
         elif [[ $scan_rc -ne 0 ]]; then
-            [[ $scan_rc -eq 124 || $scan_rc -ge 128 ]] && result=$scan_rc || result=2
+            mole_rc_timeout_or_signal "$scan_rc" && result=$scan_rc || result=2
             break
         fi
 
@@ -1046,14 +1046,14 @@ uninstall_live_bundle_has_other_install() {
             if [[ $candidate_rc -eq 0 ]]; then
                 result=0
             elif [[ $candidate_rc -ne 1 ]]; then
-                [[ $candidate_rc -eq 124 || $candidate_rc -ge 128 ]] && result=$candidate_rc || result=2
+                mole_rc_timeout_or_signal "$candidate_rc" && result=$candidate_rc || result=2
                 break
             fi
         done < "$scan_file"
-        [[ $result -eq 2 || $result -eq 124 || $result -ge 128 ]] && break
+        { [[ $result -eq 2 ]] || mole_rc_timeout_or_signal "$result"; } && break
     done
 
-    if [[ $result -ne 2 && $result -ne 124 && $result -lt 128 ]]; then
+    if [[ $result -ne 2 ]] && ! mole_rc_timeout_or_signal "$result"; then
         local pkg_app
         while IFS= read -r pkg_app; do
             [[ -n "$pkg_app" ]] || continue
@@ -1064,7 +1064,7 @@ uninstall_live_bundle_has_other_install() {
             if [[ $candidate_rc -eq 0 ]]; then
                 result=0
             elif [[ $candidate_rc -ne 1 ]]; then
-                [[ $candidate_rc -eq 124 || $candidate_rc -ge 128 ]] && result=$candidate_rc || result=2
+                mole_rc_timeout_or_signal "$candidate_rc" && result=$candidate_rc || result=2
                 break
             fi
         done < "$pkg_paths_file"
@@ -1085,7 +1085,7 @@ uninstall_live_bundle_has_other_install() {
     # A per-root or per-candidate probe that ran out of budget is the same
     # incomplete scan, not a user cancellation: nothing above maps 124 to a
     # key press. Signals returned earlier stay untouched.
-    if [[ "$result" -eq 124 ]]; then
+    if mole_rc_timeout "$result"; then
         result="$MOLE_UNINSTALL_SCAN_PARTIAL"
     fi
     return "$result"
@@ -1336,7 +1336,7 @@ _batch_scan_app_details() {
         local app_identity=""
         local app_identity_rc=0
         app_identity=$(_batch_selected_app_identity "$app_path") || app_identity_rc=$?
-        if [[ $app_identity_rc -eq 124 || $app_identity_rc -ge 128 ]]; then
+        if mole_rc_timeout_or_signal "$app_identity_rc"; then
             return "$app_identity_rc"
         elif [[ $app_identity_rc -ne 0 ]]; then
             manual_removal_apps+=("$app_name")
@@ -1346,7 +1346,7 @@ _batch_scan_app_details() {
         local app_info_identity_rc=0
         app_info_identity=$(_batch_selected_app_info_identity \
             "$app_path") || app_info_identity_rc=$?
-        if [[ $app_info_identity_rc -eq 124 || $app_info_identity_rc -ge 128 ]]; then
+        if mole_rc_timeout_or_signal "$app_info_identity_rc"; then
             return "$app_info_identity_rc"
         elif [[ $app_info_identity_rc -ne 0 ]]; then
             manual_removal_apps+=("$app_name")
@@ -1477,7 +1477,7 @@ _batch_scan_app_details() {
             local detected_cask=""
             local cask_detect_rc=0
             detected_cask=$(get_brew_cask_name "$app_path" 2> /dev/null) || cask_detect_rc=$?
-            if [[ $cask_detect_rc -eq 124 || $cask_detect_rc -ge 128 ]]; then
+            if mole_rc_timeout_or_signal "$cask_detect_rc"; then
                 return "$cask_detect_rc"
             elif [[ $cask_detect_rc -ne 0 && $cask_detect_rc -ne 1 ]]; then
                 return "$cask_detect_rc"
@@ -1522,7 +1522,7 @@ _batch_scan_app_details() {
         local app_size_kb="0"
         local app_size_rc=0
         app_size_kb=$(get_path_size_kb "$app_path") || app_size_rc=$?
-        [[ $app_size_rc -eq 124 || $app_size_rc -ge 128 ]] && return "$app_size_rc"
+        mole_rc_timeout_or_signal "$app_size_rc" && return "$app_size_rc"
         [[ $app_size_rc -eq 0 && "$app_size_kb" =~ ^[0-9]+$ ]] || app_size_kb=0
         local related_files="" diag_user="" diag_system=""
         # system_files is a newline-separated string, not an array.
@@ -1545,7 +1545,7 @@ _batch_scan_app_details() {
             related_files=$(MOLE_UNINSTALL_SIBLING_SURVIVES="$sibling_survives" \
                 find_app_files "$bundle_id" "$discovery_app_name" \
                 "$app_path") || discovery_rc=$?
-            if [[ $discovery_rc -eq 124 ]]; then
+            if mole_rc_timeout "$discovery_rc"; then
                 # Out of budget after a heavy machine-wide probe (#1383): keep
                 # the selected app removable and leave leftovers alone rather
                 # than aborting the whole batch with "nothing was removed".
@@ -1561,13 +1561,13 @@ _batch_scan_app_details() {
             # which name is passed in. Leaving crash logs behind is the
             # fail-safe direction. Skip follow-on probes when leftover
             # discovery already timed out so we do not burn the floor budget.
-            if [[ "$sibling_guard" == "none" && $discovery_rc -ne 124 ]]; then
+            if [[ "$sibling_guard" == "none" ]] && ! mole_rc_timeout "$discovery_rc"; then
                 _batch_scan_stage="diagnostic report scan"
                 local diag_rc=0
                 diag_user=$(get_diagnostic_report_paths_for_app "$app_path" \
                     "$discovery_app_name" \
                     "$HOME/Library/Logs/DiagnosticReports") || diag_rc=$?
-                if [[ $diag_rc -eq 124 ]]; then
+                if mole_rc_timeout "$diag_rc"; then
                     diag_user=""
                     debug_log "Diagnostic report scan timed out for $app_name"
                 elif [[ $diag_rc -ne 0 ]]; then
@@ -1580,19 +1580,19 @@ _batch_scan_app_details() {
                 diag_rc=0
                 diag_system=$(get_diagnostic_report_paths_for_app "$app_path" \
                     "$discovery_app_name" "/Library/Logs/DiagnosticReports") || diag_rc=$?
-                if [[ $diag_rc -eq 124 ]]; then
+                if mole_rc_timeout "$diag_rc"; then
                     diag_system=""
                     debug_log "System diagnostic report scan timed out for $app_name"
                 elif [[ $diag_rc -ne 0 ]]; then
                     return "$diag_rc"
                 fi
             fi
-            if [[ $discovery_rc -ne 124 ]]; then
+            if ! mole_rc_timeout "$discovery_rc"; then
                 _batch_scan_stage="system leftover scan"
                 local system_rc=0
                 system_files=$(find_app_system_files \
                     "$bundle_id" "$discovery_app_name") || system_rc=$?
-                if [[ $system_rc -eq 124 ]]; then
+                if mole_rc_timeout "$system_rc"; then
                     system_files=""
                     debug_log "System leftover scan timed out for $app_name"
                 elif [[ $system_rc -ne 0 ]]; then
@@ -1603,7 +1603,7 @@ _batch_scan_app_details() {
         local related_size_kb="0"
         local related_size_rc=0
         related_size_kb=$(calculate_total_size "$related_files") || related_size_rc=$?
-        if [[ $related_size_rc -eq 124 ]]; then
+        if mole_rc_timeout "$related_size_rc"; then
             # Size is display-only here; keep the leftover plan and under-report.
             related_size_kb=0
             debug_log "Related-file size probe timed out for $app_name"
@@ -1634,7 +1634,7 @@ _batch_scan_app_details() {
         has_sensitive_data "$related_files" 2> /dev/null || sensitive_rc=$?
         if [[ $sensitive_rc -eq 0 ]]; then
             has_sensitive_data="true"
-        elif [[ $sensitive_rc -eq 124 || $sensitive_rc -ge 128 ]]; then
+        elif mole_rc_timeout_or_signal "$sensitive_rc"; then
             return "$sensitive_rc"
         fi
 
@@ -1651,7 +1651,7 @@ _batch_scan_app_details() {
         local login_helpers_rc=0
         login_item_helpers=$(discover_login_item_helper_bundle_ids \
             "$app_path") || login_helpers_rc=$?
-        if [[ $login_helpers_rc -eq 124 ]]; then
+        if mole_rc_timeout "$login_helpers_rc"; then
             login_item_helpers=""
             debug_log "Login-item helper discovery timed out for $app_name"
         elif [[ $login_helpers_rc -ne 0 ]]; then
@@ -1873,7 +1873,7 @@ _batch_execute_removals() {
         local app_plan_rc=0
         _batch_selected_app_plan_matches "$app_path" \
             "$expected_app_identity" "$expected_info_identity" || app_plan_rc=$?
-        if [[ $app_plan_rc -eq 124 || $app_plan_rc -ge 128 ]]; then
+        if mole_rc_timeout_or_signal "$app_plan_rc"; then
             return "$app_plan_rc"
         elif [[ $app_plan_rc -ne 0 ]]; then
             reason="selected app changed after preview"
@@ -1940,7 +1940,7 @@ _batch_execute_removals() {
             app_plan_rc=0
             _batch_selected_app_plan_matches "$app_path" \
                 "$expected_app_identity" "$expected_info_identity" || app_plan_rc=$?
-            if [[ $app_plan_rc -eq 124 || $app_plan_rc -ge 128 ]]; then
+            if mole_rc_timeout_or_signal "$app_plan_rc"; then
                 return "$app_plan_rc"
             elif [[ $app_plan_rc -ne 0 ]]; then
                 reason="selected app changed after preview"
@@ -1952,10 +1952,10 @@ _batch_execute_removals() {
             local teardown_rc=0
             stop_launch_services \
                 "$bundle_id" "$has_system_files" "$app_path" || teardown_rc=$?
-            [[ $teardown_rc -eq 124 || $teardown_rc -ge 128 ]] && return "$teardown_rc"
+            mole_rc_timeout_or_signal "$teardown_rc" && return "$teardown_rc"
             teardown_rc=0
             unregister_app_bundle "$app_path" || teardown_rc=$?
-            [[ $teardown_rc -eq 124 || $teardown_rc -ge 128 ]] && return "$teardown_rc"
+            mole_rc_timeout_or_signal "$teardown_rc" && return "$teardown_rc"
         fi
 
         # Remove from Login Items. Skipped when the sibling guard flagged a
@@ -1965,7 +1965,7 @@ _batch_execute_removals() {
         if [[ -z "$reason" && "${sibling_guard:-none}" != "guard_login" ]]; then
             local login_remove_rc=0
             remove_login_item "$app_name" "$bundle_id" || login_remove_rc=$?
-            [[ $login_remove_rc -eq 124 || $login_remove_rc -ge 128 ]] && return "$login_remove_rc"
+            mole_rc_timeout_or_signal "$login_remove_rc" && return "$login_remove_rc"
         elif [[ -z "$reason" ]]; then
             debug_log "Skipping login item removal for $app_name: name is shared with a surviving install"
         fi
@@ -2010,7 +2010,7 @@ _batch_execute_removals() {
             app_plan_rc=0
             _batch_selected_app_plan_matches "$app_path" \
                 "$expected_app_identity" "$expected_info_identity" || app_plan_rc=$?
-            if [[ $app_plan_rc -eq 124 || $app_plan_rc -ge 128 ]]; then
+            if mole_rc_timeout_or_signal "$app_plan_rc"; then
                 return "$app_plan_rc"
             elif [[ $app_plan_rc -ne 0 ]]; then
                 reason="selected app changed after preview"
@@ -2030,7 +2030,7 @@ _batch_execute_removals() {
                     "$cask_zap_mode" || brew_uninstall_rc=$?
                 if [[ $brew_uninstall_rc -eq 0 ]]; then
                     used_brew_successfully=true
-                elif [[ $brew_uninstall_rc -eq 124 || $brew_uninstall_rc -ge 128 ]]; then
+                elif mole_rc_timeout_or_signal "$brew_uninstall_rc"; then
                     return "$brew_uninstall_rc"
                 else
                     # Only fall back to manual app removal when Homebrew no longer
@@ -2051,7 +2051,7 @@ _batch_execute_removals() {
                         app_plan_rc=0
                         _batch_selected_app_plan_matches "$app_path" \
                             "$expected_app_identity" "$expected_info_identity" || app_plan_rc=$?
-                        if [[ $app_plan_rc -eq 124 || $app_plan_rc -ge 128 ]]; then
+                        if mole_rc_timeout_or_signal "$app_plan_rc"; then
                             return "$app_plan_rc"
                         elif [[ $app_plan_rc -ne 0 ]]; then
                             reason="selected app changed after preview"
@@ -2060,7 +2060,7 @@ _batch_execute_removals() {
                             local removal_rc=0
                             mole_delete "$app_path" "$needs_sudo" \
                                 "$expected_app_identity" || removal_rc=$?
-                            [[ $removal_rc -eq 124 || $removal_rc -ge 128 ]] && return "$removal_rc"
+                            mole_rc_timeout_or_signal "$removal_rc" && return "$removal_rc"
                             if [[ $removal_rc -ne 0 ]]; then
                                 if [[ $removal_rc -eq $MOLE_ERR_MUTABLE_PARENT ]]; then
                                     local diagnosis
@@ -2102,7 +2102,7 @@ _batch_execute_removals() {
                                 local removal_rc=0
                                 mole_delete "$app_path" "true" \
                                     "$expected_app_identity" || removal_rc=$?
-                                [[ $removal_rc -eq 124 || $removal_rc -ge 128 ]] && return "$removal_rc"
+                                mole_rc_timeout_or_signal "$removal_rc" && return "$removal_rc"
                                 if [[ $removal_rc -ne 0 ]]; then
                                     reason="failed to remove symlink"
                                 fi
@@ -2112,7 +2112,7 @@ _batch_execute_removals() {
                         local removal_rc=0
                         mole_delete "$app_path" "true" \
                             "$expected_app_identity" || removal_rc=$?
-                        [[ $removal_rc -eq 124 || $removal_rc -ge 128 ]] && return "$removal_rc"
+                        mole_rc_timeout_or_signal "$removal_rc" && return "$removal_rc"
                         if [[ $removal_rc -ne 0 ]]; then
                             reason="failed to remove symlink"
                         fi
@@ -2122,7 +2122,7 @@ _batch_execute_removals() {
                         local removal_rc=0
                         mole_delete "$app_path" "false" \
                             "$expected_app_identity" || removal_rc=$?
-                        [[ $removal_rc -eq 124 || $removal_rc -ge 128 ]] && return "$removal_rc"
+                        mole_rc_timeout_or_signal "$removal_rc" && return "$removal_rc"
                         if [[ $removal_rc -ne 0 ]]; then
                             reason="dry-run path validation failed"
                         fi
@@ -2130,7 +2130,7 @@ _batch_execute_removals() {
                         local ret=0
                         mole_delete "$app_path" "true" \
                             "$expected_app_identity" || ret=$?
-                        [[ $ret -eq 124 || $ret -ge 128 ]] && return "$ret"
+                        mole_rc_timeout_or_signal "$ret" && return "$ret"
                         if [[ $ret -ne 0 ]]; then
                             local diagnosis
                             diagnosis=$(diagnose_removal_failure "$ret" "$app_name")
@@ -2142,7 +2142,7 @@ _batch_execute_removals() {
                 local removal_rc=0
                 mole_delete "$app_path" "false" \
                     "$expected_app_identity" || removal_rc=$?
-                [[ $removal_rc -eq 124 || $removal_rc -ge 128 ]] && return "$removal_rc"
+                mole_rc_timeout_or_signal "$removal_rc" && return "$removal_rc"
                 if [[ $removal_rc -ne 0 ]]; then
                     if [[ ! -w "$(dirname "$app_path")" ]]; then
                         reason="parent directory not writable"
@@ -2164,7 +2164,7 @@ _batch_execute_removals() {
             fi
             local related_remove_rc=0
             remove_file_list "$related_files" "false" > /dev/null || related_remove_rc=$?
-            [[ $related_remove_rc -eq 124 || $related_remove_rc -ge 128 ]] && return "$related_remove_rc"
+            mole_rc_timeout_or_signal "$related_remove_rc" && return "$related_remove_rc"
 
             # Identify leftovers (silent rm failures, e.g. container directories
             # macOS protects via com.apple.provenance xattr). Compute their
@@ -2190,7 +2190,7 @@ _batch_execute_removals() {
                     local _du_rc=0
                     _du_total=$(run_with_timeout "$MOLE_TIMEOUT_DISK_VERIFY_SEC" \
                         du -skcP "${leftover_paths[@]}" 2> /dev/null | awk 'END {print $1}') || _du_rc=$?
-                    [[ $_du_rc -eq 124 || $_du_rc -ge 128 ]] && return "$_du_rc"
+                    mole_rc_timeout_or_signal "$_du_rc" && return "$_du_rc"
                     if [[ $_du_rc -eq 0 && "$_du_total" =~ ^[0-9]+$ ]]; then
                         leftover_kb=$_du_total
                     fi
@@ -2203,7 +2203,7 @@ _batch_execute_removals() {
             if [[ "$used_brew_successfully" == "true" ]]; then
                 local system_remove_rc=0
                 remove_file_list "$diag_system" "true" > /dev/null || system_remove_rc=$?
-                [[ $system_remove_rc -eq 124 || $system_remove_rc -ge 128 ]] && return "$system_remove_rc"
+                mole_rc_timeout_or_signal "$system_remove_rc" && return "$system_remove_rc"
             else
                 local system_all="$system_files"
                 if [[ -n "$diag_system" ]]; then
@@ -2214,7 +2214,7 @@ _batch_execute_removals() {
                 fi
                 local system_remove_rc=0
                 remove_file_list "$system_all" "true" > /dev/null || system_remove_rc=$?
-                [[ $system_remove_rc -eq 124 || $system_remove_rc -ge 128 ]] && return "$system_remove_rc"
+                mole_rc_timeout_or_signal "$system_remove_rc" && return "$system_remove_rc"
             fi
 
             # Defaults writes are side effects that should never run in dry-run mode.
@@ -2246,7 +2246,7 @@ _batch_execute_removals() {
                     while IFS= read -r -d '' plist_file; do
                         local plist_delete_rc=0
                         mole_delete "$plist_file" "false" || plist_delete_rc=$?
-                        if [[ $plist_delete_rc -eq 124 || $plist_delete_rc -ge 128 ]]; then
+                        if mole_rc_timeout_or_signal "$plist_delete_rc"; then
                             byhost_delete_rc=$plist_delete_rc
                             break
                         fi
@@ -2265,7 +2265,7 @@ _batch_execute_removals() {
             if [[ "${sibling_guard:-none}" == "none" ]]; then
                 local bootout_rc=0
                 bootout_login_item_helpers "$login_item_helpers" || bootout_rc=$?
-                [[ $bootout_rc -eq 124 || $bootout_rc -ge 128 ]] && return "$bootout_rc"
+                mole_rc_timeout_or_signal "$bootout_rc" && return "$bootout_rc"
             else
                 debug_log "Skipping login item helper bootout for $app_name: helper ids are shared with a surviving install"
             fi
@@ -2591,11 +2591,11 @@ batch_uninstall_applications() {
         _abort_uninstall_batch
         return 130
     fi
-    if [[ $_scan_rc -eq 124 || $_scan_rc -ge 128 ]]; then
+    if mole_rc_timeout_or_signal "$_scan_rc"; then
         _abort_uninstall_batch
         # A signal already echoed through the INT/TERM trap; a timeout has
         # said nothing yet, and a silent exit is unreportable (#1340).
-        if [[ $_scan_rc -eq 124 ]]; then
+        if mole_rc_timeout "$_scan_rc"; then
             log_error "The uninstall scan timed out before finishing; nothing was removed"
         fi
         return "$_scan_rc"
@@ -2621,7 +2621,7 @@ batch_uninstall_applications() {
         _abort_uninstall_batch
         return 130
     fi
-    if [[ $_confirm_rc -eq 124 || $_confirm_rc -ge 128 ]]; then
+    if mole_rc_timeout_or_signal "$_confirm_rc"; then
         _abort_uninstall_batch
         return "$_confirm_rc"
     fi
@@ -2658,7 +2658,7 @@ batch_uninstall_applications() {
         _abort_uninstall_batch
         return 130
     fi
-    if [[ $_execute_rc -eq 124 || $_execute_rc -ge 128 ]]; then
+    if mole_rc_timeout_or_signal "$_execute_rc"; then
         _abort_uninstall_batch
         return "$_execute_rc"
     elif [[ $_execute_rc -ne 0 ]]; then

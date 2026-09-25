@@ -65,7 +65,7 @@ is_brew_cask_installed() {
     local list_rc=0
     cask_list=$(_mole_brew_probe "$MOLE_TIMEOUT_PKG_LIST_SEC" \
         list --cask 2> /dev/null) || list_rc=$?
-    [[ $list_rc -eq 124 || $list_rc -ge 128 ]] && return "$list_rc"
+    mole_rc_timeout_or_signal "$list_rc" && return "$list_rc"
     [[ $list_rc -eq 0 ]] || return 2
     grep -qxF "$cask_name" <<< "$cask_list"
 }
@@ -178,7 +178,7 @@ _detect_cask_via_caskroom_search() {
         local list_rc=0
         cask_list=$(_mole_brew_probe "$MOLE_TIMEOUT_PKG_LIST_SEC" \
             list --cask 2> /dev/null) || list_rc=$?
-        [[ $list_rc -eq 124 || $list_rc -ge 128 ]] && return "$list_rc"
+        mole_rc_timeout_or_signal "$list_rc" && return "$list_rc"
         [[ $list_rc -eq 0 ]] || return 2
         grep -qxF "${uniq[0]}" <<< "$cask_list" || return 1
 
@@ -186,7 +186,7 @@ _detect_cask_via_caskroom_search() {
         local info_rc=0
         info_output=$(_mole_brew_probe "$MOLE_TIMEOUT_PKG_LIST_SEC" \
             info --cask "${uniq[0]}" 2> /dev/null) || info_rc=$?
-        [[ $info_rc -eq 124 || $info_rc -ge 128 ]] && return "$info_rc"
+        mole_rc_timeout_or_signal "$info_rc" && return "$info_rc"
         if [[ $info_rc -ne 0 ]]; then
             # Third-party short-token lookup can fail even with an installed
             # cask. Require its actual app symlink, not just a matching name,
@@ -238,7 +238,7 @@ _detect_cask_via_brew_list() {
     local list_rc=0
     cask_list=$(_mole_brew_probe "$MOLE_TIMEOUT_PKG_LIST_SEC" \
         list --cask 2> /dev/null) || list_rc=$?
-    [[ $list_rc -eq 124 || $list_rc -ge 128 ]] && return "$list_rc"
+    mole_rc_timeout_or_signal "$list_rc" && return "$list_rc"
     [[ $list_rc -eq 0 ]] || return 2
 
     local cask_name=""
@@ -249,7 +249,7 @@ _detect_cask_via_brew_list() {
     local info_rc=0
     info_output=$(_mole_brew_probe "$MOLE_TIMEOUT_PKG_LIST_SEC" \
         info --cask "$cask_name" 2> /dev/null) || info_rc=$?
-    [[ $info_rc -eq 124 || $info_rc -ge 128 ]] && return "$info_rc"
+    mole_rc_timeout_or_signal "$info_rc" && return "$info_rc"
     [[ $info_rc -eq 0 ]] || return 2
     if grep -qF "$app_path" <<< "$info_output"; then
         echo "$cask_name"
@@ -341,7 +341,7 @@ brew_uninstall_cask() {
         local size_kb=0
         local size_rc=0
         size_kb=$(get_path_size_kb "$app_path") || size_rc=$?
-        [[ $size_rc -eq 124 || $size_rc -ge 128 ]] && return "$size_rc"
+        mole_rc_timeout_or_signal "$size_rc" && return "$size_rc"
         [[ $size_rc -eq 0 && "$size_kb" =~ ^[0-9]+$ ]] || size_kb=0
         local size_gb=$((size_kb / 1048576))
         if [[ $size_gb -gt 15 ]]; then
@@ -373,7 +373,7 @@ brew_uninstall_cask() {
         # Timeout and signal statuses are cancellation, not evidence that a
         # partially completed cask action can safely fall back to direct app
         # deletion. Preserve them before any verification.
-        if [[ $brew_exit -eq 124 ]]; then
+        if mole_rc_timeout "$brew_exit"; then
             debug_log "brew uninstall timed out after ${timeout}s, returning failure"
             return 124
         elif [[ $brew_exit -ge 128 ]]; then

@@ -488,7 +488,20 @@ _mole_sqlite_database_in_use() {
     # empty array is an unbound-variable error under set -u.
     [[ ${#family[@]} -gt 0 ]] || return 1
 
+<<<<<<< HEAD
     _mole_paths_have_open_handle "${family[@]}"
+=======
+    local handle_rc=0
+    _mole_paths_have_open_handle "${family[@]}" || handle_rc=$?
+    if mole_rc_timeout "$handle_rc"; then
+        # A read-only handle probe that timed out proves neither idle nor live.
+        # Keep this family without cancelling unrelated cleanup (#1595).
+        # Signals and deletion timeouts retain their cancellation semantics.
+        debug_log "SQLite handle probe timed out, keeping database: $path"
+        return 2
+    fi
+    return "$handle_rc"
+>>>>>>> 7d436c60 (refactor: name timeout statuses and gate raw 124 comparisons)
 }
 
 _mole_user_cache_sqlite_has_open_handle() {
@@ -559,7 +572,7 @@ _mole_complete_lsof_mode() {
     local records=""
     local probe_rc=0
     records=$(run_with_timeout "$probe_timeout" lsof -F pu -p 1 < /dev/null 2>&1) || probe_rc=$?
-    if [[ $probe_rc -eq 124 || $probe_rc -ge 128 ]]; then
+    if mole_rc_timeout_or_signal "$probe_rc"; then
         return "$probe_rc"
     fi
     if [[ $probe_rc -eq 0 ]] && _mole_lsof_records_include_root_process "$records"; then
@@ -581,7 +594,7 @@ _mole_complete_lsof_mode() {
     records=""
     probe_rc=0
     records=$(run_with_timeout "$probe_timeout" sudo -n lsof -F pu -p 1 < /dev/null 2>&1) || probe_rc=$?
-    if [[ $probe_rc -eq 124 || $probe_rc -ge 128 ]]; then
+    if mole_rc_timeout_or_signal "$probe_rc"; then
         return "$probe_rc"
     fi
     if [[ $probe_rc -eq 0 ]] && _mole_lsof_records_include_root_process "$records"; then
@@ -610,7 +623,7 @@ _mole_paths_have_open_handle() {
 
     local visibility_rc=0
     _mole_complete_lsof_mode || visibility_rc=$?
-    if [[ $visibility_rc -eq 124 || $visibility_rc -ge 128 ]]; then
+    if mole_rc_timeout_or_signal "$visibility_rc"; then
         return "$visibility_rc"
     fi
     [[ $visibility_rc -eq 0 ]] || return 2
@@ -619,7 +632,7 @@ _mole_paths_have_open_handle() {
     local open_records=""
     open_records=$(_mole_run_complete_lsof "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
         -F n -- "$@" 2>&1) || lsof_rc=$?
-    if [[ $lsof_rc -eq 124 || $lsof_rc -ge 128 ]]; then
+    if mole_rc_timeout_or_signal "$lsof_rc"; then
         return "$lsof_rc"
     fi
     if [[ $lsof_rc -eq 0 ]]; then
@@ -655,7 +668,7 @@ _mole_container_cache_has_open_handle() {
     fi
     local visibility_rc=0
     _mole_complete_lsof_mode "${_MOLE_CONTAINER_CACHE_PROBE_DEADLINE:-}" || visibility_rc=$?
-    if [[ $visibility_rc -eq 124 || $visibility_rc -ge 128 ]]; then
+    if mole_rc_timeout_or_signal "$visibility_rc"; then
         return "$visibility_rc"
     fi
     [[ $visibility_rc -eq 0 ]] || return 2
@@ -683,7 +696,7 @@ _mole_container_cache_has_open_handle() {
             -F pfn -- "$path" 2>&1) || lsof_rc=$?
     fi
 
-    if [[ $lsof_rc -eq 124 || $lsof_rc -ge 128 ]]; then
+    if mole_rc_timeout_or_signal "$lsof_rc"; then
         return "$lsof_rc"
     fi
     if [[ $lsof_rc -eq 0 ]]; then
@@ -746,7 +759,7 @@ _mole_should_refuse_live_user_cache_path() {
         fi
         local container_open_state=0
         _mole_container_cache_has_open_handle "$path" || container_open_state=$?
-        if [[ $container_open_state -eq 124 || $container_open_state -ge 128 ]]; then
+        if mole_rc_timeout_or_signal "$container_open_state"; then
             return "$container_open_state"
         fi
         if [[ $container_open_state -eq 0 || $container_open_state -eq 2 ]]; then
@@ -757,7 +770,7 @@ _mole_should_refuse_live_user_cache_path() {
     elif _mole_is_user_cache_sqlite_family_path "$path"; then
         local open_state=0
         _mole_user_cache_sqlite_has_open_handle "$path" || open_state=$?
-        if [[ $open_state -eq 124 || $open_state -ge 128 ]]; then
+        if mole_rc_timeout_or_signal "$open_state"; then
             return "$open_state"
         fi
         if [[ $open_state -eq 0 || $open_state -eq 2 ]]; then
@@ -814,7 +827,7 @@ _mole_should_refuse_live_user_cache_path() {
 
                 open_state=0
                 _mole_user_cache_sqlite_has_open_handle "$family_base" || open_state=$?
-                if [[ $open_state -eq 124 || $open_state -ge 128 ]]; then
+                if mole_rc_timeout_or_signal "$open_state"; then
                     return "$open_state"
                 fi
                 if [[ $open_state -eq 0 || $open_state -eq 2 ]]; then
@@ -1087,7 +1100,7 @@ validate_path_for_deletion() {
         debug_log "Path validation: live user cache kept: $policy_path"
         return 1
     fi
-    if [[ $live_cache_guard_rc -eq 124 || $live_cache_guard_rc -ge 128 ]]; then
+    if mole_rc_timeout_or_signal "$live_cache_guard_rc"; then
         _mole_record_clean_cancellation "$live_cache_guard_rc"
         return "$live_cache_guard_rc"
     fi
@@ -1097,7 +1110,7 @@ validate_path_for_deletion() {
     if _mole_is_sqlite_database_path "$policy_path"; then
         local sqlite_state=0
         _mole_sqlite_database_in_use "$policy_path" || sqlite_state=$?
-        if [[ $sqlite_state -eq 124 || $sqlite_state -ge 128 ]]; then
+        if mole_rc_timeout_or_signal "$sqlite_state"; then
             _mole_record_clean_cancellation "$sqlite_state"
             return "$sqlite_state"
         fi
@@ -1113,7 +1126,7 @@ validate_path_for_deletion() {
     if _mole_is_incomplete_download_path "$policy_path"; then
         local download_open_state=0
         _mole_paths_have_open_handle "$policy_path" || download_open_state=$?
-        if [[ $download_open_state -eq 124 || $download_open_state -ge 128 ]]; then
+        if mole_rc_timeout_or_signal "$download_open_state"; then
             _mole_record_clean_cancellation "$download_open_state"
             return "$download_open_state"
         fi
@@ -1194,7 +1207,7 @@ _record_file_ops_dry_run_target() {
         if [[ $measure_rc -ge 128 ]]; then
             return "$measure_rc"
         fi
-        if [[ $measure_rc -eq 124 ]]; then
+        if mole_rc_timeout "$measure_rc"; then
             # Sizing budget exhausted: preview the item as size-unknown rather
             # than cancelling the whole dry run.
             MOLE_CLEAN_SIZING_TIMEOUTS=$((${MOLE_CLEAN_SIZING_TIMEOUTS:-0} + 1))
@@ -1212,7 +1225,7 @@ _record_file_ops_dry_run_target() {
     if _mole_is_incomplete_download_path "$path"; then
         local download_open_state=0
         _mole_paths_have_open_handle "$path" || download_open_state=$?
-        if [[ $download_open_state -eq 124 || $download_open_state -ge 128 ]]; then
+        if mole_rc_timeout_or_signal "$download_open_state"; then
             return "$download_open_state"
         fi
         [[ $download_open_state -eq 1 ]] || return 1
@@ -1234,10 +1247,9 @@ _record_file_ops_dry_run_target() {
 # user interrupt into permission to continue deleting later targets.
 _mole_record_clean_cancellation() {
     local status="$1"
-    if [[ "${MOLE_CURRENT_COMMAND:-}" == "clean" &&
-        ("$status" -eq 124 || "$status" -ge 128) ]]; then
+    if [[ "${MOLE_CURRENT_COMMAND:-}" == "clean" ]] && mole_rc_timeout_or_signal "$status"; then
         local existing="${MOLE_CLEAN_CANCEL_STATUS:-0}"
-        if [[ $existing -ne 124 && $existing -lt 128 ]]; then
+        if ! mole_rc_timeout_or_signal "$existing"; then
             MOLE_CLEAN_CANCEL_STATUS=$status
             export MOLE_CLEAN_CANCEL_STATUS
         fi
@@ -1262,8 +1274,7 @@ safe_remove() {
     local exact_probe_target_id=""
 
     local pending_clean_cancel="${MOLE_CLEAN_CANCEL_STATUS:-0}"
-    if [[ "${MOLE_CURRENT_COMMAND:-}" == "clean" &&
-        ("$pending_clean_cancel" -eq 124 || "$pending_clean_cancel" -ge 128) ]]; then
+    if [[ "${MOLE_CURRENT_COMMAND:-}" == "clean" ]] && mole_rc_timeout_or_signal "$pending_clean_cancel"; then
         return "$pending_clean_cancel"
     fi
 
@@ -1289,7 +1300,7 @@ safe_remove() {
         validate_path_for_deletion "$path" || validation_rc=$?
     fi
     if [[ $validation_rc -ne 0 ]]; then
-        if [[ $validation_rc -eq 124 || $validation_rc -ge 128 ]]; then
+        if mole_rc_timeout_or_signal "$validation_rc"; then
             _mole_record_clean_cancellation "$validation_rc"
             return "$validation_rc"
         fi
@@ -1327,7 +1338,7 @@ safe_remove() {
         local dry_record_rc=0
         _record_file_ops_dry_run_target \
             "$path" "$precomputed_size_kb" || dry_record_rc=$?
-        if [[ $dry_record_rc -eq 124 || $dry_record_rc -ge 128 ]]; then
+        if mole_rc_timeout_or_signal "$dry_record_rc"; then
             _mole_record_clean_cancellation "$dry_record_rc"
             return "$dry_record_rc"
         fi
@@ -1344,7 +1355,7 @@ safe_remove() {
                 local size_kb=0
                 local size_rc=0
                 size_kb=$(get_path_size_kb "$path" 2> /dev/null) || size_rc=$?
-                if [[ $size_rc -eq 124 || $size_rc -ge 128 ]]; then
+                if mole_rc_timeout_or_signal "$size_rc"; then
                     _mole_record_clean_cancellation "$size_rc"
                     return "$size_rc"
                 fi
@@ -1357,7 +1368,7 @@ safe_remove() {
                     local mod_time=0
                     local stat_rc=0
                     mod_time=$(stat -f%m "$path" 2> /dev/null) || stat_rc=$?
-                    if [[ $stat_rc -eq 124 || $stat_rc -ge 128 ]]; then
+                    if mole_rc_timeout_or_signal "$stat_rc"; then
                         _mole_record_clean_cancellation "$stat_rc"
                         return "$stat_rc"
                     fi
@@ -1396,7 +1407,7 @@ safe_remove() {
             if [[ $size_probe_rc -eq 0 ]]; then
                 size_kb=$(get_path_size_kb "$path" "$size_probe_timeout" 2> /dev/null) || size_probe_rc=$?
             fi
-            if [[ $size_probe_rc -eq 124 ]]; then
+            if mole_rc_timeout "$size_probe_rc"; then
                 # Sizing budget exhausted: still remove the item, with the
                 # freed total under-reported, matching the batch-sizing policy.
                 MOLE_CLEAN_SIZING_TIMEOUTS=$((${MOLE_CLEAN_SIZING_TIMEOUTS:-0} + 1))
@@ -1432,7 +1443,7 @@ safe_remove() {
         log_operation "${MOLE_CURRENT_COMMAND:-clean}" "SKIPPED" "$path" "live user cache"
         return 1
     fi
-    if [[ $live_cache_guard_rc -eq 124 || $live_cache_guard_rc -ge 128 ]]; then
+    if mole_rc_timeout_or_signal "$live_cache_guard_rc"; then
         _mole_record_clean_cancellation "$live_cache_guard_rc"
         return "$live_cache_guard_rc"
     fi
@@ -1450,7 +1461,7 @@ safe_remove() {
         local sqlite_target_id="$_MOLE_PATH_SNAPSHOT_TARGET_ID"
         local sqlite_state=0
         _mole_sqlite_database_in_use "$path" || sqlite_state=$?
-        if [[ $sqlite_state -eq 124 || $sqlite_state -ge 128 ]]; then
+        if mole_rc_timeout_or_signal "$sqlite_state"; then
             _mole_record_clean_cancellation "$sqlite_state"
             return "$sqlite_state"
         fi
@@ -1480,7 +1491,7 @@ safe_remove() {
         local download_target_id="$_MOLE_PATH_SNAPSHOT_TARGET_ID"
         local download_open_state=0
         _mole_paths_have_open_handle "$path" || download_open_state=$?
-        if [[ $download_open_state -eq 124 || $download_open_state -ge 128 ]]; then
+        if mole_rc_timeout_or_signal "$download_open_state"; then
             _mole_record_clean_cancellation "$download_open_state"
             return "$download_open_state"
         fi
@@ -1521,7 +1532,7 @@ safe_remove() {
         if [[ $final_sink_guard_rc -ne 0 ]]; then
             debug_log "Refusing removal after the final sink guard denied: $path"
             log_operation "${MOLE_CURRENT_COMMAND:-clean}" "SKIPPED" "$path" "sink guard denied"
-            if [[ $final_sink_guard_rc -eq 124 || $final_sink_guard_rc -ge 128 ]]; then
+            if mole_rc_timeout_or_signal "$final_sink_guard_rc"; then
                 _mole_record_clean_cancellation "$final_sink_guard_rc"
                 return "$final_sink_guard_rc"
             fi
@@ -1574,7 +1585,7 @@ safe_remove() {
         fi
     fi
 
-    if [[ $rm_exit -eq 124 ]]; then
+    if mole_rc_timeout "$rm_exit"; then
         debug_log "Removal timed out: $path"
         if [[ $section_deadline_spent -eq 1 ]]; then
             # Not a slow removal: the caller's section deadline expired before
@@ -1627,8 +1638,7 @@ safe_remove_symlink() {
     local expected_target_id="${5:-}"
 
     local pending_clean_cancel="${MOLE_CLEAN_CANCEL_STATUS:-0}"
-    if [[ "${MOLE_CURRENT_COMMAND:-}" == "clean" &&
-        ("$pending_clean_cancel" -eq 124 || "$pending_clean_cancel" -ge 128) ]]; then
+    if [[ "${MOLE_CURRENT_COMMAND:-}" == "clean" ]] && mole_rc_timeout_or_signal "$pending_clean_cancel"; then
         return "$pending_clean_cancel"
     fi
 
@@ -1658,7 +1668,7 @@ safe_remove_symlink() {
     if [[ "${MOLE_DRY_RUN:-0}" == "1" ]]; then
         local dry_record_rc=0
         _record_file_ops_dry_run_target "$path" || dry_record_rc=$?
-        if [[ $dry_record_rc -eq 124 || $dry_record_rc -ge 128 ]]; then
+        if mole_rc_timeout_or_signal "$dry_record_rc"; then
             _mole_record_clean_cancellation "$dry_record_rc"
             return "$dry_record_rc"
         fi
@@ -1687,7 +1697,7 @@ safe_remove_symlink() {
         log_operation "${MOLE_CURRENT_COMMAND:-clean}" "REMOVED" "$path" "symlink"
         return 0
     else
-        if [[ $rm_exit -eq 124 || $rm_exit -ge 128 ]]; then
+        if mole_rc_timeout_or_signal "$rm_exit"; then
             _mole_record_clean_cancellation "$rm_exit"
             return "$rm_exit"
         fi
@@ -1765,8 +1775,7 @@ safe_sudo_remove() {
     local expected_target_id="${6:-}"
 
     local pending_clean_cancel="${MOLE_CLEAN_CANCEL_STATUS:-0}"
-    if [[ "${MOLE_CURRENT_COMMAND:-}" == "clean" &&
-        ("$pending_clean_cancel" -eq 124 || "$pending_clean_cancel" -ge 128) ]]; then
+    if [[ "${MOLE_CURRENT_COMMAND:-}" == "clean" ]] && mole_rc_timeout_or_signal "$pending_clean_cancel"; then
         return "$pending_clean_cancel"
     fi
 
@@ -1818,7 +1827,7 @@ safe_sudo_remove() {
         local dry_record_rc=0
         _record_file_ops_dry_run_target \
             "$path" "$precomputed_size_kb" || dry_record_rc=$?
-        if [[ $dry_record_rc -eq 124 || $dry_record_rc -ge 128 ]]; then
+        if mole_rc_timeout_or_signal "$dry_record_rc"; then
             _mole_record_clean_cancellation "$dry_record_rc"
             return "$dry_record_rc"
         fi
@@ -1844,7 +1853,7 @@ safe_sudo_remove() {
             local exists_rc=0
             _mole_bounded_sudo "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
                 -n test -e "$path" < /dev/null 2> /dev/null || exists_rc=$?
-            if [[ $exists_rc -eq 124 || $exists_rc -ge 128 ]]; then
+            if mole_rc_timeout_or_signal "$exists_rc"; then
                 _mole_record_clean_cancellation "$exists_rc"
                 return "$exists_rc"
             fi
@@ -1858,7 +1867,7 @@ safe_sudo_remove() {
                     local size_rc=0
                     size_kb=$(_mole_bounded_sudo "$MOLE_TIMEOUT_DISK_VERIFY_SEC" \
                         -n du -skP "$path" < /dev/null 2> /dev/null | awk '{print $1}') || size_rc=$?
-                    if [[ $size_rc -eq 124 || $size_rc -ge 128 ]]; then
+                    if mole_rc_timeout_or_signal "$size_rc"; then
                         _mole_record_clean_cancellation "$size_rc"
                         return "$size_rc"
                     fi
@@ -1871,7 +1880,7 @@ safe_sudo_remove() {
                 local type_probe_rc=0
                 _mole_bounded_sudo "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
                     -n test -f "$path" < /dev/null 2> /dev/null || type_probe_rc=$?
-                if [[ $type_probe_rc -eq 124 || $type_probe_rc -ge 128 ]]; then
+                if mole_rc_timeout_or_signal "$type_probe_rc"; then
                     _mole_record_clean_cancellation "$type_probe_rc"
                     return "$type_probe_rc"
                 fi
@@ -1879,7 +1888,7 @@ safe_sudo_remove() {
                     type_probe_rc=0
                     _mole_bounded_sudo "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
                         -n test -d "$path" < /dev/null 2> /dev/null || type_probe_rc=$?
-                    if [[ $type_probe_rc -eq 124 || $type_probe_rc -ge 128 ]]; then
+                    if mole_rc_timeout_or_signal "$type_probe_rc"; then
                         _mole_record_clean_cancellation "$type_probe_rc"
                         return "$type_probe_rc"
                     fi
@@ -1889,7 +1898,7 @@ safe_sudo_remove() {
                     local stat_rc=0
                     mod_time=$(_mole_bounded_sudo "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
                         -n stat -f%m "$path" < /dev/null 2> /dev/null) || stat_rc=$?
-                    if [[ $stat_rc -eq 124 || $stat_rc -ge 128 ]]; then
+                    if mole_rc_timeout_or_signal "$stat_rc"; then
                         _mole_record_clean_cancellation "$stat_rc"
                         return "$stat_rc"
                     fi
@@ -1928,7 +1937,7 @@ safe_sudo_remove() {
                 _mole_bounded_sudo "$exists_probe_timeout" \
                     -n test -e "$path" < /dev/null 2> /dev/null || exists_probe_rc=$?
             fi
-            if [[ $exists_probe_rc -eq 124 ]]; then
+            if mole_rc_timeout "$exists_probe_rc"; then
                 _mole_record_clean_cancellation 124
                 return 124
             fi
@@ -1945,7 +1954,7 @@ safe_sudo_remove() {
                     size_kb=$(_mole_bounded_sudo "$size_probe_timeout" \
                         -n du -skP "$path" < /dev/null 2> /dev/null | awk '{print $1}') || size_probe_rc=$?
                 fi
-                if [[ $size_probe_rc -eq 124 ]]; then
+                if mole_rc_timeout "$size_probe_rc"; then
                     MOLE_CLEAN_SIZING_TIMEOUTS=$((${MOLE_CLEAN_SIZING_TIMEOUTS:-0} + 1))
                 fi
                 if [[ $size_probe_rc -ge 128 ]]; then
@@ -1993,7 +2002,7 @@ safe_sudo_remove() {
         return 0
     fi
 
-    if [[ $ret -eq 124 ]]; then
+    if mole_rc_timeout "$ret"; then
         if [[ $section_deadline_spent -eq 1 ]]; then
             # The section prints its own "time limit reached" line; counting it
             # here too would tell the user to raise the per-item removal budget,
@@ -2131,9 +2140,9 @@ mole_delete() {
         # Ctrl-C and other signals are cancellation, not an unknown-size
         # measurement. Stop before any dry-run registration, Trash move, or
         # permanent removal so the user's interrupt cannot be ignored.
-        if [[ $du_rc -eq 124 || $du_rc -ge 128 ]]; then
+        if mole_rc_timeout_or_signal "$du_rc"; then
             local cancel_status="interrupted"
-            [[ $du_rc -eq 124 ]] && cancel_status="timed-out"
+            mole_rc_timeout "$du_rc" && cancel_status="timed-out"
             _mole_delete_log "$mode" "$size_kb" "$cancel_status" "$path"
             return "$du_rc"
         fi
@@ -2154,9 +2163,9 @@ mole_delete() {
         local identity_rc=0
         current_identity=$(run_with_timeout "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
             "$STAT_BSD" -f%d:%i:%m "$path" 2> /dev/null) || identity_rc=$?
-        if [[ $identity_rc -eq 124 || $identity_rc -ge 128 ]]; then
+        if mole_rc_timeout_or_signal "$identity_rc"; then
             local identity_status="interrupted"
-            [[ $identity_rc -eq 124 ]] && identity_status="timed-out"
+            mole_rc_timeout "$identity_rc" && identity_status="timed-out"
             _mole_delete_log "$mode" "$size_kb" "$identity_status" "$path"
             return "$identity_rc"
         fi
@@ -2176,9 +2185,9 @@ mole_delete() {
         else
             _record_file_ops_dry_run_target "$path" || preview_rc=$?
         fi
-        if [[ $preview_rc -eq 124 || $preview_rc -ge 128 ]]; then
+        if mole_rc_timeout_or_signal "$preview_rc"; then
             local preview_status="interrupted"
-            [[ $preview_rc -eq 124 ]] && preview_status="timed-out"
+            mole_rc_timeout "$preview_rc" && preview_status="timed-out"
             _mole_delete_log "$mode" "$size_kb" "$preview_status" "$path"
             return "$preview_rc"
         fi
@@ -2223,9 +2232,9 @@ mole_delete() {
             debug_log "Trash move stopped because a mutable parent was detected: $path"
             return "$MOLE_ERR_MUTABLE_PARENT"
         fi
-        if [[ $trash_rc -eq 124 || $trash_rc -ge 128 ]]; then
+        if mole_rc_timeout_or_signal "$trash_rc"; then
             local trash_status="interrupted"
-            [[ $trash_rc -eq 124 ]] && trash_status="timed-out"
+            mole_rc_timeout "$trash_rc" && trash_status="timed-out"
             _mole_delete_log "trash" "$size_kb" "$trash_status" "$path"
             return "$trash_rc"
         fi
@@ -2266,7 +2275,7 @@ mole_delete() {
     local status_label="ok"
     if [[ $rc -eq $MOLE_ERR_MUTABLE_PARENT ]]; then
         status_label="mutable-parent"
-    elif [[ $rc -eq 124 ]]; then
+    elif mole_rc_timeout "$rc"; then
         status_label="timed-out"
     elif [[ $rc -ge 128 ]]; then
         status_label="interrupted"
@@ -2343,7 +2352,7 @@ _mole_trash_target_still_safe() {
         log_operation "${MOLE_CURRENT_COMMAND:-uninstall}" "SKIPPED" "$path" "live user cache"
         return 1
     fi
-    if [[ $live_cache_guard_rc -eq 124 || $live_cache_guard_rc -ge 128 ]]; then
+    if mole_rc_timeout_or_signal "$live_cache_guard_rc"; then
         _mole_record_clean_cancellation "$live_cache_guard_rc"
         return "$live_cache_guard_rc"
     fi
@@ -2381,7 +2390,7 @@ on run argv
 end run
 APPLESCRIPT
 
-    if [[ $finder_rc -eq 124 || $finder_rc -ge 128 ]]; then
+    if mole_rc_timeout_or_signal "$finder_rc"; then
         return "$finder_rc"
     elif [[ $finder_rc -ne 0 ]] || [[ -e "$path" || -L "$path" ]]; then
         debug_log "Finder failed to move application to Trash: $path"
@@ -2434,7 +2443,7 @@ _mole_move_to_trash() {
                 "$expected_parent" "$expected_parent_id" \
                 "$expected_target_id" || finder_rc=$?
             [[ $finder_rc -eq 0 ]] && return 0
-            [[ $finder_rc -eq 124 || $finder_rc -ge 128 ]] && return "$finder_rc"
+            mole_rc_timeout_or_signal "$finder_rc" && return "$finder_rc"
         fi
         return "$direct_rc"
     fi
@@ -2447,7 +2456,7 @@ _mole_move_to_trash() {
         run_with_timeout "$MOLE_TIMEOUT_DISK_VERIFY_SEC" \
             trash "$path" > /dev/null 2>&1 || trash_rc=$?
         [[ $trash_rc -eq 0 ]] && return 0
-        [[ $trash_rc -eq 124 || $trash_rc -ge 128 ]] && return "$trash_rc"
+        mole_rc_timeout_or_signal "$trash_rc" && return "$trash_rc"
     fi
 
     # AppleScript fallback. Pass the path via argv so special chars (quotes,
@@ -2660,11 +2669,11 @@ _mole_move_path_to_user_trash() {
         local stage_device=""
         local device_rc=0
         source_device=$($STAT_BSD -f%d "$path" 2> /dev/null) || device_rc=$?
-        [[ $device_rc -eq 124 || $device_rc -ge 128 ]] && return "$device_rc"
+        mole_rc_timeout_or_signal "$device_rc" && return "$device_rc"
         if [[ $device_rc -eq 0 ]]; then
             stage_device=$($STAT_BSD -f%d "$stage_dir" 2> /dev/null) || device_rc=$?
         fi
-        [[ $device_rc -eq 124 || $device_rc -ge 128 ]] && return "$device_rc"
+        mole_rc_timeout_or_signal "$device_rc" && return "$device_rc"
         if [[ ! "$source_device" =~ ^[0-9]+$ || "$source_device" != "$stage_device" ]]; then
             sudo -n /bin/rm -rf "$stage_dir" 2> /dev/null || true # SAFE: exact empty staging directory created by mktemp above
             debug_log "Refusing cross-volume privileged Trash staging: $path"
@@ -2676,7 +2685,7 @@ _mole_move_path_to_user_trash() {
             "$expected_parent_id" "$expected_target_id" || return 1
         sudo -n /bin/mv "$path" "$stage_path" 2> /dev/null || stage_move_rc=$?
         if [[ $stage_move_rc -ne 0 ]]; then
-            if [[ $stage_move_rc -eq 124 || $stage_move_rc -ge 128 ]]; then
+            if mole_rc_timeout_or_signal "$stage_move_rc"; then
                 if [[ -e "$stage_path" || -L "$stage_path" ]]; then
                     log_error "Trash move interrupted; item preserved for recovery at: $stage_path"
                 fi
@@ -2705,7 +2714,7 @@ _mole_move_path_to_user_trash() {
                 "$stage_dir" 2> /dev/null || handoff_rc=$?
         fi
         if [[ $handoff_rc -ne 0 ]]; then
-            if [[ $handoff_rc -eq 124 || $handoff_rc -ge 128 ]]; then
+            if mole_rc_timeout_or_signal "$handoff_rc"; then
                 log_error "Trash move interrupted; item preserved for recovery at: $stage_path"
                 return "$handoff_rc"
             fi
@@ -2721,7 +2730,7 @@ _mole_move_path_to_user_trash() {
         fi
 
         if [[ $move_rc -ne 0 || -e "$stage_path" || -L "$stage_path" ]]; then
-            if [[ $move_rc -eq 124 || $move_rc -ge 128 ]]; then
+            if mole_rc_timeout_or_signal "$move_rc"; then
                 if [[ -e "$stage_path" || -L "$stage_path" ]]; then
                     log_error "Trash move interrupted; item preserved for recovery at: $stage_path"
                 elif [[ -e "$dest" || -L "$dest" ]]; then
@@ -2746,7 +2755,7 @@ _mole_move_path_to_user_trash() {
         move_output=$(mv -n "$path" "$dest" 2>&1) || move_rc=$?
     fi
     if [[ $move_rc -ne 0 ]]; then
-        [[ $move_rc -eq 124 || $move_rc -ge 128 ]] && return "$move_rc"
+        mole_rc_timeout_or_signal "$move_rc" && return "$move_rc"
         debug_log "Failed to move path directly to invoking user Trash: $path -> $dest: $move_output"
         case "$move_output" in
             *"Operation not permitted"* | *"operation not permitted"* | \
@@ -3021,7 +3030,7 @@ safe_find_delete() {
             local match_size_kb=0
             local match_size_rc=0
             match_size_kb=$(get_path_size_kb "$match" 2> /dev/null) || match_size_rc=$?
-            if [[ $match_size_rc -eq 124 || $match_size_rc -ge 128 ]]; then
+            if mole_rc_timeout_or_signal "$match_size_rc"; then
                 delete_rc=$match_size_rc
                 break
             fi
@@ -3031,7 +3040,7 @@ safe_find_delete() {
         fi
         local remove_rc=0
         safe_remove "$match" true || remove_rc=$?
-        if [[ $remove_rc -eq 124 || $remove_rc -ge 128 ]]; then
+        if mole_rc_timeout_or_signal "$remove_rc"; then
             delete_rc=$remove_rc
             break
         fi
@@ -3149,7 +3158,7 @@ safe_sudo_find_delete() {
     if [[ $sudo_rc -ne 0 ]]; then
         [[ $restore_errexit -eq 1 ]] && set -e
         [[ $sudo_rc -ge 128 ]] && return "$sudo_rc"
-        [[ $sudo_rc -eq 124 ]] && return 124
+        mole_rc_timeout "$sudo_rc" && return 124
         return "$MOLE_ERR_AUTH_FAILED"
     fi
 
@@ -3162,7 +3171,7 @@ safe_sudo_find_delete() {
             [[ $restore_errexit -eq 1 ]] && set -e
             return "$base_rc"
         fi
-        if [[ $base_rc -eq 124 ]]; then
+        if mole_rc_timeout "$base_rc"; then
             [[ $restore_errexit -eq 1 ]] && set -e
             return 124
         fi
@@ -3175,7 +3184,7 @@ safe_sudo_find_delete() {
         if [[ $base_auth_rc -ne 0 ]]; then
             [[ $restore_errexit -eq 1 ]] && set -e
             [[ $base_auth_rc -ge 128 ]] && return "$base_auth_rc"
-            [[ $base_auth_rc -eq 124 ]] && return 124
+            mole_rc_timeout "$base_auth_rc" && return 124
             return "$MOLE_ERR_AUTH_FAILED"
         fi
         debug_log "Directory does not exist, skipping: $base_dir"
@@ -3191,7 +3200,7 @@ safe_sudo_find_delete() {
         [[ $restore_errexit -eq 1 ]] && set -e
         return 1
     fi
-    if [[ $link_rc -eq 124 ]]; then
+    if mole_rc_timeout "$link_rc"; then
         [[ $restore_errexit -eq 1 ]] && set -e
         return 124
     fi
@@ -3206,7 +3215,7 @@ safe_sudo_find_delete() {
         if [[ $link_auth_rc -ne 0 ]]; then
             [[ $restore_errexit -eq 1 ]] && set -e
             [[ $link_auth_rc -ge 128 ]] && return "$link_auth_rc"
-            [[ $link_auth_rc -eq 124 ]] && return 124
+            mole_rc_timeout "$link_auth_rc" && return 124
             return "$MOLE_ERR_AUTH_FAILED"
         fi
     fi
@@ -3321,7 +3330,7 @@ safe_sudo_find_delete() {
                 safe_remove "$match" true "" "$deadline_seconds" || mutable_rc=$?
                 if [[ $mutable_rc -eq 0 ]]; then
                     removed_count=$((removed_count + 1))
-                elif [[ $mutable_rc -eq 124 || $mutable_rc -ge 128 ]]; then
+                elif mole_rc_timeout_or_signal "$mutable_rc"; then
                     delete_rc=$mutable_rc
                     break
                 elif [[ $delete_rc -eq 0 ]]; then
@@ -3345,7 +3354,7 @@ safe_sudo_find_delete() {
                 raw_match_size=$(_mole_bounded_sudo "$size_timeout" \
                     -n du -skP "$match" < /dev/null 2> /dev/null | awk '{print $1; exit}') || dry_size_rc=$?
             fi
-            if [[ $dry_size_rc -eq 124 || $dry_size_rc -ge 128 ]]; then
+            if mole_rc_timeout_or_signal "$dry_size_rc"; then
                 delete_rc=$dry_size_rc
                 break
             elif [[ $dry_size_rc -eq 0 ]]; then
@@ -3368,7 +3377,7 @@ safe_sudo_find_delete() {
                 match_identity=$(_mole_bounded_sudo "$identity_timeout" \
                     -n "$STAT_BSD" -f%d:%i:%m "$match" < /dev/null 2> /dev/null) || identity_rc=$?
             fi
-            if [[ $identity_rc -eq 124 || $identity_rc -ge 128 ]]; then
+            if mole_rc_timeout_or_signal "$identity_rc"; then
                 delete_rc=$identity_rc
                 break
             fi
@@ -3391,7 +3400,7 @@ safe_sudo_find_delete() {
         safe_sudo_remove "$match" "" "$deadline_seconds" || single_rc=$?
         if [[ $single_rc -eq 0 ]]; then
             removed_count=$((removed_count + 1))
-        elif [[ $single_rc -eq 124 || $single_rc -ge 128 ]]; then
+        elif mole_rc_timeout_or_signal "$single_rc"; then
             delete_rc=$single_rc
             break
         elif [[ $delete_rc -eq 0 ]]; then
@@ -3407,7 +3416,7 @@ safe_sudo_find_delete() {
         fi
     fi
 
-    if [[ ${#batch_files[@]} -gt 0 && "$deadline_reached" != "true" && "$batch_aborted" != "true" && $delete_rc -ne 124 && $delete_rc -lt 128 ]]; then
+    if [[ ${#batch_files[@]} -gt 0 && "$deadline_reached" != "true" && "$batch_aborted" != "true" ]] && ! mole_rc_timeout_or_signal "$delete_rc"; then
         local batch_rc=0
         local batch_result_file=""
         local batch_timeout=""
@@ -3539,7 +3548,7 @@ get_path_size_kb() {
         local mdls_rc=0
         mdls_size=$(run_with_timeout "$mdls_timeout" mdls \
             -name kMDItemPhysicalSize -raw "$path" < /dev/null 2> /dev/null) || mdls_rc=$?
-        [[ $mdls_rc -eq 124 || $mdls_rc -ge 128 ]] && return "$mdls_rc"
+        mole_rc_timeout_or_signal "$mdls_rc" && return "$mdls_rc"
         if [[ "$mdls_size" =~ ^[0-9]+$ && "$mdls_size" -gt 0 ]]; then
             echo $(((mdls_size + 1023) / 1024))
             return
@@ -3558,7 +3567,7 @@ get_path_size_kb() {
         local stat_rc=0
         blocks=$(run_with_timeout "$stat_timeout" "$STAT_BSD" \
             -f%b "$path" < /dev/null 2> /dev/null) || stat_rc=$?
-        [[ $stat_rc -eq 124 || $stat_rc -ge 128 ]] && return "$stat_rc"
+        mole_rc_timeout_or_signal "$stat_rc" && return "$stat_rc"
         if [[ "$blocks" =~ ^[0-9]+$ ]]; then
             echo $(((blocks + 1) / 2))
             return
@@ -3627,7 +3636,7 @@ calculate_total_size() {
         local size_kb=0
         local size_rc=0
         size_kb=$(get_path_size_kb "$file") || size_rc=$?
-        [[ $size_rc -eq 124 || $size_rc -ge 128 ]] && return "$size_rc"
+        mole_rc_timeout_or_signal "$size_rc" && return "$size_rc"
         [[ $size_rc -eq 0 && "$size_kb" =~ ^[0-9]+$ ]] || size_kb=0
         total_kb=$((total_kb + size_kb))
     done
