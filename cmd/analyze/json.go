@@ -141,16 +141,18 @@ func measureOverviewEntriesForJSON(overviewEntries []dirEntry, insightPaths map[
 				err  error
 			)
 
-			if cached, cacheErr := loadOverviewCachedSize(item.Path); cacheErr == nil && cached > 0 {
-				size = cached
-			} else if insightPaths[item.Path] {
-				size, err = measureInsightSize(context.Background(), item.Path)
+			if cached, state, cacheErr := loadOverviewCachedMeasurement(item.Path); cacheErr == nil && cached > 0 {
+				size, item.State = cached, state
 			} else {
-				size, err = measureOverviewSize(context.Background(), item.Path)
+				if insightPaths[item.Path] {
+					size, err = measureInsightSize(context.Background(), item.Path)
+				} else {
+					size, err = measureOverviewSize(context.Background(), item.Path)
+				}
+				item.State = measurementState(size, err)
 			}
 
 			item.Size = size
-			item.State = measurementState(size, err)
 			results <- measurement{index: index, entry: item}
 		})
 	}

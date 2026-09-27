@@ -3570,7 +3570,7 @@ func TestPartialScanViewRetainsUnavailableEntries(t *testing.T) {
 		t.Fatalf("partial view must retain unknown row and mark total: %s", view)
 	}
 	saved := snapshotFromModel(m)
-	if saved.State != scanPartial || !saved.NeedsRefresh || m.cache[root].State != scanPartial || !m.cache[root].NeedsRefresh {
+	if saved.State != scanPartial || m.cache[root].State != scanPartial {
 		t.Fatalf("navigation discarded coverage: %+v", saved)
 	}
 	m.multiSelected = map[string]bool{locked: true}
@@ -3651,11 +3651,15 @@ func TestPartialNavigationRefreshRecoversCoverage(t *testing.T) {
 	if err := os.Chmod(locked, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// A permission denial is not retried on navigation; only an explicit
+	// refresh picks up the changed access.
 	updated, cmd = m.goBack()
 	m = updated.(model)
-	if m.path != root || m.scanState != scanPartial || !m.scanning || cmd == nil {
-		t.Fatalf("return lost partial history or omitted refresh: path=%s state=%s scanning=%t", m.path, m.scanState, m.scanning)
+	if m.path != root || m.scanState != scanPartial || m.scanning || cmd != nil {
+		t.Fatalf("return lost partial history or rescanned a denied folder: path=%s state=%s scanning=%t", m.path, m.scanState, m.scanning)
 	}
+	updated, cmd = m.updateKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	m = updated.(model)
 	updated, _ = m.Update(runScanResultCmd(t, cmd))
 	m = updated.(model)
 	if m.scanState != scanComplete || m.scanning || m.totalSize != 4096+(1<<20) || m.cache[root].NeedsRefresh || strings.Contains(m.View(), "unknown") {
@@ -3685,7 +3689,6 @@ func TestSelectionAndConfirmationPreserveMeasurementCoverage(t *testing.T) {
 		state scanState
 		label string
 	}{
-		{name: "unavailable", state: scanUnavailable, label: "unknown"},
 		{name: "partial", size: 2048, state: scanPartial, label: humanizeBytes(2048) + "+"},
 		{name: "complete", size: 2048, label: humanizeBytes(2048)},
 	} {
@@ -3777,5 +3780,184 @@ func TestAnalyzeJSONReportsPartialCoverageAndUnavailableSizes(t *testing.T) {
 			}
 			t.Fatalf("JSON omitted unavailable entry: %s", data)
 		})
+	}
+}
+
+func TestDeniedFolderPartialIsServedFromDiskCacheOnRevisit(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission fixture requires an unprivileged user")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := filepath.Join(home, "root")
+	locked := filepath.Join(root, "locked")
+	writeFileWithSize(t, filepath.Join(root, "readable"), 4096)
+	writeFileWithSize(t, filepath.Join(locked, "hidden"), 1<<20)
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	first := newModel(root, false)
+	// The live scan completes through finishLiveScan, which owns the disk write.
+	first.finishLiveScan(runScanResultCmd(t, first.scanCmd(root)).result)
+	if first.scanState != scanPartial || snapshotFromModel(first).NeedsRefresh || first.cache[root].NeedsRefresh {
+		t.Fatalf("denial-only partial forced a refresh: state=%s", first.scanState)
+	}
+	// finishLiveScan writes the disk cache in the background.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := loadCacheFromDisk(root); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("denial-only partial was never written to the disk cache")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	for visit := 1; visit <= 2; visit++ {
+		m := newModel(root, false)
+		msg, ok := m.scanCmd(root)().(scanResultMsg)
+		if !ok || msg.stale || msg.err != nil {
+			t.Fatalf("visit %d rescanned instead of using the disk cache: %T %+v", visit, msg, msg)
+		}
+		updated, cmd := m.Update(msg)
+		m = updated.(model)
+		if cmd != nil || m.scanning || m.scanState != scanPartial || !strings.Contains(m.View(), humanizeBytes(4096)+"+") {
+			t.Fatalf("visit %d lost partial state or refreshed: state=%s scanning=%t\n%s", visit, m.scanState, m.scanning, m.View())
+		}
+	}
+}
+
+func TestTransientPartialIsNotCachedAndDenialOnlyPartialIs(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		stderr    string
+		transient bool
+	}{
+		{name: "permission denied", stderr: "du: /x/locked: Permission denied"},
+		{name: "operation not permitted", stderr: "du: /x/Mail: Operation not permitted"},
+		{name: "io error", stderr: "du: /x/disk: Input/output error", transient: true},
+		{name: "no diagnostic", transient: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			root := filepath.Join(home, "root")
+			folded := filepath.Join(root, "node_modules")
+			writeFileWithSize(t, filepath.Join(folded, "file"), 1)
+			stubDir := t.TempDir()
+			script := fmt.Sprintf("#!/bin/sh\nprintf '8\\tpartial\\n'\nprintf '%%s\\n' '%s' >&2\nexit 1\n", tc.stderr)
+			if err := os.WriteFile(filepath.Join(stubDir, "du"), []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", stubDir)
+
+			var files, dirs, bytes int64
+			current := &atomic.Value{}
+			current.Store("")
+			result, err := scanPathConcurrentWithOptions(context.Background(), root, &files, &dirs, &bytes, current, false, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.State != scanPartial || result.TotalSize != 8192 {
+				t.Fatalf("partial du result lost: state=%s size=%d", result.State, result.TotalSize)
+			}
+			if err := saveCacheToDisk(root, result); err != nil {
+				t.Fatal(err)
+			}
+			cached, cacheErr := loadCacheFromDisk(root)
+			if tc.transient && cacheErr == nil {
+				t.Fatalf("transient partial was cached: %+v", cached)
+			}
+			if !tc.transient && (cacheErr != nil || cached.State != scanPartial) {
+				t.Fatalf("denial-only partial was not cached as partial: %+v, %v", cached, cacheErr)
+			}
+			if got := historyEntryFromScanResult(root, result, historyEntry{}, false).NeedsRefresh; got != tc.transient {
+				t.Fatalf("history NeedsRefresh = %t, want %t", got, tc.transient)
+			}
+			m := model{path: root, cache: make(map[string]historyEntry)}
+			m.finishLiveScan(result)
+			if got := snapshotFromModel(m).NeedsRefresh; got != tc.transient {
+				t.Fatalf("revisit NeedsRefresh = %t, want %t", got, tc.transient)
+			}
+
+			size, measureErr := measureOverviewSize(context.Background(), folded)
+			if size != 8192 || measureErr == nil {
+				t.Fatalf("overview lost partial du bytes: %d, %v", size, measureErr)
+			}
+			stored, state, storeErr := loadStoredOverviewMeasurement(folded)
+			if tc.transient && storeErr == nil {
+				t.Fatalf("transient overview measurement was stored: %d", stored)
+			}
+			if !tc.transient && (storeErr != nil || stored != 8192 || state != scanPartial) {
+				t.Fatalf("denial-only overview measurement not stored as partial: %d, %s, %v", stored, state, storeErr)
+			}
+		})
+	}
+}
+
+func TestPreviousSchemaCacheEntryIsRejected(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	target := filepath.Join(home, "target")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cachePath, err := getCachePath(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Create(cachePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Schema 4 wrote no scan state, so its entries would all read as complete.
+	old := cacheEntry{TotalSize: 4096, TotalFiles: 1, ModTime: time.Now(), ScanTime: time.Now(), SchemaVersion: 4}
+	if err := gob.NewEncoder(file).Encode(old); err != nil {
+		file.Close() //nolint:errcheck
+		t.Fatal(err)
+	}
+	file.Close() //nolint:errcheck
+	if entry, err := loadCacheFromDisk(target); err == nil {
+		t.Fatalf("schema 4 entry was accepted: %+v", entry)
+	}
+	if _, err := os.Stat(cachePath); !os.IsNotExist(err) {
+		t.Fatalf("schema 4 entry was kept, stat err: %v", err)
+	}
+}
+
+func TestUnavailableEntryCannotBeSelectedForDeletion(t *testing.T) {
+	root := t.TempDir()
+	locked := filepath.Join(root, "locked")
+	readable := filepath.Join(root, "readable")
+	m := model{path: root, width: 100, height: 24, entries: []dirEntry{
+		{Name: "locked", Path: locked, IsDir: true, State: scanUnavailable},
+		{Name: "readable", Path: readable, Size: 4096},
+	}}
+	updated, _ := m.updateKey(tea.KeyMsg{Type: tea.KeySpace})
+	m = updated.(model)
+	if len(m.multiSelected) != 0 || !strings.Contains(m.View(), "locked") {
+		t.Fatalf("unavailable entry was selected or hidden: %v", m.multiSelected)
+	}
+	updated, _ = m.updateKey(tea.KeyMsg{Type: tea.KeyBackspace})
+	m = updated.(model)
+	if m.deleteConfirm || m.deleteTarget != nil {
+		t.Fatalf("unavailable entry reached delete confirmation: %+v", m.deleteTarget)
+	}
+	m.selected = 1
+	updated, _ = m.updateKey(tea.KeyMsg{Type: tea.KeySpace})
+	m = updated.(model)
+	m.selected = 0
+	updated, _ = m.updateKey(tea.KeyMsg{Type: tea.KeySpace})
+	m = updated.(model)
+	if len(m.multiSelected) != 1 || !m.multiSelected[readable] {
+		t.Fatalf("multi-select took the unavailable entry: %v", m.multiSelected)
+	}
+	updated, _ = m.updateKey(tea.KeyMsg{Type: tea.KeyBackspace})
+	m = updated.(model)
+	if !m.deleteConfirm || m.deleteTarget == nil || m.deleteTarget.Path != readable {
+		t.Fatalf("readable selection lost its confirmation: %+v", m.deleteTarget)
 	}
 }

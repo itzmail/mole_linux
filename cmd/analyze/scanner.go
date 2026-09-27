@@ -26,17 +26,31 @@ var spotlightQueryRunner = func(ctx context.Context, root, query string) ([]byte
 	return exec.CommandContext(ctx, "mdfind", "-onlyin", root, query).Output()
 }
 
-// scanFailures retains only the first failure, even for a large unreadable tree.
-// Workers may record concurrently; callers read it after joining those workers.
+// scanFailures retains only the first failure, even for a large unreadable tree,
+// plus the first transient one so a timeout is never masked by an earlier
+// permission denial. Workers may record concurrently; callers read err() after
+// joining those workers.
 type scanFailures struct {
-	once  sync.Once
-	first error
+	once           sync.Once
+	first          error
+	transientOnce  sync.Once
+	firstTransient error
 }
 
 func (f *scanFailures) record(err error) {
 	if err != nil {
 		f.once.Do(func() { f.first = err })
+		if isTransientFailure(err) {
+			f.transientOnce.Do(func() { f.firstTransient = err })
+		}
 	}
+}
+
+func (f *scanFailures) err() error {
+	if f.firstTransient != nil {
+		return f.firstTransient
+	}
+	return f.first
 }
 
 // scanPublication gives cancellation a linearizable boundary with externally
@@ -253,6 +267,23 @@ func scanPathConcurrentWithLimiter(ctx context.Context, root string, filesScanne
 	var subtreeFilesScanned atomic.Int64
 	var dedupedHardlink atomic.Bool
 	var incomplete atomic.Bool
+	var transient atomic.Bool
+	noteFailure := func(err error) {
+		incomplete.Store(true)
+		if isTransientFailure(err) {
+			transient.Store(true)
+		}
+	}
+	// Child results arrive already classified: scanSubdirWithCache marks a
+	// child whose own ReadDir failed, and nested scans carry their flag up.
+	noteChildResult := func(result scanResult) {
+		if result.State != scanComplete {
+			incomplete.Store(true)
+		}
+		if result.transientFailure {
+			transient.Store(true)
+		}
+	}
 
 	collectAllEntries := entryLimit <= 0
 	var collectedEntries []dirEntry
@@ -330,7 +361,7 @@ scanChildren:
 			// Count link size only to avoid double-counting targets.
 			info, err := child.Info()
 			if err != nil {
-				incomplete.Store(true)
+				noteFailure(err)
 				continue
 			}
 			size := getActualFileSize(fullPath, info)
@@ -365,8 +396,9 @@ scanChildren:
 					}
 					result := scanResult{}
 					if cachePolicy == scanCacheReuse {
-						if cached, err := loadStoredOverviewSize(path); err == nil && cached > 0 {
+						if cached, state, err := loadStoredOverviewMeasurement(path); err == nil && cached > 0 {
 							result.TotalSize = cached
+							result.State = state
 						}
 					}
 					if result.TotalSize <= 0 {
@@ -375,9 +407,7 @@ scanChildren:
 					if ctx.Err() != nil {
 						return
 					}
-					if result.State != scanComplete {
-						incomplete.Store(true)
-					}
+					noteChildResult(result)
 					atomic.AddInt64(&total, result.TotalSize)
 					if result.TotalFiles > 0 {
 						subtreeFilesScanned.Add(result.TotalFiles)
@@ -435,7 +465,7 @@ scanChildren:
 						return
 					}
 					if err != nil {
-						incomplete.Store(true)
+						noteFailure(err)
 					}
 					atomic.AddInt64(&total, size)
 					atomic.AddInt64(dirsScanned, 1)
@@ -460,9 +490,7 @@ scanChildren:
 				if ctx.Err() != nil {
 					return
 				}
-				if result.State != scanComplete {
-					incomplete.Store(true)
-				}
+				noteChildResult(result)
 				atomic.AddInt64(&total, result.TotalSize)
 				if result.TotalFiles > 0 {
 					subtreeFilesScanned.Add(result.TotalFiles)
@@ -494,7 +522,7 @@ scanChildren:
 
 		info, err := child.Info()
 		if err != nil {
-			incomplete.Store(true)
+			noteFailure(err)
 			continue
 		}
 		// Actual disk usage for sparse/cloud files, deduping hardlinks.
@@ -575,12 +603,13 @@ scanChildren:
 		state = scanPartial
 	}
 	return scanResult{
-		State:           state,
-		Entries:         entries,
-		LargeFiles:      largeFiles,
-		TotalSize:       total,
-		TotalFiles:      localFilesScanned + subtreeFilesScanned.Load(),
-		dedupedHardlink: dedupedHardlink.Load(),
+		State:            state,
+		Entries:          entries,
+		LargeFiles:       largeFiles,
+		TotalSize:        total,
+		TotalFiles:       localFilesScanned + subtreeFilesScanned.Load(),
+		dedupedHardlink:  dedupedHardlink.Load(),
+		transientFailure: transient.Load(),
 	}, nil
 }
 
@@ -602,6 +631,7 @@ func loadCachedSubdirResult(ctx context.Context, path string, largeFileChan chan
 	}
 
 	result := scanResult{
+		State:      cached.State,
 		Entries:    cached.Entries,
 		LargeFiles: cached.LargeFiles,
 		TotalSize:  cached.TotalSize,
@@ -644,7 +674,7 @@ func scanSubdirWithCache(ctx context.Context, root string, largeFileChan chan<- 
 		// subtrees are not persisted at all: see shouldPersistSubdirCache.
 		if !result.dedupedHardlink && shouldPersistSubdirCache(result) {
 			_ = saveCacheToDiskWithOptions(publication, root, result, true)
-		} else if cachePolicy == scanCacheBypass && result.State == scanComplete {
+		} else if cachePolicy == scanCacheBypass && result.persistable() {
 			_ = removeCacheEntryForScan(publication, root)
 		}
 		return result
@@ -655,7 +685,7 @@ func scanSubdirWithCache(ctx context.Context, root string, largeFileChan chan<- 
 
 	// Only the requested subtree failed; accessible siblings are scanned by
 	// their own workers. Retrying the same ReadDir cannot recover its coverage.
-	return scanResult{State: scanUnavailable}
+	return scanResult{State: scanUnavailable, transientFailure: isTransientFailure(err)}
 }
 
 func shouldFoldDirWithPath(name, path string) bool {
@@ -763,7 +793,7 @@ func calculateDirSizeFastWithLimiter(ctx context.Context, root string, limiter *
 	wg.Wait()
 
 	failures.record(ctx.Err())
-	return total.Load(), failures.first
+	return total.Load(), failures.err()
 }
 
 // Use Spotlight (mdfind) to quickly find large files.
@@ -886,10 +916,17 @@ func measureOverviewSize(ctx context.Context, path string) (int64, error) {
 	if err != nil && size == 0 && ctx.Err() == nil {
 		size, err = getDirectoryLogicalSizeWithExclude(ctx, path, excludePath, ignoreNames)
 	}
-	if err == nil {
-		_ = storeOverviewSize(path, size)
+	if overviewMeasurementStorable(size, err) {
+		_ = storeOverviewMeasurement(path, size, err != nil)
 	}
 	return size, err
+}
+
+// overviewMeasurementStorable keeps a measurement whose only failures were
+// permission denials, like a clean one: re-measuring cannot recover those
+// bytes until access changes. Transient failures stay unstored.
+func overviewMeasurementStorable(size int64, err error) bool {
+	return size > 0 && (err == nil || isPermissionFailure(err))
 }
 
 func getDirectorySizeFromDu(ctx context.Context, path string) (int64, error) {
@@ -936,13 +973,18 @@ func getDirectorySizeFromDuWithExcludeAndIgnores(ctx context.Context, path strin
 		}
 		args = append(args, target)
 		cmd := exec.CommandContext(ctx, "du", args...)
-		var stdout bytes.Buffer
+		var stdout, stderr bytes.Buffer
 		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
 
 		runErr := cmd.Run()
 		fields := strings.Fields(stdout.String())
 		if ctx.Err() != nil {
 			runErr = ctx.Err()
+		} else if runErr != nil && duReportedOnlyPermissionDenials(stderr.Bytes()) {
+			// du exits 1 for any unreadable descendant; its stderr is the
+			// only place that says whether every failure was a denial.
+			runErr = fmt.Errorf("%w: %w", runErr, fs.ErrPermission)
 		}
 		if len(fields) == 0 {
 			if runErr != nil {
@@ -989,6 +1031,24 @@ func getDirectorySizeFromDuWithExcludeAndIgnores(ctx context.Context, path strin
 	}
 
 	return runDuSize(path)
+}
+
+// duReportedOnlyPermissionDenials reports whether du's stderr holds at least
+// one diagnostic and every one is a permission denial. macOS strerror text is
+// not localized, so matching the suffix is stable.
+func duReportedOnlyPermissionDenials(stderr []byte) bool {
+	found := false
+	for line := range strings.Lines(string(stderr)) {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if !strings.HasSuffix(line, ": Permission denied") && !strings.HasSuffix(line, ": Operation not permitted") {
+			return false
+		}
+		found = true
+	}
+	return found
 }
 
 func validateDuIgnoreName(name string) error {
@@ -1087,7 +1147,7 @@ func getDirectorySizeFromDuSkippingImmediateChild(ctx context.Context, path stri
 
 	wg.Wait()
 
-	return total, failures.first
+	return total, failures.err()
 }
 
 func getDirectoryLogicalSizeWithExclude(ctx context.Context, path string, excludePath string, ignoreNames []string) (int64, error) {
@@ -1120,7 +1180,7 @@ func getDirectoryLogicalSizeWithExclude(ctx context.Context, path string, exclud
 		return nil
 	})
 	failures.record(err)
-	return total, failures.first
+	return total, failures.err()
 }
 
 // countableFileSize returns the on-disk size to attribute to a regular file.

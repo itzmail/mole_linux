@@ -4,10 +4,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"sort"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -54,6 +57,18 @@ func measurementState(size int64, err error) scanState {
 	return scanUnavailable
 }
 
+// isPermissionFailure reports a denial macOS will repeat on every scan until
+// access changes (no Full Disk Access, chmod 000), so a partial result caused
+// only by these is as current as a complete one. Everything else (timeouts,
+// cancellation, vanished files, I/O errors) may clear on the next attempt.
+func isPermissionFailure(err error) bool {
+	return err != nil && (errors.Is(err, fs.ErrPermission) || errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EPERM))
+}
+
+func isTransientFailure(err error) bool {
+	return err != nil && !isPermissionFailure(err)
+}
+
 type dirEntry struct {
 	State      scanState
 	Name       string
@@ -80,9 +95,20 @@ type scanResult struct {
 	// scan. Such a result is scan-order dependent and must not be written
 	// to the on-disk cache. In-memory only; never serialized to cacheEntry.
 	dedupedHardlink bool
+	// transientFailure is true when some coverage was lost to a failure that
+	// may not recur (see isPermissionFailure). Such a partial result is never
+	// persisted and is always refreshed; a partial result lost only to
+	// permission denials is kept like a complete one. In-memory only.
+	transientFailure bool
+}
+
+// persistable reports whether the result may be reused without a rescan.
+func (r scanResult) persistable() bool {
+	return r.State == scanComplete || (r.State == scanPartial && !r.transientFailure)
 }
 
 type cacheEntry struct {
+	State        scanState
 	Entries      []dirEntry
 	LargeFiles   []fileEntry
 	TotalSize    int64
@@ -176,6 +202,7 @@ type deleteProgressMsg struct {
 
 type model struct {
 	scanState           scanState
+	scanTransient       bool // scanState != scanComplete because of a transient failure
 	path                string
 	history             []historyEntry
 	entries             []dirEntry
@@ -274,13 +301,18 @@ func (m *model) hydrateOverviewEntries() {
 			m.entries[i].Size = size
 			continue
 		}
-		if size, err := loadOverviewCachedSize(m.entries[i].Path); err == nil {
+		if size, state, err := loadOverviewCachedMeasurement(m.entries[i].Path); err == nil {
 			m.entries[i].Size = size
-			m.overviewSizeCache[m.entries[i].Path] = size
+			m.entries[i].State = state
+			// The in-memory map holds sizes only, so it keeps complete ones.
+			if state == scanComplete {
+				m.overviewSizeCache[m.entries[i].Path] = size
+			}
 		}
 	}
 	m.totalSize = sumKnownEntrySizes(m.entries)
 	m.scanState = entryScanState(m.entries)
+	m.scanTransient = false
 }
 
 func (m *model) sortOverviewEntriesBySize() {

@@ -154,6 +154,7 @@ func readLiveScanInitialEntries(root string, limiter *scanLimiter) (scanResult, 
 	var totalSize int64
 	var totalFiles int64
 	state := scanComplete
+	transient := false
 
 	for _, child := range children {
 		fullPath := filepath.Join(root, child.Name())
@@ -167,6 +168,7 @@ func readLiveScanInitialEntries(root string, limiter *scanLimiter) (scanResult, 
 			info, err := child.Info()
 			if err != nil {
 				state = scanPartial
+				transient = transient || isTransientFailure(err)
 				continue
 			}
 			size := getActualFileSize(fullPath, info)
@@ -213,6 +215,7 @@ func readLiveScanInitialEntries(root string, limiter *scanLimiter) (scanResult, 
 		info, err := child.Info()
 		if err != nil {
 			state = scanPartial
+			transient = transient || isTransientFailure(err)
 			continue
 		}
 		size, _ := countableFileSize(info, &limiter.seen)
@@ -232,7 +235,7 @@ func readLiveScanInitialEntries(root string, limiter *scanLimiter) (scanResult, 
 
 	sortDirEntriesBySize(entries)
 	largeFiles = topLargeFiles(largeFiles)
-	return scanResult{Entries: entries, TotalSize: totalSize, TotalFiles: totalFiles, LargeFiles: largeFiles, State: state}, targets, nil
+	return scanResult{Entries: entries, TotalSize: totalSize, TotalFiles: totalFiles, LargeFiles: largeFiles, State: state, transientFailure: transient}, targets, nil
 }
 
 func runLiveScan(
@@ -266,7 +269,9 @@ func runLiveScan(
 
 	var dedupedHardlink atomic.Bool
 	var incomplete atomic.Bool
+	var transient atomic.Bool
 	incomplete.Store(initial.State != scanComplete)
+	transient.Store(initial.transientFailure)
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 
@@ -280,6 +285,9 @@ func runLiveScan(
 			result, err := scanLiveTargetWithProgress(ctx, id, root, target, largeFileChan, limiter, currentPath, stream, cachePolicy)
 			if err != nil && !errors.Is(err, context.Canceled) {
 				incomplete.Store(true)
+				if isTransientFailure(err) {
+					transient.Store(true)
+				}
 				mu.Lock()
 				entriesByPath[target.path] = dirEntry{Name: target.name, Path: target.path, IsDir: true, State: scanUnavailable}
 				mu.Unlock()
@@ -301,8 +309,12 @@ func runLiveScan(
 			entriesByPath[target.path] = entry
 			mu.Unlock()
 
+			// The child result carries its own failure classification.
 			if result.State != scanComplete {
 				incomplete.Store(true)
+			}
+			if result.transientFailure {
+				transient.Store(true)
 			}
 			totalSize.Add(result.TotalSize)
 			if result.TotalFiles > 0 {
@@ -363,12 +375,13 @@ func runLiveScan(
 		state = scanPartial
 	}
 	result := scanResult{
-		State:           state,
-		Entries:         finalEntries,
-		LargeFiles:      largeFiles,
-		TotalSize:       totalSize.Load(),
-		TotalFiles:      totalFiles.Load(),
-		dedupedHardlink: dedupedHardlink.Load(),
+		State:            state,
+		Entries:          finalEntries,
+		LargeFiles:       largeFiles,
+		TotalSize:        totalSize.Load(),
+		TotalFiles:       totalFiles.Load(),
+		dedupedHardlink:  dedupedHardlink.Load(),
+		transientFailure: transient.Load(),
 	}
 
 	stream.publish(liveScanEventMsg{id: id, path: root, kind: liveScanComplete, result: result})
@@ -441,8 +454,8 @@ func scanLiveTarget(ctx context.Context, target liveScanTarget, largeFileChan ch
 	switch target.kind {
 	case liveScanTargetHomeLibrary:
 		if cachePolicy == scanCacheReuse {
-			if cached, err := loadStoredOverviewSize(target.path); err == nil && cached > 0 {
-				return scanResult{TotalSize: cached}, nil
+			if cached, state, err := loadStoredOverviewMeasurement(target.path); err == nil && cached > 0 {
+				return scanResult{TotalSize: cached, State: state}, nil
 			}
 		}
 	case liveScanTargetFoldedDirectory:
@@ -458,7 +471,7 @@ func scanLiveTarget(ctx context.Context, target liveScanTarget, largeFileChan ch
 		if ctx.Err() != nil {
 			return scanResult{}, ctx.Err()
 		}
-		return scanResult{TotalSize: size, State: measurementState(size, err)}, nil
+		return scanResult{TotalSize: size, State: measurementState(size, err), transientFailure: isTransientFailure(err)}, nil
 	}
 
 	if err := ctx.Err(); err != nil {

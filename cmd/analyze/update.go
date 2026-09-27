@@ -77,6 +77,7 @@ func (m model) scanCmd(path string) tea.Cmd {
 	return func() tea.Msg {
 		if cached, err := loadCacheFromDisk(path); err == nil {
 			result := scanResult{
+				State:      cached.State,
 				Entries:    cached.Entries,
 				LargeFiles: cached.LargeFiles,
 				TotalSize:  cached.TotalSize,
@@ -90,6 +91,7 @@ func (m model) scanCmd(path string) tea.Cmd {
 
 		if stale, err := loadStaleCacheFromDisk(path); err == nil {
 			result := scanResult{
+				State:      stale.State,
 				Entries:    stale.Entries,
 				LargeFiles: stale.LargeFiles,
 				TotalSize:  stale.TotalSize,
@@ -213,6 +215,7 @@ func (m *model) finishLiveScan(result scanResult) {
 	m.largeFilesAll = result.LargeFiles
 	m.totalSize = result.TotalSize
 	m.scanState = result.State
+	m.scanTransient = result.transientFailure
 	m.totalFiles = result.TotalFiles
 	m.viewNeedsRefresh = false
 	m.applyEntryFilter()
@@ -364,6 +367,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.largeFiles = msg.result.LargeFiles
 		m.totalSize = msg.result.TotalSize
 		m.scanState = msg.result.State
+		m.scanTransient = msg.result.transientFailure
 		m.totalFiles = msg.result.TotalFiles
 		m.viewNeedsRefresh = msg.stale
 		// Re-narrow to the active query if a background refresh landed while a
@@ -895,6 +899,10 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			selectedPath := m.entries[m.selected].Path
 			if m.multiSelected[selectedPath] {
 				delete(m.multiSelected, selectedPath)
+			} else if m.entries[m.selected].State == scanUnavailable {
+				// An unreadable entry has no known size to confirm against.
+				m.status = fmt.Sprintf("Cannot select %s, size unknown", m.entries[m.selected].Name)
+				return m, nil
 			} else {
 				m.multiSelected[selectedPath] = true
 			}
@@ -955,6 +963,10 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			} else if m.selected < len(m.entries) {
 				selected := m.entries[m.selected]
+				if selected.State == scanUnavailable {
+					m.status = fmt.Sprintf("Cannot delete %s, size unknown", selected.Name)
+					return m, nil
+				}
 				m.deleteConfirm = true
 				m.deleteTarget = &selected
 			}
@@ -1076,6 +1088,7 @@ func (m model) goBack() (tea.Model, tea.Cmd) {
 	m.largeFiles = last.LargeFiles
 	m.totalSize = last.TotalSize
 	m.scanState = last.State
+	m.scanTransient = last.NeedsRefresh
 	m.totalFiles = last.TotalFiles
 	m.viewNeedsRefresh = last.NeedsRefresh
 	m.clampEntrySelection()
@@ -1183,6 +1196,7 @@ func (m model) enterSelectedDir() (tea.Model, tea.Cmd) {
 			m.largeFiles = m.largeFilesAll
 			m.totalSize = cached.TotalSize
 			m.scanState = cached.State
+			m.scanTransient = cached.NeedsRefresh
 			m.totalFiles = cached.TotalFiles
 			m.viewNeedsRefresh = cached.NeedsRefresh
 			m.selected = cached.Selected

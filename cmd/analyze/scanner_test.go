@@ -182,16 +182,28 @@ func TestScanUnreadableDescendantPreservesCoverageAndGoodCache(t *testing.T) {
 	if len(partial.Entries) != 1 || partial.Entries[0].State != scanPartial {
 		t.Fatalf("child coverage not propagated: %+v", partial.Entries)
 	}
-	if err := saveCacheToDisk(root, partial); err != nil {
+	if partial.transientFailure {
+		t.Fatal("a chmod 000 denial was classified as transient")
+	}
+	transient := partial
+	transient.transientFailure = true
+	if err := saveCacheToDisk(root, transient); err != nil {
 		t.Fatal(err)
 	}
 	cached, err := loadCacheFromDisk(root)
 	if err != nil || cached.TotalSize != good.TotalSize {
-		t.Fatalf("partial scan replaced good cache: %+v, %v", cached, err)
+		t.Fatalf("transient partial scan replaced good cache: %+v, %v", cached, err)
 	}
-	childCache, err := loadCacheFromDisk(child)
-	if err != nil || childCache.TotalSize != good.TotalSize {
-		t.Fatalf("partial bypass erased complete child cache: %+v, %v", childCache, err)
+	// A denial-only partial is the current answer and replaces stale caches.
+	if childCache, err := loadCacheFromDisk(child); err == nil && childCache.State == scanComplete {
+		t.Fatalf("stale complete child cache survived a denial-only rescan: %+v", childCache)
+	}
+	if err := saveCacheToDisk(root, partial); err != nil {
+		t.Fatal(err)
+	}
+	cached, err = loadCacheFromDisk(root)
+	if err != nil || cached.State != scanPartial || cached.TotalSize != partial.TotalSize {
+		t.Fatalf("denial-only partial was not cached as partial: %+v, %v", cached, err)
 	}
 	if err := os.Chmod(locked, 0o755); err != nil {
 		t.Fatal(err)
@@ -230,7 +242,7 @@ func TestFoldedDirectoryRetainsPartialDuOutput(t *testing.T) {
 	}
 }
 
-func TestOverviewMeasurementFailureDoesNotReplaceCompleteSnapshot(t *testing.T) {
+func TestOverviewMeasurementStoresDenialOnlyPartial(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("permission fixture requires an unprivileged user")
 	}
@@ -252,9 +264,9 @@ func TestOverviewMeasurementFailureDoesNotReplaceCompleteSnapshot(t *testing.T) 
 	if err == nil || partial < 4096 || partial >= good {
 		t.Fatalf("overview must retain partial bytes and error: good=%d partial=%d err=%v", good, partial, err)
 	}
-	cached, err := loadStoredOverviewSize(root)
-	if err != nil || cached != good {
-		t.Fatalf("failed refresh replaced complete snapshot: %d, %v", cached, err)
+	cached, state, err := loadStoredOverviewMeasurement(root)
+	if err != nil || cached != partial || state != scanPartial {
+		t.Fatalf("denial-only measurement was not stored as partial: %d, %s, %v", cached, state, err)
 	}
 	logical, err := getDirectoryLogicalSizeWithExclude(context.Background(), root, "", nil)
 	if err == nil || logical != 4096 {
