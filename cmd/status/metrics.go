@@ -412,6 +412,9 @@ func (c *Collector) collectFull() (MetricsSnapshot, error) {
 	now := time.Now()
 	hostInfo := collectHostInfo()
 	var collected collectedMetrics
+	// Each task owns its enrichment fields. If it returns an error or panics,
+	// keep that group's previous values; publish after all tasks finish.
+	next := c.enrichment
 
 	// Sample CPU first, before the concurrent collectors below spawn their
 	// subprocesses (system_profiler, df, ps, ...). The usage window is only
@@ -419,21 +422,61 @@ func (c *Collector) collectFull() (MetricsSnapshot, error) {
 	// reading with Mole's own load (#1237).
 	var cpuErr error
 	collected.cpuStats, cpuErr = collectCPU()
+	if cpuErr == nil {
+		next.cpuPCores = collected.cpuStats.PCoreCount
+		next.cpuECores = collected.cpuStats.ECoreCount
+	}
 
 	// Launch independent collection tasks.
 	tasks := []func() error{
 		func() error { return cpuErr },
-		func() (err error) { collected.memStats, err = collectMemory(); return },
-		func() (err error) { collected.diskStats, err = collectDisks(); return },
-		func() (err error) { collected.trashSize, collected.trashApprox = collectTrashSize(); return nil },
+		func() (err error) {
+			collected.memStats, err = collectMemory()
+			if err == nil {
+				next.memoryCached = collected.memStats.Cached
+				next.memoryPressure = collected.memStats.Pressure
+			}
+			return
+		},
+		func() (err error) {
+			collected.diskStats, err = collectDisks()
+			if err == nil {
+				next.disks = slices.Clone(collected.diskStats)
+				next.hasDisks = true
+			}
+			return
+		},
+		func() error {
+			collected.trashSize, collected.trashApprox = collectTrashSize()
+			next.trashSize, next.trashApprox = collected.trashSize, collected.trashApprox
+			return nil
+		},
 		func() (err error) { collected.diskIO = c.collectDiskIO(now); return nil },
 		func() (err error) { collected.netStats = c.collectNetwork(now); return nil },
-		func() (err error) { collected.proxyStats = collectProxy(); return nil },
-		func() (err error) { collected.batteryStats, _ = collectBatteries(); return nil },
-		func() (err error) { collected.thermalStats = collectThermal(); return nil },
+		func() error {
+			collected.proxyStats = collectProxy()
+			next.proxy = collected.proxyStats
+			return nil
+		},
+		func() error {
+			collected.batteryStats, _ = collectBatteries()
+			next.batteries = slices.Clone(collected.batteryStats)
+			return nil
+		},
+		func() error {
+			collected.thermalStats = collectThermal()
+			next.thermal = collected.thermalStats
+			return nil
+		},
 		// Sensors disabled - CPU temp already shown in CPU card
 		// collect(func() (err error) { sensorStats, _ = collectSensors(); return nil })
-		func() (err error) { collected.gpuStats, err = c.collectGPU(now); return },
+		func() (err error) {
+			collected.gpuStats, err = c.collectGPU(now)
+			if err == nil {
+				next.gpu = slices.Clone(collected.gpuStats)
+			}
+			return
+		},
 		func() (err error) {
 			// Bluetooth is slow; cache for 30s.
 			if now.Sub(c.lastBTAt) > 30*time.Second || len(c.lastBT) == 0 {
@@ -443,6 +486,7 @@ func (c *Collector) collectFull() (MetricsSnapshot, error) {
 			} else {
 				collected.btStats = c.lastBT
 			}
+			next.bluetooth = slices.Clone(collected.btStats)
 			return nil
 		},
 		func() error { return collectProcessesInto(&collected) },
@@ -450,14 +494,12 @@ func (c *Collector) collectFull() (MetricsSnapshot, error) {
 	mergeErr := collectConcurrently(tasks...)
 
 	snapshot := c.snapshotFromMetrics(now, hostInfo, collected, true)
-	if !collected.hasProcesses && c.hasProcessData {
-		c.processEnrichment.apply(&snapshot)
-	}
+	next.hardware = snapshot.Hardware
+	c.enrichment = next
+	c.hasEnrichment = true
+	c.applyEnrichment(&snapshot, collected.hasProcesses)
 	if collected.hasProcesses {
 		c.cacheProcessEnrichment(snapshot)
-	}
-	if mergeErr == nil {
-		c.cacheEnrichment(snapshot)
 	}
 	return snapshot, mergeErr
 }
@@ -568,28 +610,6 @@ func (c *Collector) hardwareForSnapshot() HardwareInfo {
 		return c.cachedHW
 	}
 	return HardwareInfo{}
-}
-
-func (c *Collector) cacheEnrichment(snapshot MetricsSnapshot) {
-	next := snapshotEnrichment{
-		hardware:       snapshot.Hardware,
-		cpuPCores:      snapshot.CPU.PCoreCount,
-		cpuECores:      snapshot.CPU.ECoreCount,
-		memoryCached:   snapshot.Memory.Cached,
-		memoryPressure: snapshot.Memory.Pressure,
-		disks:          slices.Clone(snapshot.Disks),
-		hasDisks:       true,
-		gpu:            slices.Clone(snapshot.GPU),
-		trashSize:      snapshot.TrashSize,
-		trashApprox:    snapshot.TrashApprox,
-		proxy:          snapshot.Proxy,
-		batteries:      slices.Clone(snapshot.Batteries),
-		thermal:        snapshot.Thermal,
-		sensors:        slices.Clone(snapshot.Sensors),
-		bluetooth:      slices.Clone(snapshot.Bluetooth),
-	}
-	c.enrichment = next
-	c.hasEnrichment = true
 }
 
 func (c *Collector) cacheProcessEnrichment(snapshot MetricsSnapshot) {

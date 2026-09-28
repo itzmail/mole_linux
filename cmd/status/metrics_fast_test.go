@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -106,8 +107,6 @@ func TestCollectProcessesKeepsLiveProcessesWithCachedEnrichment(t *testing.T) {
 	cachedParentsComplete := true
 	cached := MetricsSnapshot{
 		CollectedAt: time.Now(),
-		Hardware:    HardwareInfo{Model: "MacBook Pro"},
-		TrashSize:   99,
 		TopProcesses: []ProcessInfo{
 			{PID: 100, Name: "old-process", CPU: 10},
 		},
@@ -120,7 +119,8 @@ func TestCollectProcessesKeepsLiveProcessesWithCachedEnrichment(t *testing.T) {
 			{PID: 100, Name: "old-process", Status: "active"},
 		},
 	}
-	collector.cacheEnrichment(cached)
+	collector.hasEnrichment = true
+	collector.enrichment = snapshotEnrichment{hardware: HardwareInfo{Model: "MacBook Pro"}, trashSize: 99}
 	collector.cacheProcessEnrichment(cached)
 
 	snapshot, err := collector.CollectProcesses()
@@ -175,7 +175,8 @@ func TestSlowEnrichmentDoesNotReplaceLatestProcessSummary(t *testing.T) {
 		ZombieParentsComplete: &complete,
 	})
 
-	collector.cacheEnrichment(MetricsSnapshot{Hardware: HardwareInfo{Model: "newer enrichment"}})
+	collector.hasEnrichment = true
+	collector.enrichment = snapshotEnrichment{hardware: HardwareInfo{Model: "newer enrichment"}}
 	var snapshot MetricsSnapshot
 	collector.applyEnrichment(&snapshot, false)
 
@@ -255,5 +256,81 @@ func TestCollectFullKeepsCachedProcessSummaryWhenProcessCollectionFails(t *testi
 	if snapshot.ProcessCollectedAt == nil || !snapshot.ProcessCollectedAt.Equal(sampledAt) ||
 		snapshot.ProcessStale == nil || !*snapshot.ProcessStale {
 		t.Fatalf("cached process freshness = collected_at %v stale %v", snapshot.ProcessCollectedAt, snapshot.ProcessStale)
+	}
+}
+
+func TestFullCollectionPublishesIndependentEnrichment(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("memory_pressure is a macOS probe")
+	}
+	for _, failure := range []string{"error", "panic"} {
+		t.Run(failure, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			origRunCmd, origCommandExists := runCmd, commandExists
+			origPartitions, origUsage := diskPartitionsFunc, diskUsageFunc
+			origProcesses := collectProcessesFunc
+			t.Cleanup(func() {
+				runCmd, commandExists = origRunCmd, origCommandExists
+				diskPartitionsFunc, diskUsageFunc = origPartitions, origUsage
+				collectProcessesFunc = origProcesses
+			})
+
+			pressure, total, failDisk := "normal", uint64(2<<30), false
+			runCmd = func(_ context.Context, name string, _ ...string) (string, error) {
+				if name == "memory_pressure" {
+					return pressure, nil
+				}
+				return "", errors.New("optional metric unavailable")
+			}
+			commandExists = func(string) bool { return false }
+			diskPartitionsFunc = func(bool) ([]disk.PartitionStat, error) {
+				if failDisk {
+					if failure == "panic" {
+						panic("disk probe failed")
+					}
+					return nil, errors.New("disk probe failed")
+				}
+				return []disk.PartitionStat{{Device: "/dev/disk3s1", Mountpoint: "/", Fstype: "apfs"}}, nil
+			}
+			diskUsageFunc = func(string) (*disk.UsageStat, error) {
+				return &disk.UsageStat{Total: total, Used: total / 2, Free: total / 2, UsedPercent: 50}, nil
+			}
+			collectProcessesFunc = func() (processSample, error) {
+				return processSample{parentsAvailable: true}, nil
+			}
+			assertMetrics := func(snapshot MetricsSnapshot, wantPressure string, wantTotal uint64) {
+				t.Helper()
+				if snapshot.Memory.Pressure != wantPressure || len(snapshot.Disks) != 1 || snapshot.Disks[0].Total != wantTotal {
+					t.Fatalf("pressure=%q disks=%+v, want %q and %d bytes", snapshot.Memory.Pressure, snapshot.Disks, wantPressure, wantTotal)
+				}
+			}
+
+			collector := NewCollector(ProcessWatchOptions{})
+			first, err := collector.Collect()
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertMetrics(first, "normal", 2<<30)
+			// Published slices must not share ownership with the cache.
+			first.Disks[0].Total = 1
+
+			pressure, failDisk = "warn", true
+			for _, collect := range []func() (MetricsSnapshot, error){collector.Collect, collector.CollectProcesses, collector.CollectFast} {
+				snapshot, err := collect()
+				if err == nil || !strings.Contains(err.Error(), "disk probe failed") {
+					t.Fatalf("disk failure lost: %v", err)
+				}
+				assertMetrics(snapshot, "warn", 2<<30)
+			}
+
+			pressure, total, failDisk = "normal", 4<<30, false
+			for _, collect := range []func() (MetricsSnapshot, error){collector.Collect, collector.CollectProcesses, collector.CollectFast} {
+				snapshot, err := collect()
+				if err != nil {
+					t.Fatal(err)
+				}
+				assertMetrics(snapshot, "normal", 4<<30)
+			}
+		})
 	}
 }

@@ -1564,7 +1564,7 @@ func TestViewShrinksCPUCardToFitHeight(t *testing.T) {
 		cpu.PerCore = append(cpu.PerCore, float64(i))
 	}
 	m := model{
-		ready:    true,
+		schedule: collectionSchedule{hasSnapshot: true},
 		width:    120,
 		metrics:  MetricsSnapshot{CPU: cpu},
 		cpuCores: 0, // "all"
@@ -1786,10 +1786,10 @@ func TestModelViewPadsToTerminalHeight(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			m := model{
-				width:   tt.width,
-				height:  tt.height,
-				ready:   true,
-				metrics: MetricsSnapshot{},
+				width:    tt.width,
+				height:   tt.height,
+				schedule: collectionSchedule{hasSnapshot: true},
+				metrics:  MetricsSnapshot{},
 			}
 
 			view := m.View()
@@ -1805,7 +1805,7 @@ func TestModelViewErrorRendersSingleMole(t *testing.T) {
 	m := model{
 		width:      120,
 		height:     40,
-		ready:      true,
+		schedule:   collectionSchedule{hasSnapshot: true},
 		metrics:    MetricsSnapshot{},
 		errMessage: "boom",
 		animFrame:  0,
