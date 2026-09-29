@@ -408,6 +408,11 @@ func (c *Collector) Collect() (MetricsSnapshot, error) {
 	return c.collectFull()
 }
 
+var (
+	collectCPUFunc    = collectCPU
+	collectMemoryFunc = collectMemory
+)
+
 func (c *Collector) collectFull() (MetricsSnapshot, error) {
 	now := time.Now()
 	hostInfo := collectHostInfo()
@@ -421,7 +426,7 @@ func (c *Collector) collectFull() (MetricsSnapshot, error) {
 	// 100ms, so measuring while our own collection burst runs inflates the
 	// reading with Mole's own load (#1237).
 	var cpuErr error
-	collected.cpuStats, cpuErr = collectCPU()
+	collected.cpuStats, cpuErr = collectCPUFunc()
 	if cpuErr == nil {
 		next.cpuPCores = collected.cpuStats.PCoreCount
 		next.cpuECores = collected.cpuStats.ECoreCount
@@ -431,7 +436,7 @@ func (c *Collector) collectFull() (MetricsSnapshot, error) {
 	tasks := []func() error{
 		func() error { return cpuErr },
 		func() (err error) {
-			collected.memStats, err = collectMemory()
+			collected.memStats, err = collectMemoryFunc()
 			if err == nil {
 				next.memoryCached = collected.memStats.Cached
 				next.memoryPressure = collected.memStats.Pressure
