@@ -13,13 +13,17 @@ import (
 // measureInsightSize measures the size of a path.
 // Old Downloads is treated specially: only files older than 90 days are counted.
 func measureInsightSize(ctx context.Context, path string) (int64, error) {
+	return measureInsightSizeWithPublication(ctx, path, nil)
+}
+
+func measureInsightSizeWithPublication(ctx context.Context, path string, publication *scanPublication) (int64, error) {
 	home := os.Getenv("HOME")
 
 	if home != "" && path == filepath.Join(home, "Downloads") {
 		return measureOldDownloads(ctx, path, 90)
 	}
 
-	return measureOverviewSize(ctx, path)
+	return measureOverviewSizeWithPublication(ctx, path, publication)
 }
 
 // measureOldDownloads calculates total size of files in a directory

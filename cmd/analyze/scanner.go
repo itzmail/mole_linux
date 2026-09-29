@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"container/heap"
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -889,6 +890,10 @@ func isInFoldedDir(path string) bool {
 // measureOverviewSize calculates the size of a directory using multiple strategies.
 // When scanning Home, it excludes ~/Library to avoid duplicate counting.
 func measureOverviewSize(ctx context.Context, path string) (int64, error) {
+	return measureOverviewSizeWithPublication(ctx, path, nil)
+}
+
+func measureOverviewSizeWithPublication(ctx context.Context, path string, publication *scanPublication) (int64, error) {
 	if path == "" {
 		return 0, fmt.Errorf("empty path")
 	}
@@ -917,7 +922,14 @@ func measureOverviewSize(ctx context.Context, path string) (int64, error) {
 		size, err = getDirectoryLogicalSizeWithExclude(ctx, path, excludePath, ignoreNames)
 	}
 	if overviewMeasurementStorable(size, err) {
-		_ = storeOverviewMeasurement(path, size, err != nil)
+		store := func() error { return storeOverviewMeasurement(path, size, err != nil) }
+		if publication != nil {
+			if storeErr := publication.commit(store); errors.Is(storeErr, context.Canceled) || errors.Is(storeErr, context.DeadlineExceeded) {
+				return 0, storeErr
+			}
+		} else {
+			_ = store()
+		}
 	}
 	return size, err
 }

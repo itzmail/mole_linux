@@ -106,16 +106,18 @@ func resolveScanTarget(envPath string, args []string) (string, bool, error) {
 }
 
 func runTUIMode(path string, isOverview bool) {
+	m := newModel(path, isOverview)
+	defer m.cancelBackgroundCacheWrites(nil)
 	// Warm overview cache only when the user opens a specific directory.
 	// Overview mode already schedules the same measurements for the foreground UI;
 	// running the prefetcher there doubles the du/io workload on cold start.
 	if !isOverview {
 		prefetchCtx, prefetchCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer prefetchCancel()
-		go prefetchOverviewCache(prefetchCtx)
+		m.startOverviewPrefetch(prefetchCtx)
 	}
 
-	p := tea.NewProgram(newModel(path, isOverview), tea.WithAltScreen())
+	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "analyzer error: %v\n", err)
 		os.Exit(1)
@@ -146,7 +148,8 @@ func newModel(path string, isOverview bool) model {
 		isOverview:          isOverview,
 		cache:               make(map[string]historyEntry),
 		overviewSizeCache:   make(map[string]int64),
-		overviewScanningSet: make(map[string]bool),
+		overviewScanningSet: make(map[string]*scanPublication),
+		cachePublications:   make(map[string]*scanPublication),
 		multiSelected:       make(map[string]bool),
 		largeMultiSelected:  make(map[string]bool),
 		liveSortMode:        liveScanSortModeFromEnv(),

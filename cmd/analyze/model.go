@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"slices"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -184,10 +185,11 @@ const (
 )
 
 type overviewSizeMsg struct {
-	Path  string
-	Index int
-	Size  int64
-	Err   error
+	publication *scanPublication
+	Path        string
+	Index       int
+	Size        int64
+	Err         error
 }
 
 type tickMsg time.Time
@@ -228,7 +230,8 @@ type model struct {
 	largeOffset         int
 	overviewSizeCache   map[string]int64
 	overviewScanning    bool
-	overviewScanningSet map[string]bool // Track which paths are currently being scanned
+	overviewScanningSet map[string]*scanPublication // Track active measurements by identity
+	cachePublications   map[string]*scanPublication
 	width               int             // Terminal width
 	height              int             // Terminal height
 	multiSelected       map[string]bool // Track multi-selected items by path (safer than index)
@@ -417,6 +420,39 @@ func (m *model) removePathFromView(path string) {
 
 	m.applyEntryFilter()
 	m.applyLargeFilter()
+}
+
+// pathIsWithin reports whether path is root or lies below it. A bare
+// root+"/" prefix never matches for the overview, whose path is "/": the
+// prefix becomes "//".
+func pathIsWithin(path, root string) bool {
+	if path == root {
+		return true
+	}
+	prefix := root
+	if !strings.HasSuffix(prefix, "/") {
+		prefix += "/"
+	}
+	return strings.HasPrefix(path, prefix)
+}
+
+// pathTouchesRemoved reports whether a delete changed what path measures: it
+// contains a removed path, or was itself inside one.
+func pathTouchesRemoved(path string, removedPaths []string) bool {
+	return slices.ContainsFunc(removedPaths, func(removed string) bool {
+		return pathIsWithin(removed, path) || pathIsWithin(path, removed)
+	})
+}
+
+// markRemovedOverviewRowsPending resets the overview rows a delete changed to
+// pending so they are measured again instead of restored.
+func markRemovedOverviewRowsPending(entries []dirEntry, removedPaths []string) {
+	for i := range entries {
+		if pathTouchesRemoved(entries[i].Path, removedPaths) {
+			entries[i].Size = -1
+			entries[i].State = scanComplete
+		}
+	}
 }
 
 func fileEntryName(f fileEntry) string { return f.Name }

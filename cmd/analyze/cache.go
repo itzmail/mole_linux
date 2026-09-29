@@ -29,7 +29,8 @@ import (
 // v4: incomplete scans are no longer authoritative directory measurements.
 // v5: entries record their scan state, so a partial result lost only to
 // permission denials can be cached and still reads as partial.
-const cacheSchemaVersion = 5
+// v6: deletions invalidate ancestor totals and overview measurements.
+const cacheSchemaVersion = 6
 
 type overviewSizeSnapshot struct {
 	Size          int64     `json:"size"`
@@ -626,14 +627,16 @@ func loadCacheFromDisk(path string) (*cacheEntry, error) {
 		return nil, fmt.Errorf("cache expired: too old")
 	}
 
+	// Entries were added, removed, or renamed here since the scan, so the
+	// recorded listing and total no longer describe the directory. Every caller
+	// of this loader treats its result as current, including a parent scan that
+	// folds it into its own total, so a changed directory is refused however
+	// recent the scan. The TUI still paints it at once through
+	// loadStaleCacheFromDisk and refreshes behind it, and the rescan reuses the
+	// unchanged subtrees below, so refusing costs one level, not a full scan.
 	if info.ModTime().After(entry.ModTime) {
-		// Allow grace window.
 		if cacheModTimeGrace <= 0 || info.ModTime().Sub(entry.ModTime) > cacheModTimeGrace {
-			// Directory mod time is noisy on macOS; reuse recent cache to avoid
-			// frequent full rescans while still forcing refresh for older entries.
-			if cacheReuseWindow <= 0 || scanAge > cacheReuseWindow {
-				return nil, fmt.Errorf("cache expired: directory modified")
-			}
+			return nil, fmt.Errorf("cache expired: directory modified")
 		}
 	}
 
@@ -754,6 +757,29 @@ func invalidateCache(path string) {
 	removeOverviewSnapshots(path)
 }
 
+// invalidateCacheAncestry drops the cache entry and overview snapshot of each
+// removed path and of every directory above it. Deleting deep in a tree leaves
+// the ancestors' mtimes untouched, so their recorded totals, which still count
+// the removed bytes, would otherwise pass every freshness check until the TTL.
+func invalidateCacheAncestry(paths []string) {
+	seen := make(map[string]bool)
+	var targets []string
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		for dir := filepath.Clean(path); !seen[dir]; dir = filepath.Dir(dir) {
+			seen[dir] = true
+			targets = append(targets, dir)
+		}
+	}
+	for _, target := range targets {
+		removeCacheEntry(target)
+	}
+	// One snapshot save for all of them, as in invalidateCacheTree.
+	removeOverviewSnapshots(targets...)
+}
+
 // invalidateCacheTree invalidates the cache for path and all its direct
 // child directories so that a rescan does not reuse stale subdirectory
 // sizes. See #812.
@@ -801,25 +827,23 @@ func removeOverviewSnapshots(paths ...string) {
 	}
 }
 
-// prefetchOverviewCache warms overview cache in background.
-func prefetchOverviewCache(ctx context.Context) {
-	entries := createOverviewEntries()
-
-	var needScan []string
-	for _, entry := range entries {
+// Register background writers before starting them. Workers receive a separate
+// immutable map, so only the model's event loop mutates its publication registry.
+func (m *model) startOverviewPrefetch(ctx context.Context) {
+	jobs := make(map[string]*scanPublication)
+	for _, entry := range createOverviewEntries() {
 		if size, err := loadStoredOverviewSize(entry.Path); err == nil && size > 0 {
 			continue
 		}
-		needScan = append(needScan, entry.Path)
+		jobs[entry.Path] = m.newBackgroundCacheWrite(ctx, entry.Path)
 	}
+	go prefetchOverviewCache(ctx, jobs)
+}
 
-	if len(needScan) == 0 {
-		return
-	}
-
+func prefetchOverviewCache(ctx context.Context, jobs map[string]*scanPublication) {
 	sem := make(chan struct{}, maxConcurrentOverview)
 	var wg sync.WaitGroup
-	for _, path := range needScan {
+	for path, publication := range jobs {
 		select {
 		case <-ctx.Done():
 			wg.Wait()
@@ -835,11 +859,30 @@ func prefetchOverviewCache(ctx context.Context) {
 				return
 			}
 
-			size, err := measureOverviewSize(ctx, path)
-			if overviewMeasurementStorable(size, err) {
-				_ = storeOverviewMeasurement(path, size, err != nil)
-			}
+			_, _ = measureOverviewSizeWithPublication(publication.ctx, path, publication)
 		})
 	}
 	wg.Wait()
+}
+
+func (m *model) newBackgroundCacheWrite(ctx context.Context, path string) *scanPublication {
+	if m.cachePublications == nil {
+		m.cachePublications = make(map[string]*scanPublication)
+	}
+	if previous := m.cachePublications[path]; previous != nil {
+		previous.cancel()
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	publication := newScanPublication(ctx, cancel)
+	m.cachePublications[path] = publication
+	return publication
+}
+
+func (m *model) cancelBackgroundCacheWrites(removedPaths []string) {
+	for path, publication := range m.cachePublications {
+		if len(removedPaths) == 0 || pathTouchesRemoved(path, removedPaths) {
+			publication.cancel()
+			delete(m.cachePublications, path)
+		}
+	}
 }
