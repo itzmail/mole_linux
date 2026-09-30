@@ -721,12 +721,10 @@ func miniBar(percent float64) string {
 
 func renderNetworkCard(netStats []NetworkStatus, history NetworkHistory, proxy ProxyStatus, cardWidth int) cardData {
 	var lines []string
-	var totalRx, totalTx float64
+	totalRx, totalTx := networkTotals(netStats)
 	var primaryIP string
 
 	for _, n := range netStats {
-		totalRx += n.RxRateMBs
-		totalTx += n.TxRateMBs
 		if primaryIP == "" && n.IP != "" && n.Name == "en0" {
 			primaryIP = n.IP
 		}
