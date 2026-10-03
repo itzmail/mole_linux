@@ -2114,7 +2114,7 @@ clean_project_artifacts() {
     # Reuse the discovery concurrency ceiling, while keeping the SAME shared
     # deadline and per-item classifier. Results stay indexed until all workers
     # finish; only a complete, successful old classification can preselect a row.
-    local -a _activity_pids=() _activity_tmpfiles=() _activity_worker_statuses=()
+    local -a _activity_pids=() _activity_indexes=() _activity_tmpfiles=() _activity_worker_statuses=()
     local _activity_setup_failed=false
     local _activity_interrupt_status=0
     local _activity_previous_int_trap _activity_previous_term_trap
@@ -2123,22 +2123,39 @@ clean_project_artifacts() {
     trap '[[ $_activity_interrupt_status -ge 128 ]] || _activity_interrupt_status=130' INT
     trap '[[ $_activity_interrupt_status -ge 128 ]] || _activity_interrupt_status=143' TERM
     _wait_purge_activity_batch() {
-        local activity_pid worker_status
-        for activity_pid in "${_activity_pids[@]+"${_activity_pids[@]}"}"; do
-            worker_status=0
-            wait "$activity_pid" 2> /dev/null || worker_status=$?
-            if [[ $worker_status -ge 128 ]]; then
-                [[ $_activity_interrupt_status -ge 128 ]] || _activity_interrupt_status=$worker_status
-                # A signal can interrupt wait while its worker is still alive.
-                # Drain bounded read-only probes before returning; killing just
-                # their shell would leave timeout helpers or find children behind.
-                while kill -0 "$activity_pid" 2> /dev/null; do
-                    wait "$activity_pid" 2> /dev/null || true
-                done
+        local drain="${1:-true}" activity_pid worker_status slot finished
+        while [[ ${#_activity_pids[@]} -gt 0 ]]; do
+            local -a running_pids=() running_indexes=()
+            finished=false
+            for ((slot = 0; slot < ${#_activity_pids[@]}; slot++)); do
+                activity_pid="${_activity_pids[$slot]}"
+                if [[ $_activity_interrupt_status -lt 128 ]] && kill -0 "$activity_pid" 2> /dev/null; then
+                    running_pids+=("$activity_pid")
+                    running_indexes+=("${_activity_indexes[$slot]}")
+                    continue
+                fi
+                worker_status=0
+                wait "$activity_pid" 2> /dev/null || worker_status=$?
+                if [[ $worker_status -ge 128 ]]; then
+                    [[ $_activity_interrupt_status -ge 128 ]] || _activity_interrupt_status=$worker_status
+                    # Interrupted wait can leave its bounded probe alive.
+                    # Drain it instead of orphaning timeout/find children.
+                    while kill -0 "$activity_pid" 2> /dev/null; do
+                        wait "$activity_pid" 2> /dev/null || true
+                    done
+                fi
+                _activity_worker_statuses[${_activity_indexes[$slot]}]=$worker_status
+                finished=true
+            done
+            _activity_pids=("${running_pids[@]+"${running_pids[@]}"}")
+            _activity_indexes=("${running_indexes[@]+"${running_indexes[@]}"}")
+            if [[ "$drain" == false && "$finished" == true && $_activity_interrupt_status -lt 128 ]]; then
+                return 0
             fi
-            _activity_worker_statuses+=("$worker_status")
+            # The trap owns cancellation; interrupted sleep must not trigger
+            # errexit before worker drain and caller-trap restoration.
+            [[ ${#_activity_pids[@]} -eq 0 ]] || sleep 0.02 || true
         done
-        _activity_pids=()
     }
     for item in "${safe_to_clean[@]}"; do
         [[ $_activity_interrupt_status -ge 128 ]] && break
@@ -2158,8 +2175,9 @@ clean_project_artifacts() {
             exit 0
         ) < /dev/null &
         _activity_pids+=("$!")
+        _activity_indexes+=("$((${#_activity_tmpfiles[@]} - 1))")
         if [[ ${#_activity_pids[@]} -ge $max_scan_jobs ]]; then
-            _wait_purge_activity_batch
+            _wait_purge_activity_batch false
         fi
     done
     _wait_purge_activity_batch

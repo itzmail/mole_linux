@@ -3944,6 +3944,9 @@ EOF_SIGNAL_WRITE
     [[ "$output" != *SIZE_PHASE_REACHED* && "$output" != *LATER_PROBE_REACHED* && "$output" != *UNEXPECTED_REMOVE* ]] || return 1
 }
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> b19a7d2d (fix(purge): refill activity workers while preserving cancellation)
 
 @test "activity sliding window reaches a later fast artifact while an earlier probe waits" {
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF_WINDOW'
@@ -4024,8 +4027,13 @@ is_recently_modified() {
     return 1
 }
 printf() {
+<<<<<<< HEAD
     if [[ "$1" == '%s %s %s\n' && "${item:-}" == */b-failed/node_modules ]]; then
         builtin printf '1 old 1700000000\n'
+=======
+    if [[ "$1" == '%s %s\n' && "${item:-}" == */b-failed/node_modules ]]; then
+        builtin printf '1 old\n'
+>>>>>>> b19a7d2d (fix(purge): refill activity workers while preserving cancellation)
         exit 7
     fi
     builtin printf "$@"
@@ -4044,6 +4052,7 @@ EOF_INDEX
     [[ "$output" != *"SELECTED:$fixture/www/d-recent/node_modules"* ]] || return 1
     [[ "$output" != *"SELECTED:$fixture/www/e-error/node_modules"* ]] || return 1
 }
+<<<<<<< HEAD
 
 @test "purge menu rows reuse the activity mtime and batch scratch removal" {
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF_ROWS'
@@ -5045,3 +5054,5 @@ EOF
 }
 =======
 >>>>>>> f3b6ea5b (fix(purge): bound parallel activity classification safely)
+=======
+>>>>>>> b19a7d2d (fix(purge): refill activity workers while preserving cancellation)
