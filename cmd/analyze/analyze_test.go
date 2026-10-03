@@ -1868,6 +1868,47 @@ func TestLiveScanInitialListingShowsImmediateChildren(t *testing.T) {
 	}
 }
 
+func TestLiveFoldedScanWaitsForDuPermit(t *testing.T) {
+	for _, cancelWaiting := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cancel_waiting_%t", cancelWaiting), func(t *testing.T) {
+			started := installBlockingDuProbe(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			limiter := newScanLimiter(1)
+			limiter.duSem = make(chan struct{}, 1)
+			limiter.duSem <- struct{}{}
+			var files, dirs, bytes int64
+			currentPath := &atomic.Value{}
+			currentPath.Store("")
+			target := t.TempDir()
+			done := make(chan error, 1)
+			go func() {
+				_, err := scanLiveTarget(ctx, liveScanTarget{path: target, kind: liveScanTargetFoldedDirectory},
+					make(chan fileEntry, 1), limiter, &files, &dirs, &bytes, currentPath,
+					scanCacheBypass, newScanPublication(ctx, cancel))
+				done <- err
+			}()
+			time.Sleep(100 * time.Millisecond)
+			if _, err := os.Stat(started); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("folded-directory du started while its resource budget was full")
+			}
+			if !cancelWaiting {
+				<-limiter.duSem
+				waitForTestPath(t, started)
+			}
+			cancel()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("expected canceled scan, got %v", err)
+				}
+			case <-time.After(liveScanCancellationBudget):
+				t.Fatal("folded scan did not cancel while waiting for or using du")
+			}
+		})
+	}
+}
+
 func TestLiveScanCancellationStopsFoldedDirectoryProbe(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "folded")
@@ -4100,6 +4141,84 @@ func TestSchemaFiveSizesAreRejectedByEveryLoader(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestOverviewScanRefillsOnlyAvailableSlots(t *testing.T) {
+	m := model{path: "/", isOverview: true}
+	for i := range maxConcurrentOverview * 3 {
+		m.entries = append(m.entries, dirEntry{Path: fmt.Sprintf("/fixture/%d", i), Size: -1})
+	}
+	t.Cleanup(func() {
+		for _, publication := range m.overviewScanningSet {
+			publication.cancel()
+		}
+	})
+	if m.scheduleOverviewScans() == nil || len(m.overviewScanningSet) != maxConcurrentOverview {
+		t.Fatal("initial scan did not fill the overview budget")
+	}
+	if m.scheduleOverviewScans() != nil || !m.overviewScanning || len(m.overviewScanningSet) != maxConcurrentOverview {
+		t.Fatal("full overview budget must keep active scans without dispatching more")
+	}
+	completed := m.entries[0].Path
+	m.entries[0].Size = 1
+	m.overviewScanningSet[completed].cancel()
+	delete(m.overviewScanningSet, completed)
+	if m.scheduleOverviewScans() == nil || len(m.overviewScanningSet) != maxConcurrentOverview {
+		t.Fatal("one completion must refill exactly one slot")
+	}
+}
+
+func TestSwitchToOverviewKeepsFullBudgetScanning(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	resetOverviewSnapshotForTest()
+	t.Cleanup(resetOverviewSnapshotForTest)
+	m := model{path: "/", isOverview: true}
+	for i := range maxConcurrentOverview {
+		m.entries = append(m.entries, dirEntry{Path: fmt.Sprintf("/fixture/%d", i), Size: -1})
+	}
+	m.scheduleOverviewScans()
+	t.Cleanup(func() { m.cancelOverviewScans(nil) })
+	if len(m.overviewScanningSet) != maxConcurrentOverview {
+		t.Fatal("fixture must fill the overview scan budget")
+	}
+	m.isOverview = false
+	m.path = t.TempDir()
+	m.status = "Ready"
+	if m.switchToOverviewMode() == nil || !m.overviewScanning || m.status == "Ready" {
+		t.Fatal("returning to an active overview must retain its scanning status")
+	}
+	if len(m.overviewScanningSet) != maxConcurrentOverview {
+		t.Fatal("returning to an active overview must not dispatch excess scans")
+	}
+}
+
+func TestGoBackToOverviewRestartsFullBudgetTick(t *testing.T) {
+	m := model{path: "/", isOverview: true}
+	for i := range maxConcurrentOverview * 2 {
+		m.entries = append(m.entries, dirEntry{Path: fmt.Sprintf("/fixture/%d", i), Size: -1})
+	}
+	m.scheduleOverviewScans()
+	t.Cleanup(func() { m.cancelOverviewScans(nil) })
+	m.history = []historyEntry{{Path: "/", IsOverview: true, Entries: m.entries}}
+	m.isOverview = false
+	m.path = "/fixture/completed"
+	m.status = "Loaded folder"
+	m.scanning = false
+	_, cmd := m.Update(tickMsg{})
+	if cmd != nil {
+		t.Fatal("completed drill-down must stop its tick chain")
+	}
+	updated, cmd := m.goBack()
+	got := updated.(model)
+	if cmd == nil || !got.overviewScanning || got.status == "Loaded folder" {
+		t.Fatal("history return must restore the active overview status and tick")
+	}
+	if _, ok := cmd().(tickMsg); !ok {
+		t.Fatal("history return must restart animation without dispatching more scans")
+	}
+	if len(got.overviewScanningSet) != maxConcurrentOverview {
+		t.Fatal("history return exceeded the overview concurrency budget")
 	}
 }
 

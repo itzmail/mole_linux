@@ -17,19 +17,24 @@ func (m *model) scheduleOverviewScans() tea.Cmd {
 	if !m.inOverviewMode() {
 		return nil
 	}
+	availableSlots := maxConcurrentOverview - len(m.overviewScanningSet)
+	if availableSlots <= 0 {
+		m.overviewScanning = true
+		return nil
+	}
 
 	var pendingIndices []int
 	for i, entry := range m.entries {
 		if entry.Size < 0 && m.overviewScanningSet[entry.Path] == nil {
 			pendingIndices = append(pendingIndices, i)
-			if len(pendingIndices) >= maxConcurrentOverview {
+			if len(pendingIndices) >= availableSlots {
 				break
 			}
 		}
 	}
 
 	if len(pendingIndices) == 0 {
-		m.overviewScanning = false
+		m.overviewScanning = len(m.overviewScanningSet) > 0
 		if !hasPendingOverviewEntries(m.entries) {
 			m.sortOverviewEntriesBySize()
 			m.status = "Ready"
@@ -1131,7 +1136,12 @@ func (m model) goBack() (tea.Model, tea.Cmd) {
 		if hasPendingOverviewEntries(m.entries) {
 			m.totalSize = sumKnownEntrySizes(m.entries)
 			m.scanState = entryScanState(m.entries)
-			return m, m.scheduleOverviewScans()
+			cmd := m.scheduleOverviewScans()
+			if cmd == nil && m.overviewScanning {
+				m.status = "Checking system folders..."
+				cmd = tickCmd()
+			}
+			return m, cmd
 		}
 		m.status = scanSummary(m.totalSize, m.scanState)
 		return m, nil
@@ -1176,6 +1186,10 @@ func (m *model) switchToOverviewMode() tea.Cmd {
 	m.snapshotProbeID++
 	cmd := m.scheduleOverviewScans()
 	if cmd == nil {
+		if m.overviewScanning {
+			m.status = "Checking system folders..."
+			return tea.Batch(m.detectLocalSnapshotsCmd(), tickCmd())
+		}
 		m.status = "Ready"
 		return m.detectLocalSnapshotsCmd()
 	}

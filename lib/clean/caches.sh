@@ -268,8 +268,24 @@ discover_project_cache_roots() {
         _indicator_pids+=($!)
 
         if [[ ${#_indicator_pids[@]} -ge $_max_jobs ]]; then
-            wait "${_indicator_pids[0]}" 2> /dev/null || true
-            _indicator_pids=("${_indicator_pids[@]:1}")
+            local completed_pid="" indicator_slot wait_rc=0
+            mole_wait_for_any_worker completed_pid "${_indicator_pids[@]}" || wait_rc=$?
+            if [[ $wait_rc -ge 128 ]]; then
+                for _pid in "${_indicator_pids[@]}"; do
+                    kill "$_pid" 2> /dev/null || true
+                done
+                for _pid in "${_indicator_pids[@]}"; do
+                    wait "$_pid" 2> /dev/null || true
+                done
+                rm -f "$_indicator_tmp"
+                return "$wait_rc"
+            fi
+            for indicator_slot in "${!_indicator_pids[@]}"; do
+                if [[ "${_indicator_pids[$indicator_slot]}" == "$completed_pid" ]]; then
+                    unset '_indicator_pids[indicator_slot]'
+                    break
+                fi
+            done
         fi
     done
     # bash 3.2 under nounset treats "${arr[@]}" on an empty array as unbound, and
@@ -664,25 +680,25 @@ clean_project_caches() {
     fi
 
     _wait_for_project_cache_scan_batch() {
-        local scan_index scan_pid
-        for ((scan_index = 0; scan_index < ${#scan_pids[@]}; scan_index++)); do
-            scan_pid="${scan_pids[$scan_index]}"
+        local drain="${1:-true}" scan_index completed_pid
+        while [[ ${#scan_pids[@]} -gt 0 ]]; do
             local scan_rc=0
-            wait "$scan_pid" 2> /dev/null || scan_rc=$?
-            scan_statuses+=("$scan_rc")
+            completed_pid=""
+            mole_wait_for_any_worker completed_pid "${scan_pids[@]}" || scan_rc=$?
             if [[ $scan_rc -ge 128 ]]; then
-                local remaining_index
-                for ((remaining_index = scan_index + 1; remaining_index < ${#scan_pids[@]}; remaining_index++)); do
-                    kill "${scan_pids[$remaining_index]}" 2> /dev/null || true
-                done
-                for ((remaining_index = scan_index + 1; remaining_index < ${#scan_pids[@]}; remaining_index++)); do
-                    wait "${scan_pids[$remaining_index]}" 2> /dev/null || true
-                done
-                scan_pids=()
+                _cleanup_project_cache_scan_workers
                 return "$scan_rc"
             fi
+            for scan_index in "${!scan_pids[@]}"; do
+                if [[ "${scan_pids[$scan_index]}" == "$completed_pid" ]]; then
+                    scan_statuses[scan_index]="$scan_rc"
+                    unset 'scan_pids[scan_index]'
+                    break
+                fi
+            done
+            [[ "$drain" == "true" ]] || break
         done
-        scan_pids=()
+        return 0
     }
 
     # shellcheck disable=SC2329 # Invoked by the signal trap below.
@@ -732,9 +748,10 @@ clean_project_caches() {
         root_matches_files+=("$root_matches_file")
         [[ $scan_interrupt_status -ge 128 ]] && break
         scan_project_cache_root "$root" "$root_matches_file" < /dev/null &
-        scan_pids+=("$!")
+        local scan_root_index=$((${#root_matches_files[@]} - 1))
+        scan_pids[scan_root_index]="$!"
         if [[ ${#scan_pids[@]} -ge $max_scan_jobs ]]; then
-            _wait_for_project_cache_scan_batch || scan_interrupt_status=$?
+            _wait_for_project_cache_scan_batch false || scan_interrupt_status=$?
             if [[ $scan_interrupt_status -ge 128 ]]; then
                 break
             fi

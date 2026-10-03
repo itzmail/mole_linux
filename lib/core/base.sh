@@ -582,6 +582,28 @@ get_free_space() {
     echo "Unknown"
 }
 
+# Wait in the owning shell so Bash 3.2 can reap any completed scan worker.
+# The first argument names a caller variable receiving the completed PID;
+# the return status belongs to that worker, or to an interrupted polling sleep.
+mole_wait_for_any_worker() {
+    local _wait_output_name="$1"
+    shift
+    local _wait_pid _wait_status
+    while [[ $# -gt 0 ]]; do
+        for _wait_pid in "$@"; do
+            if kill -0 "$_wait_pid" 2> /dev/null; then
+                continue
+            fi
+            printf -v "$_wait_output_name" '%s' "$_wait_pid"
+            _wait_status=0
+            wait "$_wait_pid" 2> /dev/null || _wait_status=$?
+            return "$_wait_status"
+        done
+        sleep 0.02 || return $?
+    done
+    return 1
+}
+
 # Get optimal parallel jobs for operation type (scan|io|compute|default)
 get_optimal_parallel_jobs() {
     local operation_type="${1:-default}"

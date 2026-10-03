@@ -1103,13 +1103,18 @@ _safe_clean_impl() {
                     idx=$((idx + 1))
 
                     if ((${#pids[@]} >= MOLE_MAX_PARALLEL_JOBS)); then
-                        local wait_rc=0
-                        wait "${pids[0]}" 2> /dev/null || wait_rc=$?
+                        local wait_rc=0 completed_pid="" slot
+                        mole_wait_for_any_worker completed_pid "${pids[@]}" || wait_rc=$?
                         if [[ $wait_rc -ge 128 ]]; then
                             cleanup_interrupt_rc=$wait_rc
                             break
                         fi
-                        pids=("${pids[@]:1}")
+                        for slot in "${!pids[@]}"; do
+                            if [[ "${pids[$slot]}" == "$completed_pid" ]]; then
+                                unset 'pids[slot]'
+                                break
+                            fi
+                        done
                         completed=$((completed + 1))
 
                         if [[ "$show_spinner" == "true" && -t 1 ]]; then

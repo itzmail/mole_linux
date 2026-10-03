@@ -2134,28 +2134,21 @@ clean_project_artifacts() {
         _max_size_jobs=8
     fi
 
-    # Reap any finished PID from the sliding window. Uses `wait -n` when
-    # available (bash 4.3+) to avoid blocking on the slowest job; falls
-    # back to first-PID wait on macOS default bash 3.2.
-    local _has_wait_n=false
-    if [[ "${BASH_VERSINFO[0]:-0}" -gt 4 ]] ||
-        { [[ "${BASH_VERSINFO[0]:-0}" -eq 4 ]] && [[ "${BASH_VERSINFO[1]:-0}" -ge 3 ]]; }; then
-        _has_wait_n=true
-    fi
+    # Keep the sliding window full on Bash 3.2 as well as newer shells.
     _reap_one_size_pid() {
-        if [[ "$_has_wait_n" == "true" ]]; then
-            wait -n "${_size_pids[@]}" 2> /dev/null || true
-            local -a _remaining=()
-            for _p in "${_size_pids[@]}"; do
-                if kill -0 "$_p" 2> /dev/null; then
-                    _remaining+=("$_p")
-                fi
-            done
-            _size_pids=("${_remaining[@]}")
-        else
-            wait "${_size_pids[0]}" 2> /dev/null || true
-            _size_pids=("${_size_pids[@]:1}")
+        local completed_pid="" size_slot worker_rc=0
+        mole_wait_for_any_worker completed_pid "${_size_pids[@]}" || worker_rc=$?
+        if [[ $worker_rc -ge 128 ]]; then
+            [[ $_size_interrupt_status -ge 128 ]] || _size_interrupt_status=$worker_rc
+            _cleanup_purge_size_workers
+            return 0
         fi
+        for size_slot in "${!_size_pids[@]}"; do
+            if [[ "${_size_pids[$size_slot]}" == "$completed_pid" ]]; then
+                unset '_size_pids[size_slot]'
+                break
+            fi
+        done
     }
 
     local _size_previous_int_trap=""

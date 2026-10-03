@@ -459,7 +459,7 @@ func scanLiveTarget(ctx context.Context, target liveScanTarget, largeFileChan ch
 			}
 		}
 	case liveScanTargetFoldedDirectory:
-		size, err := getDirectorySizeFromDu(ctx, target.path)
+		size, err := getDirectorySizeFromDuWithLimiter(ctx, target.path, limiter)
 		if ctx.Err() != nil {
 			return scanResult{}, ctx.Err()
 		}

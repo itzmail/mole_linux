@@ -228,6 +228,14 @@ func acquireScanPermit(ctx context.Context, sem chan struct{}) error {
 	}
 }
 
+func getDirectorySizeFromDuWithLimiter(ctx context.Context, path string, limiter *scanLimiter) (int64, error) {
+	if err := acquireScanPermit(ctx, limiter.duSem); err != nil {
+		return 0, err
+	}
+	defer func() { <-limiter.duSem }()
+	return getDirectorySizeFromDu(ctx, path)
+}
+
 func scanPathConcurrent(ctx context.Context, root string, filesScanned, dirsScanned, bytesScanned *int64, currentPath *atomic.Value) (scanResult, error) {
 	return scanPathConcurrentWithOptions(ctx, root, filesScanned, dirsScanned, bytesScanned, currentPath, true, maxEntries)
 }
@@ -299,7 +307,6 @@ func scanPathConcurrentWithLimiter(ctx context.Context, root string, filesScanne
 	heap.Init(largeFilesHeap)
 	largeFileMinSize := int64(largeFileWarmupMinSize)
 
-	duSem := limiter.duSem
 	duQueueSem := limiter.duQueueSem
 	var wg sync.WaitGroup
 
@@ -449,13 +456,7 @@ scanChildren:
 						return
 					}
 
-					size, err := func() (int64, error) {
-						if err := acquireScanPermit(ctx, duSem); err != nil {
-							return 0, err
-						}
-						defer func() { <-duSem }()
-						return getDirectorySizeFromDu(ctx, fullPath)
-					}()
+					size, err := getDirectorySizeFromDuWithLimiter(ctx, fullPath, limiter)
 					if ctx.Err() != nil {
 						return
 					}

@@ -625,6 +625,38 @@ EOF
 	rm -rf "$HOME/go"
 }
 
+@test "project cache scans refill slots and keep statuses bound to original roots" {
+    run /bin/bash <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/caches.sh"
+DRY_RUN=true
+for name in root-0 root-1 root-2; do mkdir -p "$HOME/$name"; done
+discover_project_cache_roots() { printf '%s\n' "$HOME/root-0" "$HOME/root-1" "$HOME/root-2"; }
+get_optimal_parallel_jobs() { printf '2\n'; }
+scan_project_cache_root() {
+    local name="${1##*/}"
+    printf '%s\n' "$name" > "$2"
+    case "$name" in
+        root-0)
+            for _ in {1..100}; do
+                [[ ! -e "$HOME/root-2-started" ]] || return 0
+                sleep 0.02
+            done
+            return 1
+            ;;
+        root-1) return 1 ;;
+        root-2) touch "$HOME/root-2-started" ;;
+    esac
+}
+process_project_cache_matches() { printf 'PROCESSED=%s\n' "$(cat "$1")"; }
+clean_project_caches
+EOF
+    [ "$status" -eq 0 ]
+    [[ "$output" == *'PROCESSED=root-0'* && "$output" == *'PROCESSED=root-2'* ]] || return 1
+    [[ "$output" != *'PROCESSED=root-1'* ]] || return 1
+}
+
 @test "clean_project_caches scans independent roots concurrently within its bound" {
 	local scan_home="$HOME/concurrent-project-scans"
 	mkdir -p "$scan_home/root-1" "$scan_home/root-2" "$scan_home/root-3" "$scan_home/root-4"

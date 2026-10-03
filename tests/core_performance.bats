@@ -16,6 +16,47 @@ setup() {
     source "$PROJECT_ROOT/lib/core/base.sh"
 }
 
+@test "scan workers reap a completed peer before a blocked queue head" {
+    run /bin/bash <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/base.sh"
+release="$TEST_DATA_DIR/release-$$"
+(while [[ ! -f "$release" ]]; do sleep 0.02; done) &
+slow=$!
+trap 'touch "$release"; wait "$slow" 2>/dev/null || true' EXIT
+(exit 7) &
+fast=$!
+finished=""
+rc=0
+mole_wait_for_any_worker finished "$slow" "$fast" || rc=$?
+[[ "$finished" == "$fast" && "$rc" == 7 ]] || exit 1
+kill -0 "$slow" || exit 1
+touch "$release"
+wait "$slow"
+printf 'fast-reaped slow-still-running\n'
+EOF
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"fast-reaped slow-still-running"* ]] || return 1
+}
+
+@test "scan worker polling propagates interrupted sleep" {
+    run /bin/bash <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/base.sh"
+sleep 10 &
+worker=$!
+trap 'kill "$worker" 2>/dev/null || true; wait "$worker" 2>/dev/null || true' EXIT
+sleep() { return 130; }
+finished=""
+rc=0
+mole_wait_for_any_worker finished "$worker" || rc=$?
+[[ "$rc" == 130 && -z "$finished" ]] || exit 1
+printf 'interruption-propagated\n'
+EOF
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"interruption-propagated"* ]] || return 1
+}
+
 @test "bytes_to_human handles large values efficiently" {
     local start end elapsed
     local limit_ms="${MOLE_PERF_BYTES_TO_HUMAN_LIMIT_MS:-4000}"
