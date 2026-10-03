@@ -497,8 +497,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		if m.inOverviewMode() {
+			name := filepath.Base(msg.Path)
 			for i := range m.entries {
 				if m.entries[i].Path == msg.Path {
+					if m.entries[i].Name != "" {
+						name = m.entries[i].Name
+					}
 					m.entries[i].Size = msg.Size
 					m.entries[i].State = measurementState(msg.Size, msg.Err)
 					break
@@ -508,7 +512,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.scanState = entryScanState(m.entries)
 
 			if msg.Err != nil {
-				m.status = fmt.Sprintf("Unable to measure %s: %v", displayPath(msg.Path), msg.Err)
+				label := "Size unavailable"
+				if msg.Size > 0 {
+					label = "Partial size"
+				}
+				m.status = fmt.Sprintf("%s: %s (%s)", label, name, measurementErrorReason(msg.Err))
 			}
 
 			cmd := m.scheduleOverviewScans()

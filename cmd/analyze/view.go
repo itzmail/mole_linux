@@ -46,13 +46,11 @@ func (m model) View() string {
 				fmt.Fprintf(&b, "%s%s%s%s Analyzing disk usage...\n\n",
 					colorCyan, colorBold, spinnerFrames[m.spinner], colorReset)
 			} else {
-				fmt.Fprintf(&b, "%sSelect a location to explore:%s  ", colorGray, colorReset)
-				fmt.Fprintf(&b, "%s%s%s%s %s\n\n", colorCyan, colorBold, spinnerFrames[m.spinner], colorReset, m.status)
+				m.writeOverviewStatus(&b)
 			}
 		} else {
 			if hasPendingOverviewEntries(m.entries) {
-				fmt.Fprintf(&b, "%sSelect a location to explore:%s  ", colorGray, colorReset)
-				fmt.Fprintf(&b, "%s%s%s%s %s\n\n", colorCyan, colorBold, spinnerFrames[m.spinner], colorReset, m.status)
+				m.writeOverviewStatus(&b)
 			} else {
 				fmt.Fprintf(&b, "%sSelect a location to explore:%s\n\n", colorGray, colorReset)
 			}
@@ -459,6 +457,19 @@ func (m model) View() string {
 		}
 	}
 	return b.String()
+}
+
+func (m model) writeOverviewStatus(b *strings.Builder) {
+	const prompt = "Select a location to explore:"
+	status := m.status
+	inlineWidth := displayWidth(prompt) + 2 + displayWidth(spinnerFrames[m.spinner]) + 1 + displayWidth(status)
+	if m.width > 0 && inlineWidth > m.width {
+		fmt.Fprintf(b, "%s%s%s\n", colorGray, prompt, colorReset)
+		status = truncateMiddle(status, max(0, m.width-displayWidth(spinnerFrames[m.spinner])-1))
+	} else {
+		fmt.Fprintf(b, "%s%s%s  ", colorGray, prompt, colorReset)
+	}
+	fmt.Fprintf(b, "%s%s%s%s %s\n\n", colorCyan, colorBold, spinnerFrames[m.spinner], colorReset, status)
 }
 
 // isAppBundleEntry reports whether a scanned entry is a macOS application

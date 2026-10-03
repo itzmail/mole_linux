@@ -97,6 +97,7 @@ Public docs and examples should prefer the installed `mo` command. Use `./mole` 
 
 ## Working Rules
 
+- When the maintainer reports a defect while testing Mole changes, diagnose it, apply the verified minimal fix, run the required checks, then commit and push the scoped fix as tw93 and report the result without asking again for repair or submission approval. This standing authorization excludes releases and destructive verification.
 - Treat `.claude/skills/bugs/SKILL.md` as an on-demand router, not a universal review preflight. Load only the linked reference families signaled by deletion evidence, uncertain probes, bounded Shell/macOS work, persisted state or accounting, progress, test validity, or refusal diagnostics. Unrelated documentation, release copy, and administrative work should not pay for incident history.
 - Check `should_protect_path()` before adding cleanup behavior.
 - Check app protection helpers before adding app cache, uninstall, or leftover cleanup behavior.

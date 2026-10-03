@@ -17,6 +17,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // Navigation starts a replacement scan immediately, so abandoned scan work
@@ -3802,6 +3803,55 @@ func TestOverviewPartialMeasurementKeepsBytesAndUnknownRows(t *testing.T) {
 	}
 }
 
+func TestOverviewMeasurementFailureStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		size   int64
+		err    error
+		prefix string
+		reason string
+		state  scanState
+	}{
+		{"partial permission", 4096, os.ErrPermission, "Partial size", "access denied", scanPartial},
+		{"unavailable permission", 0, os.ErrPermission, "Size unavailable", "access denied", scanUnavailable},
+		{"partial timeout", 4096, context.DeadlineExceeded, "Partial size", "timed out", scanPartial},
+		{"unavailable timeout", 0, context.DeadlineExceeded, "Size unavailable", "timed out", scanUnavailable},
+		{"cancelled", 0, context.Canceled, "Size unavailable", "cancelled", scanUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "Library", "Developer", "CoreSimulator", "Devices")
+			pending := filepath.Join(root, "pending")
+			m := model{
+				path: "/", isOverview: true, width: 80, height: 24,
+				entries: []dirEntry{
+					{Name: "Xcode Simulators", Path: root, IsDir: true, Size: -1},
+					{Name: "Pending", Path: pending, IsDir: true, Size: -1},
+				},
+				overviewScanningSet: map[string]*scanPublication{pending: {}},
+			}
+			wrapped := fmt.Errorf("du incomplete for %s: %w", root, tc.err)
+			updated, _ := m.Update(overviewSizeMsg{Path: root, Size: tc.size, Err: wrapped})
+			m = updated.(model)
+			if !strings.HasPrefix(m.status, tc.prefix) || !strings.Contains(m.status, tc.reason) ||
+				strings.Count(m.status, "Xcode Simulators") != 1 || strings.Contains(m.status, root) {
+				t.Fatalf("misleading or repetitive measurement status: %q", m.status)
+			}
+			if m.entries[0].Size != tc.size || m.entries[0].State != tc.state || m.totalSize != tc.size || !m.overviewScanning {
+				t.Fatalf("status changed measurement coverage or stopped later work: %+v", m)
+			}
+			view := m.View()
+			if !strings.Contains(view, tc.reason) {
+				t.Fatalf("measurement reason is absent from view: %s", view)
+			}
+			for line := range strings.SplitSeq(view, "\n") {
+				if strings.Contains(line, tc.prefix) && ansi.StringWidth(line) > m.width {
+					t.Fatalf("measurement status overflows %d columns: %q", m.width, line)
+				}
+			}
+		})
+	}
+}
+
 func TestSelectionAndConfirmationPreserveMeasurementCoverage(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -3959,6 +4009,8 @@ func TestTransientPartialIsNotCachedAndDenialOnlyPartialIs(t *testing.T) {
 		{name: "permission denied", stderr: "du: /x/locked: Permission denied"},
 		{name: "operation not permitted", stderr: "du: /x/Mail: Operation not permitted"},
 		{name: "io error", stderr: "du: /x/disk: Input/output error", transient: true},
+		{name: "dataless directory", stderr: "du: /x/placeholder: Resource deadlock avoided", transient: true},
+		{name: "mixed failures", stderr: "du: /x/locked: Permission denied\ndu: /x/placeholder: Resource deadlock avoided", transient: true},
 		{name: "no diagnostic", transient: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

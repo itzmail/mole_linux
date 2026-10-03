@@ -7,9 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 func writeFileWithSize(t testing.TB, path string, size int) {
@@ -239,6 +243,79 @@ func TestFoldedDirectoryRetainsPartialDuOutput(t *testing.T) {
 	}
 	if result.State != scanPartial || result.TotalSize != 8192 || len(result.Entries) != 1 || result.Entries[0].State != scanPartial {
 		t.Fatalf("partial du result was lost or replaced by fallback walk: %+v", result)
+	}
+}
+
+func TestDuFailureKeepsDiagnosticAndPartialBytes(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		stdout     string
+		diagnostic string
+		wantSize   int64
+		permission bool
+	}{
+		{"partial", "8", "Resource deadlock avoided", 8192, false},
+		{"unavailable", "", "Resource deadlock avoided", 0, false},
+		{"permission", "8", "Permission denied", 8192, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "path: with spaces")
+			if err := os.Mkdir(root, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			stubDir := t.TempDir()
+			script := "#!/bin/sh\nfor target do :; done\n"
+			if tc.stdout != "" {
+				script += "printf '" + tc.stdout + "\\t%s\\n' \"$target\"\n"
+			}
+			script += "printf 'du: %s: " + tc.diagnostic + "\\n' \"$target\" >&2\nexit 1\n"
+			if err := os.WriteFile(filepath.Join(stubDir, "du"), []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", stubDir)
+			size, err := getDirectorySizeFromDu(context.Background(), root)
+			if size != tc.wantSize || err == nil || !strings.Contains(err.Error(), tc.diagnostic) {
+				t.Fatalf("du lost subtotal or diagnostic: size=%d err=%v", size, err)
+			}
+			if isPermissionFailure(err) != tc.permission {
+				t.Fatalf("du changed permission classification: %v", err)
+			}
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+				t.Fatalf("du lost its process failure: %v", err)
+			}
+			pending := filepath.Join(root, "pending")
+			m := model{
+				path: "/", isOverview: true, width: 80, height: 24,
+				entries: []dirEntry{
+					{Name: "Xcode Simulators", Path: root, IsDir: true, Size: -1},
+					{Name: "Pending", Path: pending, IsDir: true, Size: -1},
+				},
+				overviewScanningSet: map[string]*scanPublication{pending: {}},
+			}
+			updated, _ := m.Update(overviewSizeMsg{Path: root, Size: size, Err: err})
+			m = updated.(model)
+			wantReason := tc.diagnostic
+			if tc.permission {
+				wantReason = "access denied"
+			}
+			for _, width := range []int{60, 80, 120} {
+				m.width = width
+				view := m.View()
+				foundReason := false
+				for line := range strings.SplitSeq(view, "\n") {
+					if strings.Contains(line, wantReason) {
+						foundReason = true
+						if ansi.StringWidth(line) > width {
+							t.Fatalf("diagnostic overflows %d columns: %q", width, line)
+						}
+					}
+				}
+				if !foundReason || strings.Contains(view, root) {
+					t.Fatalf("diagnostic was lost or path repeated at width %d: %s", width, view)
+				}
+			}
+		})
 	}
 }
 

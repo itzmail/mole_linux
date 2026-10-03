@@ -21,6 +21,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode"
 )
 
 var spotlightQueryRunner = func(ctx context.Context, root, query string) ([]byte, error) {
@@ -950,6 +951,43 @@ func getDirectorySizeFromDuWithExclude(ctx context.Context, path string, exclude
 	return getDirectorySizeFromDuWithExcludeAndIgnores(ctx, path, excludePath, nil)
 }
 
+// duError keeps a short diagnostic separate from paths and the process status.
+// Unwrap preserves cancellation, permission and exit-status classification.
+type duError struct {
+	cause  error
+	reason string
+}
+
+func (e *duError) Error() string {
+	if e.reason == "" {
+		return e.cause.Error()
+	}
+	return fmt.Sprintf("%v: %s", e.cause, e.reason)
+}
+
+func (e *duError) Unwrap() error { return e.cause }
+
+func duDiagnosticReason(stderr []byte) string {
+	for line := range strings.Lines(string(stderr)) {
+		// BSD du prints "du: <path>: <strerror>". The last separator
+		// avoids copying a path that itself contains colons and spaces.
+		separator := strings.LastIndex(line, ": ")
+		if !strings.HasPrefix(line, "du: ") || separator <= len("du") {
+			continue
+		}
+		reason := strings.TrimSpace(strings.Map(func(r rune) rune {
+			if unicode.IsControl(r) || unicode.IsSpace(r) {
+				return ' '
+			}
+			return r
+		}, line[separator+2:]))
+		if reason != "" {
+			return reason
+		}
+	}
+	return ""
+}
+
 func getDirectorySizeFromDuWithExcludeAndIgnores(ctx context.Context, path string, excludePath string, ignoreNames []string) (int64, error) {
 	// Validate paths.
 	if err := validatePath(path); err != nil {
@@ -998,6 +1036,9 @@ func getDirectorySizeFromDuWithExcludeAndIgnores(ctx context.Context, path strin
 			// du exits 1 for any unreadable descendant; its stderr is the
 			// only place that says whether every failure was a denial.
 			runErr = fmt.Errorf("%w: %w", runErr, fs.ErrPermission)
+		}
+		if runErr != nil && ctx.Err() == nil {
+			runErr = &duError{cause: runErr, reason: duDiagnosticReason(stderr.Bytes())}
 		}
 		if len(fields) == 0 {
 			if runErr != nil {

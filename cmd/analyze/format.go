@@ -3,6 +3,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -268,6 +270,25 @@ func formatUnusedTime(lastAccess time.Time) string {
 	}
 
 	return ""
+}
+
+func measurementErrorReason(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timed out"
+	case errors.Is(err, context.Canceled):
+		return "cancelled"
+	case isPermissionFailure(err):
+		return "access denied"
+	}
+	var duFailure *duError
+	if errors.As(err, &duFailure) && duFailure.reason != "" {
+		return duFailure.reason
+	}
+	if pathFailure, ok := errors.AsType[*os.PathError](err); ok {
+		return pathFailure.Err.Error()
+	}
+	return "read error"
 }
 
 // Partial sizes are measured bytes, so '+' marks that additional bytes may be
