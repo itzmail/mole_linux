@@ -758,7 +758,16 @@ scan_purge_targets() {
             emit_valid_cachedir_tag_dirs "$scan_deadline" < "$tag_output" >> "$target_output" || fd_status=$?
         fi
         if [[ $fd_status -eq 0 ]]; then
-            process_scan_results "$target_output" "$scan_deadline" || fd_status=$?
+            local filter_status=0
+            process_scan_results "$target_output" "$scan_deadline" || filter_status=$?
+            if [[ $filter_status -ne 0 ]]; then
+                # Discovery completed. Repeating it cannot repair a failed
+                # shared filter and would spend the remaining root budget twice.
+                cleanup_scan_outputs
+                : > "$output_file"
+                debug_log "Purge result filtering failed (status $filter_status): $search_path"
+                return "$filter_status"
+            fi
         fi
         if [[ $fd_status -eq 0 ]]; then
             debug_log "Using fd for scanning"
@@ -775,7 +784,6 @@ scan_purge_targets() {
     fi
 
     if [[ "$use_find" == "true" ]]; then
-        debug_log "Using find for scanning"
         # Pruned find avoids descending into heavy directories.
         local prune_dirs=(".git" "Library" ".Trash" "Applications")
         local purge_targets=("${PURGE_TARGETS[@]}")
@@ -796,7 +804,13 @@ scan_purge_targets() {
         # `command find` behaves inconsistently in this complex expression.
         local find_status=0
         scan_stage_timeout=$(_mole_timeout_with_deadline "$scan_timeout" "$scan_deadline") || find_status=$?
+        if [[ $find_status -ne 0 ]]; then
+            cleanup_scan_outputs
+            debug_log "Purge discovery budget exhausted before find (status $find_status): $search_path"
+            return "$find_status"
+        fi
         if [[ $find_status -eq 0 ]]; then
+            debug_log "Using find for scanning"
             run_with_timeout "$scan_stage_timeout" find "$search_path" -mindepth "$min_depth" -maxdepth "$max_depth" -type d \
                 \( "${prune_expr[@]}" \) -prune -o \
                 \( "${target_expr[@]}" \) -print -prune \
@@ -816,7 +830,14 @@ scan_purge_targets() {
             emit_valid_cachedir_tag_dirs "$scan_deadline" < "$tag_output" >> "$target_output" || find_status=$?
         fi
         if [[ $find_status -eq 0 ]]; then
-            process_scan_results "$target_output" "$scan_deadline" || find_status=$?
+            local filter_status=0
+            process_scan_results "$target_output" "$scan_deadline" || filter_status=$?
+            if [[ $filter_status -ne 0 ]]; then
+                cleanup_scan_outputs
+                : > "$output_file"
+                debug_log "Purge result filtering failed (status $filter_status): $search_path"
+                return "$filter_status"
+            fi
         fi
 
         cleanup_scan_outputs
