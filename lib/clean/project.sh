@@ -2110,24 +2110,94 @@ clean_project_artifacts() {
         _activity_total_timeout="$MOLE_TIMEOUT_HINT_SCAN_SEC"
     fi
     local _PURGE_ACTIVITY_DEADLINE_EPOCH=$((_now_epoch + _activity_total_timeout))
+    # A few slow artifacts must not consume every later artifact's opportunity.
+    # Reuse the discovery concurrency ceiling, while keeping the SAME shared
+    # deadline and per-item classifier. Results stay indexed until all workers
+    # finish; only a complete, successful old classification can preselect a row.
+    local -a _activity_pids=() _activity_tmpfiles=() _activity_worker_statuses=()
+    local _activity_setup_failed=false
+    local _activity_interrupt_status=0
+    local _activity_previous_int_trap _activity_previous_term_trap
+    _activity_previous_int_trap=$(trap -p INT || true)
+    _activity_previous_term_trap=$(trap -p TERM || true)
+    trap '[[ $_activity_interrupt_status -ge 128 ]] || _activity_interrupt_status=130' INT
+    trap '[[ $_activity_interrupt_status -ge 128 ]] || _activity_interrupt_status=143' TERM
+    _wait_purge_activity_batch() {
+        local activity_pid worker_status
+        for activity_pid in "${_activity_pids[@]+"${_activity_pids[@]}"}"; do
+            worker_status=0
+            wait "$activity_pid" 2> /dev/null || worker_status=$?
+            if [[ $worker_status -ge 128 ]]; then
+                [[ $_activity_interrupt_status -ge 128 ]] || _activity_interrupt_status=$worker_status
+                # A signal can interrupt wait while its worker is still alive.
+                # Drain bounded read-only probes before returning; killing just
+                # their shell would leave timeout helpers or find children behind.
+                while kill -0 "$activity_pid" 2> /dev/null; do
+                    wait "$activity_pid" 2> /dev/null || true
+                done
+            fi
+            _activity_worker_statuses+=("$worker_status")
+        done
+        _activity_pids=()
+    }
     for item in "${safe_to_clean[@]}"; do
-        local is_recent=true
-        local activity_status=0
-        _PURGE_ACTIVITY_STATE="uncertain"
-        is_recently_modified "$item" "$_now_epoch" || activity_status=$?
-        if [[ $activity_status -ge 128 ]]; then
-            PURGE_RUN_OUTCOME="cancelled"
-            [[ ! -t 1 ]] || stop_inline_spinner
-            return "$activity_status"
+        [[ $_activity_interrupt_status -ge 128 ]] && break
+        local activity_temp
+        if ! activity_temp=$(mktemp); then
+            _activity_setup_failed=true
+            break
         fi
-        # A bounded menu probe may time out: retain that row, unchecked.
-        local activity_state="${_PURGE_ACTIVITY_STATE:-uncertain}"
-        if [[ $activity_status -eq 1 ]]; then
-            is_recent=false
-            activity_state="old"
-        elif [[ "$activity_state" != "recent" ]]; then
+        register_temp_file "$activity_temp"
+        _activity_tmpfiles+=("$activity_temp")
+        (
+            _PURGE_ACTIVITY_STATE="uncertain"
+            activity_status=0
+            is_recently_modified "$item" "$_now_epoch" || activity_status=$?
+            [[ $activity_status -lt 128 ]] || exit "$activity_status"
+            printf '%s %s\n' "$activity_status" "${_PURGE_ACTIVITY_STATE:-uncertain}" > "$activity_temp" || exit 1
+            exit 0
+        ) < /dev/null &
+        _activity_pids+=("$!")
+        if [[ ${#_activity_pids[@]} -ge $max_scan_jobs ]]; then
+            _wait_purge_activity_batch
+        fi
+    done
+    _wait_purge_activity_batch
+    trap - INT TERM
+    # eval: restore the caller traps captured before starting activity workers.
+    [[ -z "$_activity_previous_int_trap" ]] || eval "$_activity_previous_int_trap"
+    [[ -z "$_activity_previous_term_trap" ]] || eval "$_activity_previous_term_trap"
+    if [[ $_activity_interrupt_status -ge 128 || "$_activity_setup_failed" == true ]]; then
+        for activity_temp in "${_activity_tmpfiles[@]+"${_activity_tmpfiles[@]}"}"; do
+            rm -f "$activity_temp" # SAFE: exact registered mktemp activity result file
+        done
+        if [[ $_activity_interrupt_status -lt 128 ]]; then
+            PURGE_RUN_OUTCOME="incomplete"
+            [[ ! -t 1 ]] || stop_inline_spinner
+            return 1
+        fi
+        PURGE_RUN_OUTCOME="cancelled"
+        [[ ! -t 1 ]] || stop_inline_spinner
+        return "$_activity_interrupt_status"
+    fi
+    local activity_index=0
+    for activity_temp in "${_activity_tmpfiles[@]}"; do
+        local is_recent=true activity_status="" activity_state="uncertain" activity_extra=""
+        # Only a complete record from a successful worker can preselect a row.
+        # A truncated first field must never turn unknown evidence into old.
+        if [[ "${_activity_worker_statuses[$activity_index]:-1}" == "0" ]] &&
+            read -r activity_status activity_state activity_extra < "$activity_temp" &&
+            [[ -z "$activity_extra" ]]; then
+            if [[ "$activity_status" == "1" && "$activity_state" == "old" ]]; then
+                is_recent=false
+            elif [[ "$activity_status" != "0" || "$activity_state" != "recent" ]]; then
+                activity_state="uncertain"
+            fi
+        else
             activity_state="uncertain"
         fi
+        rm -f "$activity_temp" # SAFE: exact registered mktemp activity result file
+        activity_index=$((activity_index + 1))
         safe_recent_flags+=("$is_recent")
         safe_activity_states+=("$activity_state")
     done

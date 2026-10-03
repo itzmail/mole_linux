@@ -42,6 +42,7 @@ get_dir_size_kb() { echo 1; }
 safe_remove() { printf 'SELECTED:%s\n' "$1"; }
 is_recently_modified() { _PURGE_ACTIVITY_STATE=old; return 1; }
 printf() {
+<<<<<<< HEAD
     if [[ "$1" == '%s %s %s\n' && "${item:-}" == *a-bad* ]]; then
         case "$RESULT_MODE" in
             truncated) builtin printf '1' ;;
@@ -49,6 +50,14 @@ printf() {
             missing-mtime) builtin printf '1 old\n' ;;
             failed-worker) builtin printf '1 old 1700000000\n'; exit 7 ;;
             failed-write) builtin printf '1 old 1700000000\n'; return 7 ;;
+=======
+    if [[ "$1" == '%s %s\n' && "${item:-}" == *a-bad* ]]; then
+        case "$RESULT_MODE" in
+            truncated) builtin printf '1' ;;
+            missing-field) builtin printf '1 \n' ;;
+            failed-worker) builtin printf '1 old\n'; exit 7 ;;
+            failed-write) builtin printf '1 old\n'; return 7 ;;
+>>>>>>> f3b6ea5b (fix(purge): bound parallel activity classification safely)
         esac
     else
         builtin printf "$@"
@@ -3559,6 +3568,7 @@ EOF_INNER
 }
 
 
+<<<<<<< HEAD
 @test "purge review does not walk a candidate discovery already verified" {
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash <<'EOF_INNER'
 set -euo pipefail
@@ -3625,6 +3635,8 @@ EOF_INNER
     }
 }
 
+=======
+>>>>>>> f3b6ea5b (fix(purge): bound parallel activity classification safely)
 @test "activity batch inspects later fast artifacts without selecting recent or failed probes" {
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF_ACTIVITY'
 set -euo pipefail
@@ -3819,10 +3831,13 @@ EOF_REPEAT_TERM
     assert_activity_result_fails_closed missing-field
 }
 
+<<<<<<< HEAD
 @test "activity batch retains a worker result missing its mtime" {
     assert_activity_result_fails_closed missing-mtime
 }
 
+=======
+>>>>>>> f3b6ea5b (fix(purge): bound parallel activity classification safely)
 @test "activity batch retains a result from an unsuccessful worker" {
     assert_activity_result_fails_closed failed-worker
 }
@@ -3911,7 +3926,11 @@ is_recently_modified() {
     return 143
 }
 printf() {
+<<<<<<< HEAD
     [[ "$1" != '%s %s %s\n' ]] || return 7
+=======
+    [[ "$1" != '%s %s\n' ]] || return 7
+>>>>>>> f3b6ea5b (fix(purge): bound parallel activity classification safely)
     builtin printf "$@"
 }
 export MOLE_DRY_RUN=1
@@ -3924,6 +3943,7 @@ EOF_SIGNAL_WRITE
     [[ "$output" == *CANCELLED_WITH_FAILED_WRITER* ]] || return 1
     [[ "$output" != *SIZE_PHASE_REACHED* && "$output" != *LATER_PROBE_REACHED* && "$output" != *UNEXPECTED_REMOVE* ]] || return 1
 }
+<<<<<<< HEAD
 
 @test "activity sliding window reaches a later fast artifact while an earlier probe waits" {
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF_WINDOW'
@@ -5023,3 +5043,5 @@ EOF
 	[[ "$output" != *"~/many-skipped-1666/p11"* ]] || { echo "$output"; return 1; }
 	[[ "$output" == *"and 3 more"* ]] || { echo "$output"; return 1; }
 }
+=======
+>>>>>>> f3b6ea5b (fix(purge): bound parallel activity classification safely)
