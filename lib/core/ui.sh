@@ -466,9 +466,9 @@ update_inline_spinner_message() {
     return 0
 }
 
-# Get spinner characters
+# Keep the spinner in the middle two braille rows for a centered 2x2 shape.
 mo_spinner_chars() {
-    printf "%s\n" "⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏"
+    printf "%s\n" "⠖" "⠲" "⠴" "⠦"
 }
 
 # Fill MO_SPINNER_FRAMES, one frame per element, for every spinner loop.

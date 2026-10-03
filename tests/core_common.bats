@@ -32,9 +32,9 @@ setup() {
     mkdir -p "$HOME"
 }
 
-@test "mo_spinner_chars returns default sequence" {
+@test "mo_spinner_chars returns centered 2x2 sequence" {
     result="$(HOME="$HOME" /bin/bash --noprofile --norc -c "source '$PROJECT_ROOT/lib/core/common.sh'; mo_spinner_chars")"
-    [ "$result" = $'⠋\n⠙\n⠹\n⠸\n⠼\n⠴\n⠦\n⠧\n⠇\n⠏' ]
+    [ "$result" = $'⠖\n⠲\n⠴\n⠦' ]
 }
 
 @test "detect_architecture maps current CPU to friendly label" {
@@ -774,7 +774,7 @@ EOF
     # The old byte-slicing implementation emitted invalid UTF-8 here. Do not
     # require a full animation cycle: CI startup time can consume part of this
     # bounded capture even though the spinner itself is healthy.
-    [[ "$raw_content" == *"⠋"* ]]
+    [[ "$raw_content" == *"⠖"* ]]
 }
 
 @test "update_inline_spinner_message returns 1 without an active spinner" {

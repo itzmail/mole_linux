@@ -290,7 +290,8 @@ var skipExtensions = map[string]bool{
 	".hx":     true,
 }
 
-var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+// Match the shell spinner's centered 2x2 shape in lib/core/ui.sh.
+var spinnerFrames = []string{"⠖", "⠲", "⠴", "⠦"}
 
 const (
 	colorPurple     = "\033[0;35m"
