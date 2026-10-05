@@ -4221,6 +4221,49 @@ func TestOverviewScanRefillsOnlyAvailableSlots(t *testing.T) {
 	}
 }
 
+// countTickMsgs runs cmd and every command it batches, counting the tick
+// loops it would start. Scan commands for missing fixture paths return fast.
+func countTickMsgs(t *testing.T, cmd tea.Cmd) int {
+	t.Helper()
+	if cmd == nil {
+		return 0
+	}
+	switch msg := cmd().(type) {
+	case tickMsg:
+		return 1
+	case tea.BatchMsg:
+		total := 0
+		for _, sub := range msg {
+			total += countTickMsgs(t, sub)
+		}
+		return total
+	default:
+		return 0
+	}
+}
+
+func TestOverviewRefillsKeepOneTickLoop(t *testing.T) {
+	m := model{path: "/", isOverview: true}
+	for i := range maxConcurrentOverview + 4 {
+		m.entries = append(m.entries, dirEntry{Path: fmt.Sprintf("/nonexistent-mole-fixture/%d", i), Size: -1})
+	}
+	t.Cleanup(func() { m.cancelOverviewScans(nil) })
+	if got := countTickMsgs(t, m.scheduleOverviewScans()); got != 1 {
+		t.Fatalf("initial dispatch started %d tick loops, want 1", got)
+	}
+	// Each completion refills one slot. The running loop keeps the spinner
+	// moving, so a refill that also armed a loop would speed it up per row.
+	for i := range 4 {
+		completed := m.entries[i].Path
+		m.entries[i].Size = 1
+		m.overviewScanningSet[completed].cancel()
+		delete(m.overviewScanningSet, completed)
+		if got := countTickMsgs(t, m.scheduleOverviewScans()); got != 0 {
+			t.Fatalf("refill %d started %d extra tick loops", i+1, got)
+		}
+	}
+}
+
 func TestSwitchToOverviewKeepsFullBudgetScanning(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	resetOverviewSnapshotForTest()
@@ -4257,10 +4300,11 @@ func TestGoBackToOverviewRestartsFullBudgetTick(t *testing.T) {
 	m.path = "/fixture/completed"
 	m.status = "Loaded folder"
 	m.scanning = false
-	_, cmd := m.Update(tickMsg{})
+	stopped, cmd := m.Update(tickMsg{})
 	if cmd != nil {
 		t.Fatal("completed drill-down must stop its tick chain")
 	}
+	m = stopped.(model)
 	updated, cmd := m.goBack()
 	got := updated.(model)
 	if cmd == nil || !got.overviewScanning || got.status == "Loaded folder" {
@@ -4373,7 +4417,9 @@ func TestDeleteCancelsOverviewPublicationBeforeInvalidation(t *testing.T) {
 	}
 	m.path, m.isOverview = "/", true
 	m.entries = []dirEntry{{Name: "Project", Path: root, IsDir: true, Size: -1}, {Name: "Applications", Path: sibling, IsDir: true, Size: -1}}
-	newBatch := m.scheduleOverviewScans()().(tea.BatchMsg)
+	// The first dispatch's tick loop is still running, so this refill is the
+	// scan command alone rather than a batch with another tick.
+	newScan := m.scheduleOverviewScans()
 	newPublication := m.overviewScanningSet[root]
 	if newPublication == nil || newPublication == oldPublication {
 		t.Fatal("replacement scan missing")
@@ -4386,7 +4432,7 @@ func TestDeleteCancelsOverviewPublicationBeforeInvalidation(t *testing.T) {
 	if _, ok := m.overviewSizeCache[root]; ok {
 		t.Fatal("old message restored an in-memory size")
 	}
-	fresh := newBatch[0]().(overviewSizeMsg)
+	fresh := newScan().(overviewSizeMsg)
 	updated, _ = m.Update(fresh)
 	m = updated.(model)
 	if fresh.Err != nil || m.overviewSizeCache[root] != 4096 {

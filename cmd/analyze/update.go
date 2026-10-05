@@ -71,7 +71,7 @@ func (m *model) scheduleOverviewScans() tea.Cmd {
 		}
 	}
 
-	cmds = append(cmds, tickCmd())
+	cmds = append(cmds, m.startTick())
 	return tea.Batch(cmds...)
 }
 
@@ -129,6 +129,18 @@ func tickCmd() tea.Cmd {
 	return tea.Tick(uiTickInterval, func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
+}
+
+// startTick arms the animation loop only when none is running. Each loop
+// re-arms itself while work remains, so a second one would double the
+// spinner speed; overview refills start scans one at a time and must not
+// add a loop per completion.
+func (m *model) startTick() tea.Cmd {
+	if m.tickRunning {
+		return nil
+	}
+	m.tickRunning = true
+	return tickCmd()
 }
 
 func (m *model) cancelLiveScan() {
@@ -551,8 +563,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.status = fmt.Sprintf("Moving to Trash... %s items", formatNumber(count))
 				}
 			}
+			m.tickRunning = true
 			return m, tickCmd()
 		}
+		m.tickRunning = false
 		return m, nil
 	default:
 		return m, nil
@@ -1147,7 +1161,7 @@ func (m model) goBack() (tea.Model, tea.Cmd) {
 			cmd := m.scheduleOverviewScans()
 			if cmd == nil && m.overviewScanning {
 				m.status = "Checking system folders..."
-				cmd = tickCmd()
+				cmd = m.startTick()
 			}
 			return m, cmd
 		}
