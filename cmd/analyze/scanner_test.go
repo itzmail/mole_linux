@@ -9,9 +9,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/x/ansi"
 )
@@ -66,7 +68,7 @@ func TestGetDirectorySizeFromDuSkippingImmediateChildDoesNotMeasureExcludedPath(
 	}
 
 	var measured []string
-	size, err := getDirectorySizeFromDuSkippingImmediateChild(context.Background(), base, excluded, func(path string) (int64, error) {
+	size, err := getDirectorySizeFromDuSkippingImmediateChild(context.Background(), base, excluded, nil, func(path string) (int64, error) {
 		measured = append(measured, path)
 		return 100, nil
 	})
@@ -78,6 +80,85 @@ func TestGetDirectorySizeFromDuSkippingImmediateChildDoesNotMeasureExcludedPath(
 	}
 	if len(measured) != 1 || measured[0] != included {
 		t.Fatalf("expected to measure only %s, measured %#v", included, measured)
+	}
+}
+
+func TestGetDirectorySizeFromDuMeasuresUserLibraryPerChild(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	library := filepath.Join(home, "Library")
+	writeFileWithSize(t, filepath.Join(library, "Application Support", "state.dat"), 4096)
+	writeFileWithSize(t, filepath.Join(library, "Caches", "cache.dat"), 8192)
+	writeFileWithSize(t, filepath.Join(library, "Containers", "app", "Mobile Documents", "nested.dat"), 4*1024*1024)
+	writeFileWithSize(t, filepath.Join(library, "Mobile Documents", "cloud.dat"), 4*1024*1024)
+	writeFileWithSize(t, filepath.Join(library, "top.plist"), 100)
+
+	binDir := t.TempDir()
+	operandLog := filepath.Join(binDir, "du-operands")
+	stub := "#!/bin/sh\n" +
+		"for operand; do :; done\n" +
+		"printf '%s\\n' \"$operand\" >> \"$MOLE_TEST_DU_OPERANDS\"\n" +
+		"exec /usr/bin/du \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(binDir, "du"), []byte(stub), 0o755); err != nil {
+		t.Fatalf("write du stub: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("MOLE_TEST_DU_OPERANDS", operandLog)
+
+	size, err := getDirectorySizeFromDuWithExcludeAndIgnores(context.Background(), library, "", overviewIgnoreNamesForPath(library))
+	if err != nil {
+		t.Fatalf("getDirectorySizeFromDuWithExcludeAndIgnores: %v", err)
+	}
+	if size < 4096+8192 {
+		t.Fatalf("expected sibling sizes to be summed, got %d", size)
+	}
+	if size >= 1024*1024 {
+		t.Fatalf("expected both Mobile Documents trees to be ignored, got %d", size)
+	}
+
+	data, err := os.ReadFile(operandLog)
+	if err != nil {
+		t.Fatalf("read du operands: %v", err)
+	}
+	got := strings.Split(strings.TrimSpace(string(data)), "\n")
+	want := []string{
+		filepath.Join(library, "Application Support"),
+		filepath.Join(library, "Caches"),
+		filepath.Join(library, "Containers"),
+	}
+	slices.Sort(got)
+	if !slices.Equal(got, want) {
+		t.Fatalf("expected one du per child directory except Mobile Documents, got %q", got)
+	}
+}
+
+func TestOverviewPerChildDuSharesOnePermitPool(t *testing.T) {
+	base := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(base, "child"), 0o755); err != nil {
+		t.Fatalf("mkdir child: %v", err)
+	}
+
+	for range cap(overviewChildDuSem) {
+		overviewChildDuSem <- struct{}{}
+	}
+	defer func() {
+		for range cap(overviewChildDuSem) {
+			<-overviewChildDuSem
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	var calls atomic.Int64
+	_, err := getDirectorySizeFromDuSkippingImmediateChild(ctx, base, "", nil, func(string) (int64, error) {
+		calls.Add(1)
+		return 100, nil
+	})
+	if calls.Load() != 0 {
+		t.Fatalf("expected no du while the shared pool is exhausted, ran %d", calls.Load())
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected the wait for a shared permit to end with the deadline, got %v", err)
 	}
 }
 

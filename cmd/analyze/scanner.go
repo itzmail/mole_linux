@@ -1061,10 +1061,18 @@ func getDirectorySizeFromDuWithExcludeAndIgnores(ctx context.Context, path strin
 		return kb * 1024, nil
 	}
 
+	// One serial du over ~/Library routinely outlives duTimeout, so measure it
+	// per child like Home. The ignored names must also be skipped as immediate
+	// children: du given an operand matching its own -I prints nothing, which
+	// runDuSize reports as a failure. Deeper matches still go through -I.
+	if excludePath == "" && isUserLibraryPath(path) {
+		return getDirectorySizeFromDuSkippingImmediateChild(ctx, path, "", ignoreNames, runDuSize)
+	}
+
 	// When excluding a path (e.g., ~/Library), subtract only that exact directory instead of ignoring every "Library"
 	if excludePath != "" {
 		if filepath.Dir(filepath.Clean(excludePath)) == filepath.Clean(path) {
-			return getDirectorySizeFromDuSkippingImmediateChild(ctx, path, excludePath, runDuSize)
+			return getDirectorySizeFromDuSkippingImmediateChild(ctx, path, excludePath, nil, runDuSize)
 		}
 
 		totalSize, err := runDuSize(path)
@@ -1134,19 +1142,34 @@ func overviewIgnoreNamesForPath(path string) []string {
 	return ignoreNames
 }
 
-func getDirectorySizeFromDuSkippingImmediateChild(ctx context.Context, path string, excludePath string, runDuSize func(string) (int64, error)) (int64, error) {
-	path = filepath.Clean(path)
-	excludePath = filepath.Clean(excludePath)
+func isUserLibraryPath(path string) bool {
+	home := os.Getenv("HOME")
+	return home != "" && filepath.IsAbs(home) && filepath.Clean(path) == filepath.Join(home, "Library")
+}
 
-	rel, err := filepath.Rel(path, excludePath)
-	if err != nil {
-		return 0, err
-	}
-	if rel == "." || rel == ".." || filepath.IsAbs(rel) || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-		return 0, fmt.Errorf("exclude path is outside base: %s", excludePath)
-	}
-	if strings.Contains(rel, string(os.PathSeparator)) {
-		return 0, fmt.Errorf("exclude path is not an immediate child: %s", excludePath)
+// overviewChildDuSem caps the per-child du processes that every overview
+// measurement shares, so measuring Home and ~/Library together runs no more
+// du processes than Home alone did with its own pool.
+var overviewChildDuSem = make(chan struct{}, min(max(runtime.NumCPU()*2, 2), 8))
+
+// getDirectorySizeFromDuSkippingImmediateChild runs du once per immediate
+// child directory, skipping excludePath (when set) and any immediate child
+// named in skipNames.
+func getDirectorySizeFromDuSkippingImmediateChild(ctx context.Context, path string, excludePath string, skipNames []string, runDuSize func(string) (int64, error)) (int64, error) {
+	path = filepath.Clean(path)
+	if excludePath != "" {
+		excludePath = filepath.Clean(excludePath)
+
+		rel, err := filepath.Rel(path, excludePath)
+		if err != nil {
+			return 0, err
+		}
+		if rel == "." || rel == ".." || filepath.IsAbs(rel) || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+			return 0, fmt.Errorf("exclude path is outside base: %s", excludePath)
+		}
+		if strings.Contains(rel, string(os.PathSeparator)) {
+			return 0, fmt.Errorf("exclude path is not an immediate child: %s", excludePath)
+		}
 	}
 
 	entries, err := os.ReadDir(path)
@@ -1163,16 +1186,18 @@ func getDirectorySizeFromDuSkippingImmediateChild(ctx context.Context, path stri
 	}
 
 	var wg sync.WaitGroup
-	workerCount := min(max(runtime.NumCPU()*2, 2), 8)
-	sem := make(chan struct{}, workerCount)
+	sem := overviewChildDuSem
 
 	for _, entry := range entries {
 		if ctx.Err() != nil {
 			failures.record(ctx.Err())
 			break
 		}
+		if slices.Contains(skipNames, entry.Name()) {
+			continue
+		}
 		fullPath := filepath.Join(path, entry.Name())
-		if filepath.Clean(fullPath) == excludePath {
+		if excludePath != "" && filepath.Clean(fullPath) == excludePath {
 			continue
 		}
 
