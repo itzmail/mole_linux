@@ -663,6 +663,7 @@ EOF
     rm -rf "$HOME/Projects"
 }
 
+<<<<<<< HEAD
 @test "project cache final guard rejects changed Git evidence after sizing" {
     local failures=0
     for route in main fallback python preview; do
@@ -776,6 +777,9 @@ EOF
 }
 
 @test "clean_project_caches batches Git discovery and rechecks each deletion" {
+=======
+@test "clean_project_caches asks Git once per repository" {
+>>>>>>> d929d156 (fix(clean): keep project caches that Git tracks (#1686))
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
@@ -789,6 +793,7 @@ touch "$repo/svc/pyproject.toml"
 git init -q "$repo"
 git -C "$repo" add -f svc/c/__pycache__/m.pyc
 eval "real_$(declare -f mole_git_ls_files)"
+<<<<<<< HEAD
 mole_git_ls_files() { printf '%s\n' "$3|${*: -1}" >> "$HOME/ls-files.calls"; real_mole_git_ls_files "$@"; }
 DRY_RUN=false
 clean_project_caches
@@ -797,6 +802,15 @@ clean_project_caches
 for pkg in a b d e f; do
     [[ ! -e "$repo/svc/$pkg/__pycache__" ]] || exit 13
     grep -Fxq "$repo|:(top,literal,icase)svc/$pkg/__pycache__" "$HOME/ls-files.calls" || exit 14
+=======
+mole_git_ls_files() { printf 'call\n' >> "$HOME/ls-files.calls"; real_mole_git_ls_files "$@"; }
+DRY_RUN=false
+clean_project_caches
+[[ "$(wc -l < "$HOME/ls-files.calls" | tr -d ' ')" == 1 ]] || { cat "$HOME/ls-files.calls"; exit 11; }
+[[ -f "$repo/svc/c/__pycache__/m.pyc" ]] || exit 12
+for pkg in a b d e f; do
+    [[ ! -e "$repo/svc/$pkg/__pycache__" ]] || exit 13
+>>>>>>> d929d156 (fix(clean): keep project caches that Git tracks (#1686))
 done
 EOF
     [ "$status" -eq 0 ] || { echo "$output"; return 1; }
@@ -921,6 +935,7 @@ EOF
     rm -rf "$HOME/Projects" "$HOME/Other"
 }
 
+<<<<<<< HEAD
 @test "clean_project_caches keeps a Flutter build/ that holds a nested repository" {
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
@@ -969,6 +984,8 @@ EOF
     rm -rf "$HOME/Projects"
 }
 
+=======
+>>>>>>> d929d156 (fix(clean): keep project caches that Git tracks (#1686))
 @test "project cache index gives no free pass to a path it never saw" {
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
@@ -987,6 +1004,7 @@ EOF
     [ "$status" -eq 0 ] || { echo "$output"; return 1; }
 }
 
+<<<<<<< HEAD
 @test "clean_project_caches gives every recheck its own bound, so real cleaning matches the preview" {
     local mode cost
     for cost in walk git; do
@@ -1194,6 +1212,8 @@ EOF
     [ "$status" -eq 0 ] || { echo "status $status: $output"; return 1; }
 }
 
+=======
+>>>>>>> d929d156 (fix(clean): keep project caches that Git tracks (#1686))
 @test "clean_project_caches scans configured roots instead of HOME" {
     mkdir -p "$HOME/.config/mole"
     mkdir -p "$HOME/CustomProjects/app/.next/cache"

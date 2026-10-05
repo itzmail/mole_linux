@@ -485,8 +485,13 @@ _project_cache_path_is_ascii() {
 }
 
 # Build the index for every candidate a matches file will reach. All Git
+<<<<<<< HEAD
 # listings share the deadline given; a repository that cannot be listed in
 # time, or whose listing fails, marks its candidates unknown. Signals propagate.
+=======
+# listings share one deadline; a repository that cannot be listed in time, or
+# whose listing fails, marks its candidates unknown. Signals propagate.
+>>>>>>> d929d156 (fix(clean): keep project caches that Git tracks (#1686))
 project_cache_build_git_index() {
     local matches_file="$1"
     local index_file="$2"
@@ -562,10 +567,13 @@ project_cache_build_git_index() {
                     if [[ -d "$candidate" && ! -L "$candidate" ]]; then
                         probe_rc=0
                         mole_path_has_git_tracked_files "$candidate" "$deadline" || probe_rc=$?
+<<<<<<< HEAD
                         if [[ $probe_rc -gt 128 ]]; then
                             rm -rf "$work_dir" # SAFE: exact mktemp-created project cache index scratch directory
                             return "$probe_rc"
                         fi
+=======
+>>>>>>> d929d156 (fix(clean): keep project caches that Git tracks (#1686))
                     fi
                     case "$probe_rc" in
                         0) printf 'T%s\n' "$candidate" >> "$index_file" ;;
@@ -599,6 +607,7 @@ project_cache_build_git_index() {
             return 0
         fi
         # A candidate is tracked when a listed path equals it or lies below it.
+<<<<<<< HEAD
         # Case is folded on both sides: the disk may keep a folder's old
         # spelling after a case-only rename while the index keeps the one Git
         # saw, and a case-sensitive volume can only over-keep. Two candidates
@@ -608,6 +617,12 @@ project_cache_build_git_index() {
             FNR == NR { want[tolower($1)] = $2; next }
             {
                 n = split(tolower($0), part, "/")
+=======
+        tr '\0' '\n' < "$listing_file" | awk -F '\t' '
+            FNR == NR { want[$1] = $2; next }
+            {
+                n = split($0, part, "/")
+>>>>>>> d929d156 (fix(clean): keep project caches that Git tracks (#1686))
                 prefix = ""
                 for (i = 1; i <= n; i++) {
                     prefix = (i == 1) ? part[1] : prefix "/" part[i]
@@ -650,6 +665,7 @@ project_cache_git_status() {
     return 2
 }
 
+<<<<<<< HEAD
 # build/ counts as Flutter output by convention only, and a repository inside
 # it (a plugin checkout, a vendored package) is authored work the outer Git
 # listing never sees. 0 keeps the folder, 1 clears it, a signal propagates;
@@ -672,11 +688,16 @@ _project_cache_holds_nested_repo() {
     return 0
 }
 
+=======
+>>>>>>> d929d156 (fix(clean): keep project caches that Git tracks (#1686))
 project_cache_has_tracked_files() {
     local cache_path="$1"
     local tracked_rc=0
     project_cache_git_status "$cache_path" || tracked_rc=$?
+<<<<<<< HEAD
     [[ $tracked_rc -le 128 ]] || return "$tracked_rc"
+=======
+>>>>>>> d929d156 (fix(clean): keep project caches that Git tracks (#1686))
     [[ $tracked_rc -eq 1 ]] && return 1
     local reason="tracked by git"
     [[ $tracked_rc -eq 0 ]] || reason="git status unknown"
@@ -685,6 +706,7 @@ project_cache_has_tracked_files() {
     return 0
 }
 
+<<<<<<< HEAD
 # Discovery's repository index is only a filter, never deletion authority.
 # Re-read literal Git ancestry and nested repositories after sizing and at
 # safe_remove's final boundary. Files under .next/cache need the same check.
@@ -735,6 +757,8 @@ _project_cache_final_guard() {
     _MOLE_SAFE_CLEAN_EXPECTED_TARGET_ID="$target_id"
 }
 
+=======
+>>>>>>> d929d156 (fix(clean): keep project caches that Git tracks (#1686))
 clean_project_cache_target() {
     if [[ $# -lt 2 ]]; then
         return 0
@@ -745,11 +769,16 @@ clean_project_cache_target() {
     local target_path=""
     for target_path in "${@:1:$#-1}"; do
         # Files count too: .next/cache hands over each child, directory or not.
+<<<<<<< HEAD
         if [[ -e "$target_path" || -L "$target_path" ]]; then
             local tracked_rc=0
             project_cache_has_tracked_files "$target_path" || tracked_rc=$?
             [[ $tracked_rc -le 128 ]] || return "$tracked_rc"
             [[ $tracked_rc -ne 0 ]] || continue
+=======
+        if [[ -e "$target_path" || -L "$target_path" ]] && project_cache_has_tracked_files "$target_path"; then
+            continue
+>>>>>>> d929d156 (fix(clean): keep project caches that Git tracks (#1686))
         fi
         target_paths+=("$target_path")
     done
@@ -802,10 +831,15 @@ process_project_cache_matches() {
     local _project_cache_git_index=""
     local index_file="" index_rc=0
     index_file=$(create_temp_file) || return 0
+<<<<<<< HEAD
     # A fresh budget for each root: time spent cleaning an earlier root must not
     # leave this one's listings with none.
     project_cache_build_git_index "$matches_file" "$index_file" \
         "$((SECONDS + MOLE_TIMEOUT_HINT_SCAN_SEC))" || index_rc=$?
+=======
+    project_cache_build_git_index "$matches_file" "$index_file" \
+        "${_project_cache_git_deadline:-$((SECONDS + MOLE_TIMEOUT_HINT_SCAN_SEC))}" || index_rc=$?
+>>>>>>> d929d156 (fix(clean): keep project caches that Git tracks (#1686))
     if [[ $index_rc -ne 0 ]]; then
         rm -f "$index_file" # SAFE: exact scratch file created by create_temp_file above
         [[ $index_rc -gt 128 ]] && return "$index_rc"
@@ -853,6 +887,7 @@ _process_project_cache_matches_indexed() {
                 current_python_root=""
                 current_python_dirs=()
                 if [[ -d "$cache_dir" ]]; then
+<<<<<<< HEAD
                     # build/ counts as Flutter output only beside a .dart_tool,
                     # so one that Git tracks or cannot answer for leaves it
                     # alone. A .dart_tool kept for another reason (a whitelist
@@ -862,6 +897,11 @@ _process_project_cache_matches_indexed() {
                     project_cache_has_tracked_files "$cache_dir" || tracked_rc=$?
                     [[ $tracked_rc -le 128 ]] || return "$tracked_rc"
                     [[ $tracked_rc -ne 0 ]] || continue
+=======
+                    # build/ counts as Flutter output only beside a disposable
+                    # .dart_tool; a kept one leaves no evidence for it.
+                    project_cache_has_tracked_files "$cache_dir" && continue
+>>>>>>> d929d156 (fix(clean): keep project caches that Git tracks (#1686))
                     clean_project_cache_target "$cache_dir" "Flutter build cache (.dart_tool)" || return $?
                     local build_dir="$(dirname "$cache_dir")/build"
                     if [[ -d "$build_dir" ]]; then
@@ -915,10 +955,14 @@ clean_python_bytecode_cache_group() {
             continue
         fi
 
+<<<<<<< HEAD
         local tracked_rc=0
         project_cache_has_tracked_files "$cache_dir" || tracked_rc=$?
         [[ $tracked_rc -le 128 ]] || return "$tracked_rc"
         [[ $tracked_rc -ne 0 ]] || continue
+=======
+        project_cache_has_tracked_files "$cache_dir" && continue
+>>>>>>> d929d156 (fix(clean): keep project caches that Git tracks (#1686))
 
         local size_kb=""
         local size_rc=0
@@ -1154,6 +1198,8 @@ clean_project_caches() {
         fi
     done
 
+    # One Git budget for every root's tracked-file index.
+    local _project_cache_git_deadline=$((SECONDS + MOLE_TIMEOUT_HINT_SCAN_SEC))
     for ((scan_index = 0; scan_index < ${#root_matches_files[@]}; scan_index++)); do
         root_matches_file="${root_matches_files[$scan_index]}"
         local scan_rc="${scan_statuses[$scan_index]:-1}"
