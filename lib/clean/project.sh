@@ -602,7 +602,7 @@ scan_purge_targets() {
     # root completes. Keep the caller-visible file empty until that point so a
     # timeout or read failure cannot turn a partial prefix into delete candidates.
     : > "$output_file"
-    rm -f "$target_output" "$tag_output" "$processed_output" "$error_output" "$verified_output" 2> /dev/null || true
+    rm -f "$target_output" "$tag_output" "$processed_output" "$error_output" "$verified_output" "${verified_output}.probes" 2> /dev/null || true
 
     local cachedir_tag_min_depth=$((min_depth + 1))
     local cachedir_tag_max_depth=$((max_depth + 1))
@@ -659,10 +659,10 @@ scan_purge_targets() {
                             echo "$project_dir" > "$stats_dir/purge_scanning" 2> /dev/null || true
                         fi
                     done
-                ) | filter_protected_artifacts "$deadline" "$verified_output" > "$processed_output" || process_status=$?
+                ) | filter_protected_artifacts "$deadline" "$verified_output" "$stats_dir/purge_scanning" > "$processed_output" || process_status=$?
 
             if [[ $process_status -ne 0 ]]; then
-                rm -f "$processed_output" "$verified_output" 2> /dev/null || true
+                rm -f "$processed_output" "$verified_output" "${verified_output}.probes" 2> /dev/null || true
                 return "$process_status"
             fi
             if ! mv "$processed_output" "$output_file"; then
@@ -880,28 +880,104 @@ filter_nested_artifacts() {
 }
 
 # Optional $2 collects the candidates this probe verified clean, so the review
-# step can skip walking them a second time within the same run.
+# step can skip walking them a second time within the same run. Optional $3 is
+# the scan sentinel; the filter stops with 130 once it has been removed.
+# Probes run in a bounded pool, but results stay bound to each item's input
+# position and are published in input order only after every probe finished.
 filter_protected_artifacts() {
     local deadline="${1:-}"
     local verified_file="${2:-}"
-    local protected_rc
+    local cancel_file="${3:-}"
+    local results=""
+    if [[ -n "$verified_file" ]]; then
+        results="${verified_file}.probes"
+        : > "$results" 2> /dev/null || true
+    else
+        results=$(mktemp_file "mole-purge-probes") || return 1
+    fi
+
+    local max_probe_jobs
+    max_probe_jobs=$(get_optimal_parallel_jobs io)
+    if ! [[ "$max_probe_jobs" =~ ^[0-9]+$ ]] || [[ "$max_probe_jobs" -lt 1 ]]; then
+        max_probe_jobs=1
+    elif [[ "$max_probe_jobs" -gt 4 ]]; then
+        max_probe_jobs=4
+    fi
+
+    local -a items=() probe_pids=()
+    local item item_index probe_pid done_pid probe_slot wait_status stop_status=0
     while IFS= read -r item; do
         if [[ "$deadline" =~ ^[0-9]+$ && $SECONDS -ge $deadline ]]; then
-            return 124
+            stop_status=124
+            break
         fi
-        # An unfinished probe is not evidence either way. Keep the candidate
-        # visible; the in-process recheck before the menu reports it.
-        protected_rc=0
-        is_protected_purge_artifact "$item" "$deadline" || protected_rc=$?
-        # The last probe can consume the remaining budget too. Never publish
-        # that root's prefix as complete, even when there is no next item.
-        if [[ "$deadline" =~ ^[0-9]+$ && $SECONDS -ge $deadline ]]; then
-            return 124
+        if [[ -n "$cancel_file" && ! -f "$cancel_file" ]]; then
+            stop_status=130
+            break
         fi
-        if [[ $protected_rc -ne 0 || "$PURGE_PROTECTION_UNVERIFIED" == "true" ]]; then
+        items+=("$item")
+        item_index=$((${#items[@]} - 1))
+        (
+            probe_rc=0
+            is_protected_purge_artifact "$item" "$deadline" || probe_rc=$?
+            printf '%s %s %s\n' "$item_index" "$probe_rc" "$PURGE_PROTECTION_UNVERIFIED" >> "$results"
+        ) < /dev/null &
+        probe_pids+=("$!")
+        if [[ ${#probe_pids[@]} -ge $max_probe_jobs ]]; then
+            wait_status=0
+            mole_wait_for_any_worker done_pid "${probe_pids[@]}" || wait_status=$?
+            if [[ $wait_status -ge 128 ]]; then
+                stop_status=$wait_status
+                break
+            fi
+            for probe_slot in "${!probe_pids[@]}"; do
+                if [[ "${probe_pids[$probe_slot]}" == "$done_pid" ]]; then
+                    unset 'probe_pids[probe_slot]'
+                    break
+                fi
+            done
+        fi
+    done
+    if [[ $stop_status -ne 0 ]]; then
+        for probe_pid in "${probe_pids[@]+"${probe_pids[@]}"}"; do
+            kill "$probe_pid" 2> /dev/null || true
+        done
+    fi
+    for probe_pid in "${probe_pids[@]+"${probe_pids[@]}"}"; do
+        wait "$probe_pid" 2> /dev/null || true
+    done
+    # The last probe can consume the remaining budget too. Never publish
+    # that root's prefix as complete, even when there is no next item.
+    if [[ $stop_status -eq 0 && "$deadline" =~ ^[0-9]+$ && $SECONDS -ge $deadline ]]; then
+        stop_status=124
+    fi
+    if [[ $stop_status -ne 0 ]]; then
+        rm -f "$results" 2> /dev/null || true # SAFE: exact probe result scratch file owned by this filter
+        return "$stop_status"
+    fi
+
+    local -a probe_rcs=() probe_unverified=()
+    local record_index record_rc record_unverified record_extra
+    if [[ -r "$results" ]]; then
+        while read -r record_index record_rc record_unverified record_extra; do
+            [[ "$record_index" =~ ^[0-9]+$ && "$record_rc" =~ ^[0-9]+$ && -z "$record_extra" ]] || continue
+            [[ "$record_unverified" == "true" || "$record_unverified" == "false" ]] || continue
+            probe_rcs[record_index]="$record_rc"
+            probe_unverified[record_index]="$record_unverified"
+        done < "$results"
+    fi
+    rm -f "$results" 2> /dev/null || true # SAFE: exact probe result scratch file owned by this filter
+
+    for ((item_index = 0; item_index < ${#items[@]}; item_index++)); do
+        item="${items[$item_index]}"
+        record_rc="${probe_rcs[$item_index]:-}"
+        # An unfinished probe or a missing record is not evidence either way.
+        # Keep the candidate visible; the in-process recheck before the menu
+        # reports it.
+        if [[ -z "$record_rc" || "$record_rc" != "0" || "${probe_unverified[$item_index]:-true}" == "true" ]]; then
             echo "$item"
         fi
-        if [[ -n "$verified_file" && $protected_rc -ne 0 ]]; then
+        if [[ -n "$verified_file" && -n "$record_rc" && "$record_rc" != "0" ]]; then
             # A lost record only costs the review a second walk.
             printf '%s\n' "$item" >> "$verified_file" 2> /dev/null || true
         fi
@@ -910,11 +986,13 @@ filter_protected_artifacts() {
 # Args: $1 - path, $2 - optional current epoch
 # Classify artifact activity as recent, old, or uncertain. Only a complete
 # bounded scan may return old; timeouts and read failures fail closed.
+# _PURGE_ACTIVITY_MTIME keeps the artifact mtime it read, for the age label.
 classify_purge_activity() {
     local path="$1"
     local current_time="${2:-}"
     local age_days=$MIN_AGE_DAYS
     _PURGE_ACTIVITY_STATE="uncertain"
+    _PURGE_ACTIVITY_MTIME=""
 
     if [[ ! -e "$path" ]]; then
         _PURGE_ACTIVITY_STATE="old"
@@ -927,6 +1005,7 @@ classify_purge_activity() {
         debug_log "Unable to read purge activity timestamp: $path"
         return 0
     fi
+    _PURGE_ACTIVITY_MTIME="$mod_time"
     if [[ -z "$current_time" || ! "$current_time" =~ ^[0-9]+$ ]]; then
         current_time=$(get_epoch_seconds)
     fi
@@ -1729,6 +1808,7 @@ clean_project_artifacts() {
     local -a uninspected_paths=()
     local -a safe_recent_flags=()
     local -a safe_activity_states=()
+    local -a safe_activity_mtimes=()
     local -a safe_expected_parents=()
     local -a safe_expected_parent_ids=()
     local -a safe_expected_target_ids=()
@@ -1756,7 +1836,8 @@ clean_project_artifacts() {
         scan_pids=()
         # Clean up temp files
         for temp in "${scan_temps[@]+"${scan_temps[@]}"}"; do
-            rm -f "$temp" "${temp}.targets" "${temp}.tags" "${temp}.processed" "${temp}.errors" "${temp}.verified" 2> /dev/null || true
+            rm -f "$temp" "${temp}.targets" "${temp}.tags" "${temp}.processed" "${temp}.errors" "${temp}.verified" \
+                "${temp}.verified.probes" 2> /dev/null || true
         done
         # Clean up purge scanning file
         local stats_dir="${XDG_CACHE_HOME:-$HOME/.cache}/mole"
@@ -1906,7 +1987,7 @@ clean_project_artifacts() {
         for interrupted_temp in "${scan_temps[@]+"${scan_temps[@]}"}"; do
             rm -f "$interrupted_temp" "${interrupted_temp}.targets" \
                 "${interrupted_temp}.tags" "${interrupted_temp}.processed" "${interrupted_temp}.errors" \
-                "${interrupted_temp}.verified" 2> /dev/null || true
+                "${interrupted_temp}.verified" "${interrupted_temp}.verified.probes" 2> /dev/null || true
         done
         _restore_purge_scan_traps
         if [[ -t 1 ]]; then
@@ -1981,7 +2062,7 @@ clean_project_artifacts() {
             debug_log "Purge scan incomplete (status $scan_status): ${scan_roots[$scan_index]:-unknown root}"
         fi
         rm -f "$scan_output" "${scan_output}.targets" "${scan_output}.tags" "${scan_output}.processed" "${scan_output}.errors" \
-            "${scan_output}.verified" 2> /dev/null || true
+            "${scan_output}.verified" "${scan_output}.verified.probes" 2> /dev/null || true
     done
     if [[ -s "$dedupe_output" ]]; then
         while IFS= read -r item; do
@@ -2061,25 +2142,8 @@ clean_project_artifacts() {
         local candidate_physical_path="${candidate_parent%/}/${item##*/}"
         [[ "$candidate_parent" == "/" ]] && candidate_physical_path="/${item##*/}"
         local candidate_scan_root_index=-1
+        # Root identities are rechecked once per root after this loop.
         for root_index in "${candidate_root_indexes[@]}"; do
-            if ! _mole_path_matches_identity \
-                "${scan_roots[$root_index]}" \
-                "${scan_root_parents[$root_index]}" \
-                "${scan_root_parent_ids[$root_index]}" \
-                "${scan_root_target_ids[$root_index]}"; then
-                continue
-            fi
-            if ! _mole_path_matches_identity \
-                "${scan_root_physical_paths[$root_index]}" \
-                "${scan_root_physical_parents[$root_index]}" \
-                "${scan_root_physical_parent_ids[$root_index]}" \
-                "${scan_root_physical_target_ids[$root_index]}"; then
-                continue
-            fi
-            if ! _mole_path_matches_identity \
-                "$item" "$candidate_parent" "$candidate_parent_id" "$candidate_target_id"; then
-                continue
-            fi
             if ! is_safe_project_artifact_under_root \
                 "$candidate_physical_path" "${scan_root_physical_paths[$root_index]}"; then
                 continue
@@ -2110,6 +2174,46 @@ clean_project_artifacts() {
     done
     if [[ -t 1 ]]; then
         stop_inline_spinner
+    fi
+    # Recheck each bound scan root once, after binding, and drop every
+    # candidate of a root that changed. Deletion still rechecks the root and
+    # the candidate identity at the final sink.
+    if [[ ${#safe_to_clean[@]} -gt 0 ]]; then
+        local -a bound_root_states=()
+        local -a kept_items=() kept_parents=() kept_parent_ids=() kept_target_ids=() kept_root_indexes=()
+        local bound_index
+        for ((bound_index = 0; bound_index < ${#safe_to_clean[@]}; bound_index++)); do
+            root_index="${safe_scan_root_indexes[$bound_index]}"
+            if [[ -z "${bound_root_states[$root_index]:-}" ]]; then
+                bound_root_states[root_index]=changed
+                if _mole_path_matches_identity \
+                    "${scan_roots[$root_index]}" \
+                    "${scan_root_parents[$root_index]}" \
+                    "${scan_root_parent_ids[$root_index]}" \
+                    "${scan_root_target_ids[$root_index]}" &&
+                    _mole_path_matches_identity \
+                        "${scan_root_physical_paths[$root_index]}" \
+                        "${scan_root_physical_parents[$root_index]}" \
+                        "${scan_root_physical_parent_ids[$root_index]}" \
+                        "${scan_root_physical_target_ids[$root_index]}"; then
+                    bound_root_states[root_index]=same
+                fi
+            fi
+            if [[ "${bound_root_states[$root_index]}" != "same" ]]; then
+                debug_log "Skipping purge target whose scan identity changed: ${safe_to_clean[$bound_index]}"
+                continue
+            fi
+            kept_items+=("${safe_to_clean[$bound_index]}")
+            kept_parents+=("${safe_expected_parents[$bound_index]}")
+            kept_parent_ids+=("${safe_expected_parent_ids[$bound_index]}")
+            kept_target_ids+=("${safe_expected_target_ids[$bound_index]}")
+            kept_root_indexes+=("$root_index")
+        done
+        safe_to_clean=("${kept_items[@]+"${kept_items[@]}"}")
+        safe_expected_parents=("${kept_parents[@]+"${kept_parents[@]}"}")
+        safe_expected_parent_ids=("${kept_parent_ids[@]+"${kept_parent_ids[@]}"}")
+        safe_expected_target_ids=("${kept_target_ids[@]+"${kept_target_ids[@]}"}")
+        safe_scan_root_indexes=("${kept_root_indexes[@]+"${kept_root_indexes[@]}"}")
     fi
     for item in "${uninspected_paths[@]+"${uninspected_paths[@]}"}"; do
         echo -e "${YELLOW}${ICON_WARNING}${NC} Could not inspect ${item/#$HOME/~}; kept" >&2
@@ -2187,10 +2291,11 @@ clean_project_artifacts() {
         _activity_tmpfiles+=("$activity_temp")
         (
             _PURGE_ACTIVITY_STATE="uncertain"
+            _PURGE_ACTIVITY_MTIME=""
             activity_status=0
             is_recently_modified "$item" "$_now_epoch" || activity_status=$?
             [[ $activity_status -lt 128 ]] || exit "$activity_status"
-            printf '%s %s\n' "$activity_status" "${_PURGE_ACTIVITY_STATE:-uncertain}" > "$activity_temp" || exit 1
+            printf '%s %s %s\n' "$activity_status" "${_PURGE_ACTIVITY_STATE:-uncertain}" "${_PURGE_ACTIVITY_MTIME:--}" > "$activity_temp" || exit 1
             exit 0
         ) < /dev/null &
         _activity_pids+=("$!")
@@ -2219,12 +2324,12 @@ clean_project_artifacts() {
     fi
     local activity_index=0
     for activity_temp in "${_activity_tmpfiles[@]}"; do
-        local is_recent=true activity_status="" activity_state="uncertain" activity_extra=""
+        local is_recent=true activity_status="" activity_state="uncertain" activity_mtime="" activity_extra=""
         # Only a complete record from a successful worker can preselect a row.
         # A truncated first field must never turn unknown evidence into old.
         if [[ "${_activity_worker_statuses[$activity_index]:-1}" == "0" ]] &&
-            read -r activity_status activity_state activity_extra < "$activity_temp" &&
-            [[ -z "$activity_extra" ]]; then
+            read -r activity_status activity_state activity_mtime activity_extra < "$activity_temp" &&
+            [[ -n "$activity_mtime" && -z "$activity_extra" ]]; then
             if [[ "$activity_status" == "1" && "$activity_state" == "old" ]]; then
                 is_recent=false
             elif [[ "$activity_status" != "0" || "$activity_state" != "recent" ]]; then
@@ -2232,12 +2337,14 @@ clean_project_artifacts() {
             fi
         else
             activity_state="uncertain"
+            activity_mtime=""
         fi
-        rm -f "$activity_temp" # SAFE: exact registered mktemp activity result file
         activity_index=$((activity_index + 1))
         safe_recent_flags+=("$is_recent")
         safe_activity_states+=("$activity_state")
+        safe_activity_mtimes+=("$activity_mtime")
     done
+    rm -f "${_activity_tmpfiles[@]+"${_activity_tmpfiles[@]}"}" 2> /dev/null || true # SAFE: exact registered mktemp activity result files
     if [[ -t 1 ]]; then
         stop_inline_spinner
     fi
@@ -2409,9 +2516,20 @@ clean_project_artifacts() {
         local project_root="${project_roots[$item_index]}"
         local project_path="${project_root/#$HOME/~}"
         local artifact_type="${item#"$project_root/"}"
-        local size_raw
-        size_raw=$(cat "${_size_tmpfiles[$item_index]}" 2> /dev/null || echo "0")
-        rm -f "${_size_tmpfiles[$item_index]}" 2> /dev/null || true
+        # Builtin reads keep the old cat mapping: an unreadable result is 0,
+        # an empty one or a second line is invalid. The files are removed
+        # together after this loop.
+        local size_raw="0" size_extra=""
+        if [[ -r "${_size_tmpfiles[$item_index]}" ]]; then
+            size_raw=""
+            if ! {
+                IFS= read -r size_raw || true
+                IFS= read -r size_extra || true
+            } < "${_size_tmpfiles[$item_index]}" 2> /dev/null; then
+                size_raw="0"
+            fi
+            [[ -z "$size_extra" ]] || size_raw="$size_raw"$'\n'"$size_extra"
+        fi
         _sz_idx=$((_sz_idx + 1))
         local size_kb=0
         local size_human=""
@@ -2461,8 +2579,9 @@ clean_project_artifacts() {
         item_expected_target_ids+=("${safe_expected_target_ids[$item_index]}")
         item_scan_root_indexes+=("${safe_scan_root_indexes[$item_index]}")
         # Build human-readable age label (bash 3.2 compatible, no assoc arrays).
-        local _mod_time _age_secs _age_d
-        _mod_time=$(get_file_mtime "$item" 2> /dev/null || echo "0")
+        # Reuse the mtime the activity worker already read for this row.
+        local _mod_time="${safe_activity_mtimes[$item_index]:-}" _age_secs _age_d
+        [[ "$_mod_time" =~ ^[0-9]+$ ]] || _mod_time=$(get_file_mtime "$item" 2> /dev/null || echo "0")
         _age_secs=$((_now_epoch - _mod_time))
         _age_d=$((_age_secs / 86400))
         if [[ "$activity_state" == "uncertain" ]]; then
@@ -2479,6 +2598,7 @@ clean_project_artifacts() {
             item_age_labels+=("$((_age_d / 365))y")
         fi
     done
+    rm -f "${_size_tmpfiles[@]+"${_size_tmpfiles[@]}"}" 2> /dev/null || true # SAFE: exact registered mktemp size result files
 
     # Keep every exact project together. Project groups are ordered by their
     # aggregate known size, then artifacts within each group by item size. Only

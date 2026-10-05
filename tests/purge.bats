@@ -43,6 +43,7 @@ safe_remove() { printf 'SELECTED:%s\n' "$1"; }
 is_recently_modified() { _PURGE_ACTIVITY_STATE=old; return 1; }
 printf() {
 <<<<<<< HEAD
+<<<<<<< HEAD
     if [[ "$1" == '%s %s %s\n' && "${item:-}" == *a-bad* ]]; then
         case "$RESULT_MODE" in
             truncated) builtin printf '1' ;;
@@ -58,6 +59,15 @@ printf() {
             failed-worker) builtin printf '1 old\n'; exit 7 ;;
             failed-write) builtin printf '1 old\n'; return 7 ;;
 >>>>>>> f3b6ea5b (fix(purge): bound parallel activity classification safely)
+=======
+    if [[ "$1" == '%s %s %s\n' && "${item:-}" == *a-bad* ]]; then
+        case "$RESULT_MODE" in
+            truncated) builtin printf '1' ;;
+            missing-field) builtin printf '1 \n' ;;
+            missing-mtime) builtin printf '1 old\n' ;;
+            failed-worker) builtin printf '1 old 1700000000\n'; exit 7 ;;
+            failed-write) builtin printf '1 old 1700000000\n'; return 7 ;;
+>>>>>>> 934ffae5 (perf(purge): pool discovery probes and bind candidates once per root)
         esac
     else
         builtin printf "$@"
@@ -3838,12 +3848,18 @@ EOF_REPEAT_TERM
 }
 
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> 934ffae5 (perf(purge): pool discovery probes and bind candidates once per root)
 @test "activity batch retains a worker result missing its mtime" {
     assert_activity_result_fails_closed missing-mtime
 }
 
+<<<<<<< HEAD
 =======
 >>>>>>> f3b6ea5b (fix(purge): bound parallel activity classification safely)
+=======
+>>>>>>> 934ffae5 (perf(purge): pool discovery probes and bind candidates once per root)
 @test "activity batch retains a result from an unsuccessful worker" {
     assert_activity_result_fails_closed failed-worker
 }
@@ -3933,10 +3949,14 @@ is_recently_modified() {
 }
 printf() {
 <<<<<<< HEAD
+<<<<<<< HEAD
     [[ "$1" != '%s %s %s\n' ]] || return 7
 =======
     [[ "$1" != '%s %s\n' ]] || return 7
 >>>>>>> f3b6ea5b (fix(purge): bound parallel activity classification safely)
+=======
+    [[ "$1" != '%s %s %s\n' ]] || return 7
+>>>>>>> 934ffae5 (perf(purge): pool discovery probes and bind candidates once per root)
     builtin printf "$@"
 }
 export MOLE_DRY_RUN=1
@@ -4034,12 +4054,17 @@ is_recently_modified() {
 }
 printf() {
 <<<<<<< HEAD
+<<<<<<< HEAD
     if [[ "$1" == '%s %s %s\n' && "${item:-}" == */b-failed/node_modules ]]; then
         builtin printf '1 old 1700000000\n'
 =======
     if [[ "$1" == '%s %s\n' && "${item:-}" == */b-failed/node_modules ]]; then
         builtin printf '1 old\n'
 >>>>>>> b19a7d2d (fix(purge): refill activity workers while preserving cancellation)
+=======
+    if [[ "$1" == '%s %s %s\n' && "${item:-}" == */b-failed/node_modules ]]; then
+        builtin printf '1 old 1700000000\n'
+>>>>>>> 934ffae5 (perf(purge): pool discovery probes and bind candidates once per root)
         exit 7
     fi
     builtin printf "$@"
@@ -4059,6 +4084,9 @@ EOF_INDEX
     [[ "$output" != *"SELECTED:$fixture/www/e-error/node_modules"* ]] || return 1
 }
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> 934ffae5 (perf(purge): pool discovery probes and bind candidates once per root)
 
 @test "purge menu rows reuse the activity mtime and batch scratch removal" {
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF_ROWS'
@@ -4271,7 +4299,10 @@ is_protected_purge_artifact() {
     PURGE_PROTECTION_UNVERIFIED=false
     return 1
 }
+<<<<<<< HEAD
 
+=======
+>>>>>>> 934ffae5 (perf(purge): pool discovery probes and bind candidates once per root)
 : > "$fixture/scanning"
 result=0
 {
@@ -4287,6 +4318,7 @@ EOF_CANCEL
     [ "$status" -eq 0 ] || { echo "$output"; return 1; }
     [[ "$output" == *"STATUS=130"* ]] || { echo "$output"; return 1; }
 }
+<<<<<<< HEAD
 
 @test "purge content probes never run more than four at a time and keep input order past the pool" {
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF_WIDE'
@@ -5062,3 +5094,5 @@ EOF
 >>>>>>> f3b6ea5b (fix(purge): bound parallel activity classification safely)
 =======
 >>>>>>> b19a7d2d (fix(purge): refill activity workers while preserving cancellation)
+=======
+>>>>>>> 934ffae5 (perf(purge): pool discovery probes and bind candidates once per root)
