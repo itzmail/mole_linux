@@ -398,7 +398,7 @@ func (c *Collector) collectFast(includeProcesses bool) (MetricsSnapshot, error) 
 
 	mergeErr := collectConcurrently(tasks...)
 
-	snapshot := c.snapshotFromMetrics(now, hostInfo, collected, false)
+	snapshot := c.snapshotFromMetrics(now, hostInfo, collected)
 	c.applyEnrichment(&snapshot, collected.hasProcesses)
 	if collected.hasProcesses {
 		c.cacheProcessEnrichment(snapshot)
@@ -498,9 +498,25 @@ func (c *Collector) collectFull() (MetricsSnapshot, error) {
 		},
 		func() error { return collectProcessesInto(&collected) },
 	}
+	// Hardware info is expensive and rarely changes, so refresh it every 10
+	// minutes. Its subprocesses join the burst instead of running after it.
+	var hwStatic HardwareInfo
+	hwDone := false
+	if !c.hasStatic || now.Sub(c.lastHWAt) > 10*time.Minute {
+		tasks = append(tasks, func() error {
+			hwStatic = collectHardwareStatic()
+			hwDone = true
+			return nil
+		})
+	}
 	mergeErr := collectConcurrently(tasks...)
+	if hwDone {
+		c.cachedHW = finishHardware(hwStatic, collected.memStats.Total, collected.diskStats)
+		c.lastHWAt = now
+		c.hasStatic = true
+	}
 
-	snapshot := c.snapshotFromMetrics(now, hostInfo, collected, true)
+	snapshot := c.snapshotFromMetrics(now, hostInfo, collected)
 	next.hardware = snapshot.Hardware
 	c.enrichment = next
 	c.hasEnrichment = true
@@ -522,14 +538,7 @@ func collectProcessesInto(collected *collectedMetrics) error {
 	return nil
 }
 
-func (c *Collector) snapshotFromMetrics(now time.Time, hostInfo *host.InfoStat, collected collectedMetrics, refreshHardware bool) MetricsSnapshot {
-	// Dependent tasks (post-collect).
-	// Cache hardware info as it's expensive and rarely changes.
-	if refreshHardware && (!c.hasStatic || now.Sub(c.lastHWAt) > 10*time.Minute) {
-		c.cachedHW = collectHardware(collected.memStats.Total, collected.diskStats)
-		c.lastHWAt = now
-		c.hasStatic = true
-	}
+func (c *Collector) snapshotFromMetrics(now time.Time, hostInfo *host.InfoStat, collected collectedMetrics) MetricsSnapshot {
 	hwInfo := c.hardwareForSnapshot()
 
 	score, scoreMsg := calculateHealthScore(
