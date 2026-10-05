@@ -9,7 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -83,7 +83,7 @@ func TestGetDirectorySizeFromDuSkippingImmediateChildDoesNotMeasureExcludedPath(
 	}
 }
 
-func TestGetDirectorySizeFromDuMeasuresUserLibraryPerChild(t *testing.T) {
+func TestGetDirectorySizeFromDuMeasuresUserLibraryInOneTraversal(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	library := filepath.Join(home, "Library")
@@ -121,14 +121,8 @@ func TestGetDirectorySizeFromDuMeasuresUserLibraryPerChild(t *testing.T) {
 		t.Fatalf("read du operands: %v", err)
 	}
 	got := strings.Split(strings.TrimSpace(string(data)), "\n")
-	want := []string{
-		filepath.Join(library, "Application Support"),
-		filepath.Join(library, "Caches"),
-		filepath.Join(library, "Containers"),
-	}
-	slices.Sort(got)
-	if !slices.Equal(got, want) {
-		t.Fatalf("expected one du per child directory except Mobile Documents, got %q", got)
+	if len(got) != 1 || got[0] != library {
+		t.Fatalf("expected one Library traversal for shared hardlink accounting, got %q", got)
 	}
 }
 
@@ -435,5 +429,36 @@ func TestOverviewMeasurementStoresDenialOnlyPartial(t *testing.T) {
 	_, err = measureOverviewSize(ctx, root)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancellation lost: %v", err)
+	}
+}
+
+func TestUserLibraryOverviewDeduplicatesHardlinks(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	library := filepath.Join(home, "Library")
+	original := filepath.Join(library, "Application Support", "payload")
+	writeFileWithSize(t, original, 1024*1024)
+	for _, link := range []string{filepath.Join(library, "Caches", "payload"), filepath.Join(library, "top-link")} {
+		if err := os.MkdirAll(filepath.Dir(link), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Link(original, link); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, err := exec.Command("/usr/bin/du", "-skPx", library).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	kb, err := strconv.ParseInt(strings.Fields(string(out))[0], 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := getDirectorySizeFromDuWithExcludeAndIgnores(context.Background(), library, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != kb*1024 {
+		t.Fatalf("Library size = %d, single du = %d; hardlinks must count once", got, kb*1024)
 	}
 }

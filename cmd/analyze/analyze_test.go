@@ -4136,9 +4136,9 @@ func TestUnavailableEntryCannotBeSelectedForDeletion(t *testing.T) {
 	}
 }
 
-func TestSchemaFiveSizesAreRejectedByEveryLoader(t *testing.T) {
+func TestOldSchemaSizesAreRejectedByEveryLoader(t *testing.T) {
 	for _, loader := range []string{"fresh", "stale", "overview-gob", "overview-json"} {
-		for _, version := range []int{5, cacheSchemaVersion} {
+		for _, version := range []int{5, 6, cacheSchemaVersion} {
 			t.Run(fmt.Sprintf("%s/schema%d", loader, version), func(t *testing.T) {
 				home := t.TempDir()
 				t.Setenv("HOME", home)
@@ -4187,10 +4187,10 @@ func TestSchemaFiveSizesAreRejectedByEveryLoader(t *testing.T) {
 				case "overview-json":
 					_, _, err = loadStoredOverviewMeasurement(target)
 				}
-				if version == 5 && err == nil {
-					t.Fatal("schema 5 stale sizes were accepted")
+				if version <= 6 && err == nil {
+					t.Fatalf("schema %d stale sizes were accepted", version)
 				}
-				if version != 5 && err != nil {
+				if version > 6 && err != nil {
 					t.Fatalf("current schema rejected: %v", err)
 				}
 			})

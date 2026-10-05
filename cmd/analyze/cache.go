@@ -30,7 +30,8 @@ import (
 // v5: entries record their scan state, so a partial result lost only to
 // permission denials can be cached and still reads as partial.
 // v6: deletions invalidate ancestor totals and overview measurements.
-const cacheSchemaVersion = 6
+// v7: Library overview totals count cross-directory hardlinks once again.
+const cacheSchemaVersion = 7
 
 type overviewSizeSnapshot struct {
 	Size          int64     `json:"size"`

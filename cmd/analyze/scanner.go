@@ -1061,14 +1061,6 @@ func getDirectorySizeFromDuWithExcludeAndIgnores(ctx context.Context, path strin
 		return kb * 1024, nil
 	}
 
-	// One serial du over ~/Library routinely outlives duTimeout, so measure it
-	// per child like Home. The ignored names must also be skipped as immediate
-	// children: du given an operand matching its own -I prints nothing, which
-	// runDuSize reports as a failure. Deeper matches still go through -I.
-	if excludePath == "" && isUserLibraryPath(path) {
-		return getDirectorySizeFromDuSkippingImmediateChild(ctx, path, "", ignoreNames, runDuSize)
-	}
-
 	// When excluding a path (e.g., ~/Library), subtract only that exact directory instead of ignoring every "Library"
 	if excludePath != "" {
 		if filepath.Dir(filepath.Clean(excludePath)) == filepath.Clean(path) {
@@ -1092,6 +1084,7 @@ func getDirectorySizeFromDuWithExcludeAndIgnores(ctx context.Context, path strin
 		return totalSize - excludeSize, nil
 	}
 
+	// Library needs one traversal so cross-directory hardlinks count once.
 	return runDuSize(path)
 }
 
@@ -1142,14 +1135,7 @@ func overviewIgnoreNamesForPath(path string) []string {
 	return ignoreNames
 }
 
-func isUserLibraryPath(path string) bool {
-	home := os.Getenv("HOME")
-	return home != "" && filepath.IsAbs(home) && filepath.Clean(path) == filepath.Join(home, "Library")
-}
-
-// overviewChildDuSem caps the per-child du processes that every overview
-// measurement shares, so measuring Home and ~/Library together runs no more
-// du processes than Home alone did with its own pool.
+// overviewChildDuSem caps concurrent per-child Home measurements.
 var overviewChildDuSem = make(chan struct{}, min(max(runtime.NumCPU()*2, 2), 8))
 
 // getDirectorySizeFromDuSkippingImmediateChild runs du once per immediate
