@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -4261,6 +4263,165 @@ func TestOverviewRefillsKeepOneTickLoop(t *testing.T) {
 		if got := countTickMsgs(t, m.scheduleOverviewScans()); got != 0 {
 			t.Fatalf("refill %d started %d extra tick loops", i+1, got)
 		}
+	}
+}
+
+// Inspect dispatch without running scan, snapshot, or deletion commands. The
+// positive control below pins Bubble Tea's tick and batch command identities.
+func scheduledTickCount(t *testing.T, cmd tea.Cmd) int {
+	t.Helper()
+	if cmd == nil {
+		return 0
+	}
+	name := runtime.FuncForPC(reflect.ValueOf(cmd).Pointer()).Name()
+	if strings.Contains(name, ".Tick.") {
+		return 1
+	}
+	if strings.Contains(name, ".compactCmds[") {
+		batch, ok := cmd().(tea.BatchMsg)
+		if !ok {
+			t.Fatalf("batch command returned an unexpected message: %s", name)
+		}
+		count := 0
+		for _, sub := range batch {
+			count += scheduledTickCount(t, sub)
+		}
+		return count
+	}
+	return 0
+}
+
+func newTickLoopTestModel(t *testing.T, overview bool) model {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	resetOverviewSnapshotForTest()
+	t.Cleanup(resetOverviewSnapshotForTest)
+	m := newModel(filepath.Join(t.TempDir(), "missing"), false)
+	m.isOverview = overview
+	if overview {
+		m.path = "/"
+	}
+	m.scanning = !overview
+	for i := range maxConcurrentOverview + 3 {
+		m.entries = append(m.entries, dirEntry{
+			Name: fmt.Sprintf("fixture-%d", i), Path: filepath.Join(os.Getenv("HOME"), fmt.Sprintf("missing-%d", i)),
+			IsDir: true, Size: -1,
+		})
+	}
+	return m
+}
+
+func TestTickLoopEntrypoints(t *testing.T) {
+	if got := scheduledTickCount(t, tea.Batch(tickCmd(), tea.Batch(tickCmd(), nil))); got != 2 {
+		t.Fatalf("tick counter positive control = %d, want 2", got)
+	}
+
+	for _, overview := range []bool{false, true} {
+		t.Run(fmt.Sprintf("init overview=%t", overview), func(t *testing.T) {
+			m := newTickLoopTestModel(t, overview)
+			defer func() { m.cancelOverviewScans(nil); m.cancelBackgroundCacheWrites(nil) }()
+			msg := m.Init()()
+			var cmd tea.Cmd
+			if batch, ok := msg.(tea.BatchMsg); ok {
+				cmd = tea.Batch(batch...)
+			} else {
+				updated, next := m.Update(msg)
+				m, cmd = updated.(model), next
+			}
+			if got := scheduledTickCount(t, cmd); got != 1 || !m.tickRunning {
+				t.Fatalf("initial ticks=%d, retained running=%t; want one retained loop", got, m.tickRunning)
+			}
+			if overview {
+				path := m.entries[0].Path
+				updated, refill := m.Update(overviewSizeMsg{Path: path, Size: 1, publication: m.overviewScanningSet[path]})
+				m = updated.(model)
+				if got := scheduledTickCount(t, refill); got != 0 {
+					t.Fatalf("completion before the first tick added %d loops", got)
+				}
+			}
+		})
+	}
+
+	cases := []struct {
+		name  string
+		setup func(*model)
+		msg   tea.Msg
+	}{
+		{"overview refresh", func(m *model) { m.isOverview, m.path = true, "/" }, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}}},
+		{"directory refresh", func(m *model) {}, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}}},
+		{"return to pending overview", func(m *model) {}, tea.KeyMsg{Type: tea.KeyEsc}},
+		{"return to full overview", func(m *model) {
+			m.isOverview, m.path = true, "/"
+			m.scheduleOverviewScans()
+			m.isOverview, m.path = false, "/fixture"
+		}, tea.KeyMsg{Type: tea.KeyEsc}},
+		{"history overview", func(m *model) {
+			m.isOverview, m.path = true, "/"
+			m.scheduleOverviewScans()
+			m.history = []historyEntry{{Path: "/", IsOverview: true, Entries: m.entries}}
+			m.isOverview, m.path = false, "/fixture"
+		}, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}}},
+		{"stale history", func(m *model) {
+			m.history = []historyEntry{{Path: "/fixture/parent", NeedsRefresh: true}}
+		}, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}}},
+		{"enter directory", func(m *model) {}, tea.KeyMsg{Type: tea.KeyEnter}},
+		{"enter stale directory", func(m *model) {
+			m.cache[m.entries[0].Path] = historyEntry{NeedsRefresh: true}
+		}, tea.KeyMsg{Type: tea.KeyEnter}},
+		{"stale scan result", func(m *model) {}, scanResultMsg{stale: true}},
+		{"single delete", func(m *model) {
+			m.deleteConfirm, m.deleteTarget = true, &m.entries[0]
+		}, tea.KeyMsg{Type: tea.KeyEnter}},
+		{"batch delete", func(m *model) {
+			m.deleteConfirm = true
+			m.multiSelected = map[string]bool{m.entries[0].Path: true, m.entries[1].Path: true}
+		}, tea.KeyMsg{Type: tea.KeyEnter}},
+		{"scan after delete", func(m *model) { m.deleting = true }, deleteProgressMsg{done: true, path: "/fixture/removed"}},
+	}
+	for _, tc := range cases {
+		for _, running := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s running=%t", tc.name, running), func(t *testing.T) {
+				m := newTickLoopTestModel(t, false)
+				defer func() { m.cancelOverviewScans(nil); m.cancelBackgroundCacheWrites(nil) }()
+				tc.setup(&m)
+				m.tickRunning = running
+				updated, cmd := m.Update(tc.msg)
+				m = updated.(model)
+				want := 1
+				if running {
+					want = 0
+				}
+				if got := scheduledTickCount(t, cmd); got != want || !m.tickRunning {
+					t.Fatalf("new ticks=%d, running=%t; want %d new ticks and running=true", got, m.tickRunning, want)
+				}
+			})
+		}
+	}
+}
+
+func TestTickLoopStopsAndRestarts(t *testing.T) {
+	m := newTickLoopTestModel(t, false)
+	m.tickRunning = true
+	updated, cmd := m.Update(tickMsg{})
+	m = updated.(model)
+	if got := scheduledTickCount(t, cmd); got != 1 || !m.tickRunning || m.spinner != 1 {
+		t.Fatalf("active tick: next=%d running=%t spinner=%d", got, m.tickRunning, m.spinner)
+	}
+	m.scanning = false
+	updated, cmd = m.Update(tickMsg{})
+	m = updated.(model)
+	if cmd != nil || m.tickRunning || m.spinner != 1 {
+		t.Fatal("idle tick must stop without advancing the spinner")
+	}
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	m = updated.(model)
+	if got := scheduledTickCount(t, cmd); got != 1 || !m.tickRunning {
+		t.Fatalf("restart: new ticks=%d running=%t; want one running loop", got, m.tickRunning)
+	}
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	m = updated.(model)
+	if got := scheduledTickCount(t, cmd); got != 0 || !m.tickRunning {
+		t.Fatalf("repeated refresh: extra ticks=%d running=%t", got, m.tickRunning)
 	}
 }
 

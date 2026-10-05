@@ -192,6 +192,8 @@ type overviewSizeMsg struct {
 	Err         error
 }
 
+type initializeMsg struct{}
+
 type tickMsg time.Time
 
 type deleteProgressMsg struct {
