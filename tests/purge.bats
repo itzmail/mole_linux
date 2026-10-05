@@ -3569,6 +3569,9 @@ EOF_INNER
 
 
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> 33cc6bfe (perf(purge): reuse the discovery content verdict in the review step)
 @test "purge review does not walk a candidate discovery already verified" {
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash <<'EOF_INNER'
 set -euo pipefail
@@ -3635,8 +3638,11 @@ EOF_INNER
     }
 }
 
+<<<<<<< HEAD
 =======
 >>>>>>> f3b6ea5b (fix(purge): bound parallel activity classification safely)
+=======
+>>>>>>> 33cc6bfe (perf(purge): reuse the discovery content verdict in the review step)
 @test "activity batch inspects later fast artifacts without selecting recent or failed probes" {
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF_ACTIVITY'
 set -euo pipefail

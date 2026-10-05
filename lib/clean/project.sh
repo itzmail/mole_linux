@@ -582,6 +582,7 @@ scan_purge_targets() {
     local tag_output="${output_file}.tags"
     local processed_output="${output_file}.processed"
     local error_output="${output_file}.errors"
+    local verified_output="${output_file}.verified"
     local min_depth="$PURGE_MIN_DEPTH_DEFAULT"
     local max_depth="$PURGE_MAX_DEPTH_DEFAULT"
     if [[ ! "$min_depth" =~ ^[0-9]+$ ]]; then
@@ -601,7 +602,7 @@ scan_purge_targets() {
     # root completes. Keep the caller-visible file empty until that point so a
     # timeout or read failure cannot turn a partial prefix into delete candidates.
     : > "$output_file"
-    rm -f "$target_output" "$tag_output" "$processed_output" "$error_output" 2> /dev/null || true
+    rm -f "$target_output" "$tag_output" "$processed_output" "$error_output" "$verified_output" 2> /dev/null || true
 
     local cachedir_tag_min_depth=$((min_depth + 1))
     local cachedir_tag_max_depth=$((max_depth + 1))
@@ -658,10 +659,10 @@ scan_purge_targets() {
                             echo "$project_dir" > "$stats_dir/purge_scanning" 2> /dev/null || true
                         fi
                     done
-                ) | filter_protected_artifacts "$deadline" > "$processed_output" || process_status=$?
+                ) | filter_protected_artifacts "$deadline" "$verified_output" > "$processed_output" || process_status=$?
 
             if [[ $process_status -ne 0 ]]; then
-                rm -f "$processed_output" 2> /dev/null || true
+                rm -f "$processed_output" "$verified_output" 2> /dev/null || true
                 return "$process_status"
             fi
             if ! mv "$processed_output" "$output_file"; then
@@ -878,8 +879,11 @@ filter_nested_artifacts() {
     fi
 }
 
+# Optional $2 collects the candidates this probe verified clean, so the review
+# step can skip walking them a second time within the same run.
 filter_protected_artifacts() {
     local deadline="${1:-}"
+    local verified_file="${2:-}"
     local protected_rc
     while IFS= read -r item; do
         if [[ "$deadline" =~ ^[0-9]+$ && $SECONDS -ge $deadline ]]; then
@@ -896,6 +900,10 @@ filter_protected_artifacts() {
         fi
         if [[ $protected_rc -ne 0 || "$PURGE_PROTECTION_UNVERIFIED" == "true" ]]; then
             echo "$item"
+        fi
+        if [[ -n "$verified_file" && $protected_rc -ne 0 ]]; then
+            # A lost record only costs the review a second walk.
+            printf '%s\n' "$item" >> "$verified_file" 2> /dev/null || true
         fi
     done
 }
@@ -1748,7 +1756,7 @@ clean_project_artifacts() {
         scan_pids=()
         # Clean up temp files
         for temp in "${scan_temps[@]+"${scan_temps[@]}"}"; do
-            rm -f "$temp" "${temp}.targets" "${temp}.tags" "${temp}.processed" "${temp}.errors" 2> /dev/null || true
+            rm -f "$temp" "${temp}.targets" "${temp}.tags" "${temp}.processed" "${temp}.errors" "${temp}.verified" 2> /dev/null || true
         done
         # Clean up purge scanning file
         local stats_dir="${XDG_CACHE_HOME:-$HOME/.cache}/mole"
@@ -1897,7 +1905,8 @@ clean_project_artifacts() {
         local interrupted_temp
         for interrupted_temp in "${scan_temps[@]+"${scan_temps[@]}"}"; do
             rm -f "$interrupted_temp" "${interrupted_temp}.targets" \
-                "${interrupted_temp}.tags" "${interrupted_temp}.processed" "${interrupted_temp}.errors" 2> /dev/null || true
+                "${interrupted_temp}.tags" "${interrupted_temp}.processed" "${interrupted_temp}.errors" \
+                "${interrupted_temp}.verified" 2> /dev/null || true
         done
         _restore_purge_scan_traps
         if [[ -t 1 ]]; then
@@ -1919,6 +1928,10 @@ clean_project_artifacts() {
     # when overlapping search roots produce the same artifact many times.
     local dedupe_output
     dedupe_output=$(mktemp_file "mole-purge-dedupe") || return 1
+    # Candidates a completed discovery probe already found clean. The review
+    # below walks only the rest: a repeat walk of every artifact tree was the
+    # largest serial step of a purge, and deletion still rechecks each target.
+    local discovery_verified=$'\n'
     local completed_scan_count=0
     local scan_index
     for ((scan_index = 0; scan_index < ${#scan_temps[@]}; scan_index++)); do
@@ -1949,6 +1962,12 @@ clean_project_artifacts() {
         if [[ $scan_status -eq 0 && -f "$scan_output" ]]; then
             if cat "$scan_output" >> "$dedupe_output"; then
                 completed_scan_count=$((completed_scan_count + 1))
+                if [[ -s "${scan_output}.verified" ]]; then
+                    local verified_item
+                    while IFS= read -r verified_item; do
+                        [[ -n "$verified_item" ]] && discovery_verified+="${verified_item}"$'\n'
+                    done < "${scan_output}.verified"
+                fi
             else
                 scan_status=1
                 scan_statuses[scan_index]=1
@@ -1961,7 +1980,8 @@ clean_project_artifacts() {
             failed_scan_statuses+=("$scan_status")
             debug_log "Purge scan incomplete (status $scan_status): ${scan_roots[$scan_index]:-unknown root}"
         fi
-        rm -f "$scan_output" "${scan_output}.targets" "${scan_output}.tags" "${scan_output}.processed" "${scan_output}.errors" 2> /dev/null || true
+        rm -f "$scan_output" "${scan_output}.targets" "${scan_output}.tags" "${scan_output}.processed" "${scan_output}.errors" \
+            "${scan_output}.verified" 2> /dev/null || true
     done
     if [[ -s "$dedupe_output" ]]; then
         while IFS= read -r item; do
@@ -2072,7 +2092,7 @@ clean_project_artifacts() {
             debug_log "Skipping purge target whose scan identity changed: $item"
             continue
         fi
-        if is_protected_purge_artifact "$item"; then
+        if [[ "$discovery_verified" != *$'\n'"$item"$'\n'* ]] && is_protected_purge_artifact "$item"; then
             if [[ "$PURGE_PROTECTION_UNVERIFIED" == "true" ]]; then
                 PURGE_RUN_OUTCOME="incomplete"
                 uninspected_paths+=("$item")
