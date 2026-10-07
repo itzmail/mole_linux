@@ -4300,9 +4300,13 @@ is_protected_purge_artifact() {
     return 1
 }
 <<<<<<< HEAD
+<<<<<<< HEAD
 
 =======
 >>>>>>> 934ffae5 (perf(purge): pool discovery probes and bind candidates once per root)
+=======
+
+>>>>>>> 8811fcbd (fix(clean): recheck target ownership and preserve cancellation)
 : > "$fixture/scanning"
 result=0
 {
@@ -4318,6 +4322,7 @@ EOF_CANCEL
     [ "$status" -eq 0 ] || { echo "$output"; return 1; }
     [[ "$output" == *"STATUS=130"* ]] || { echo "$output"; return 1; }
 }
+<<<<<<< HEAD
 <<<<<<< HEAD
 
 @test "purge content probes never run more than four at a time and keep input order past the pool" {
@@ -4462,6 +4467,8 @@ EOF_SIDECAR
     leftovers="$(ls "$BATS_TEST_TMPDIR" | grep '^failed\.' | tr '\n' ' ' || true)"
     [ -z "$leftovers" ] || { echo "failed scan left: $leftovers"; return 1; }
 }
+=======
+>>>>>>> 8811fcbd (fix(clean): recheck target ownership and preserve cancellation)
 
 @test "purge authored probes preserve signals through the final guard and pool" {
     local failures=0
@@ -4544,6 +4551,7 @@ EOF
     done
     [ "$failures" -eq 0 ]
 }
+<<<<<<< HEAD
 
 @test "scan_purge_targets still walks when find rejects the dataless flag name" {
 	# An older macOS find that does not know `dataless` fails the whole walk
@@ -5096,3 +5104,5 @@ EOF
 >>>>>>> b19a7d2d (fix(purge): refill activity workers while preserving cancellation)
 =======
 >>>>>>> 934ffae5 (perf(purge): pool discovery probes and bind candidates once per root)
+=======
+>>>>>>> 8811fcbd (fix(clean): recheck target ownership and preserve cancellation)

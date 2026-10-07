@@ -236,10 +236,14 @@ mole_git_path_spec() {
 # source and a cache-named folder a committed fixture. Returns 0 when Git tracks
 # files there, 1 when no repository owns the path or it tracks nothing there,
 <<<<<<< HEAD
+<<<<<<< HEAD
 # and 2 when the probe timed out or failed. Signal statuses propagate.
 =======
 # and 2 when the probe timed out or failed.
 >>>>>>> d929d156 (fix(clean): keep project caches that Git tracks (#1686))
+=======
+# and 2 when the probe timed out or failed. Signal statuses propagate.
+>>>>>>> 8811fcbd (fix(clean): recheck target ownership and preserve cancellation)
 mole_path_has_git_tracked_files() {
     local path="${1%/}"
     local deadline="${2:-}"
@@ -250,6 +254,7 @@ mole_path_has_git_tracked_files() {
     path=$(cd "$path" 2> /dev/null && /bin/pwd -P) || return 2
     repo=$(mole_git_repo_root "$path") || return 1
 <<<<<<< HEAD
+<<<<<<< HEAD
     local probe_rc=0
     mole_git_path_spec "$repo" "$path"
     evidence=$(mole_git_ls_files "$repo" "$deadline" "$repo" -- "$MOLE_GIT_PATH_SPEC") || probe_rc=$?
@@ -258,6 +263,12 @@ mole_path_has_git_tracked_files() {
 =======
     evidence=$(mole_git_ls_files "$repo" "$deadline" "$path" -- .) || return 2
 >>>>>>> d929d156 (fix(clean): keep project caches that Git tracks (#1686))
+=======
+    local probe_rc=0
+    evidence=$(mole_git_ls_files "$repo" "$deadline" "$path" -- .) || probe_rc=$?
+    [[ $probe_rc -le 128 ]] || return "$probe_rc"
+    [[ $probe_rc -eq 0 ]] || return 2
+>>>>>>> 8811fcbd (fix(clean): recheck target ownership and preserve cancellation)
     [[ -n "$evidence" ]] && return 0
     return 1
 }

@@ -664,6 +664,9 @@ EOF
 }
 
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> 8811fcbd (fix(clean): recheck target ownership and preserve cancellation)
 @test "project cache final guard rejects changed Git evidence after sizing" {
     local failures=0
     for route in main fallback python preview; do
@@ -777,9 +780,12 @@ EOF
 }
 
 @test "clean_project_caches batches Git discovery and rechecks each deletion" {
+<<<<<<< HEAD
 =======
 @test "clean_project_caches asks Git once per repository" {
 >>>>>>> d929d156 (fix(clean): keep project caches that Git tracks (#1686))
+=======
+>>>>>>> 8811fcbd (fix(clean): recheck target ownership and preserve cancellation)
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
@@ -794,6 +800,7 @@ git init -q "$repo"
 git -C "$repo" add -f svc/c/__pycache__/m.pyc
 eval "real_$(declare -f mole_git_ls_files)"
 <<<<<<< HEAD
+<<<<<<< HEAD
 mole_git_ls_files() { printf '%s\n' "$3|${*: -1}" >> "$HOME/ls-files.calls"; real_mole_git_ls_files "$@"; }
 DRY_RUN=false
 clean_project_caches
@@ -804,13 +811,20 @@ for pkg in a b d e f; do
     grep -Fxq "$repo|:(top,literal,icase)svc/$pkg/__pycache__" "$HOME/ls-files.calls" || exit 14
 =======
 mole_git_ls_files() { printf 'call\n' >> "$HOME/ls-files.calls"; real_mole_git_ls_files "$@"; }
+=======
+mole_git_ls_files() { printf '%s\n' "$3|${*: -1}" >> "$HOME/ls-files.calls"; real_mole_git_ls_files "$@"; }
+>>>>>>> 8811fcbd (fix(clean): recheck target ownership and preserve cancellation)
 DRY_RUN=false
 clean_project_caches
-[[ "$(wc -l < "$HOME/ls-files.calls" | tr -d ' ')" == 1 ]] || { cat "$HOME/ls-files.calls"; exit 11; }
+[[ "$(grep -Fxc "$repo|." "$HOME/ls-files.calls")" == 1 ]] || { cat "$HOME/ls-files.calls"; exit 11; }
 [[ -f "$repo/svc/c/__pycache__/m.pyc" ]] || exit 12
 for pkg in a b d e f; do
     [[ ! -e "$repo/svc/$pkg/__pycache__" ]] || exit 13
+<<<<<<< HEAD
 >>>>>>> d929d156 (fix(clean): keep project caches that Git tracks (#1686))
+=======
+    grep -Fxq "$repo/svc/$pkg|__pycache__" "$HOME/ls-files.calls" || exit 14
+>>>>>>> 8811fcbd (fix(clean): recheck target ownership and preserve cancellation)
 done
 EOF
     [ "$status" -eq 0 ] || { echo "$output"; return 1; }

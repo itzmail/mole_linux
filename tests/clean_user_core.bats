@@ -426,7 +426,176 @@ EOF
     rm -rf "$test_home"
 }
 
+<<<<<<< HEAD
 @test "a custom whitelist still protects system caches and Poetry virtualenvs" {
+=======
+@test "clean_user_essentials keeps the DiagnosticReports directory (#1689)" {
+    local test_home="$HOME/diag-home"
+    mkdir -p "$test_home/Library/Logs/DiagnosticReports"
+    touch "$test_home/Library/Logs/DiagnosticReports/App.ips"
+
+    run env HOME="$test_home" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_NO_AUTH=1 \
+        /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/bin/clean.sh"
+DRY_RUN=false
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+clean_trash() { :; }
+_clean_recent_items() { :; }
+_clean_mail_downloads() { :; }
+clean_user_essentials
+EOF
+
+    [ "$status" -eq 0 ] || return 1
+    [[ -d "$test_home/Library/Logs/DiagnosticReports" ]] || return 1
+    [[ ! -e "$test_home/Library/Logs/DiagnosticReports/App.ips" ]] || return 1
+    rm -rf "$test_home"
+}
+
+@test "user logs retain authored files behind symlinked log roots" {
+    local variant
+    for variant in reports logs library; do
+        local test_home="$BATS_TEST_TMPDIR/log-links-$variant"
+        mkdir -p "$test_home/Library/Logs/DiagnosticReports" "$test_home/authored/Logs/DiagnosticReports"
+        printf 'keep' > "$test_home/authored/report.txt"
+        printf 'keep' > "$test_home/authored/Logs/report.txt"
+        case "$variant" in
+            reports) rmdir "$test_home/Library/Logs/DiagnosticReports"; ln -s "$test_home/authored" "$test_home/Library/Logs/DiagnosticReports" ;;
+            logs) mv "$test_home/Library/Logs" "$test_home/original"; ln -s "$test_home/authored" "$test_home/Library/Logs" ;;
+            library) mv "$test_home/Library" "$test_home/original"; ln -s "$test_home/authored" "$test_home/Library" ;;
+        esac
+        run env HOME="$test_home" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_NO_AUTH=1 /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/bin/clean.sh"
+DRY_RUN=false
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+clean_trash() { :; }
+_clean_recent_items() { :; }
+_clean_mail_downloads() { :; }
+clean_user_essentials
+[[ -f "$HOME/authored/report.txt" && -f "$HOME/authored/Logs/report.txt" ]] || exit 1
+EOF
+        [ "$status" -eq 0 ] || { echo "$variant: $output"; return 1; }
+    done
+}
+
+@test "user logs recheck the DiagnosticReports root after sizing and at the final sink" {
+    local phase
+    for phase in sizing sink preview replacement; do
+        local test_home="$BATS_TEST_TMPDIR/log-race-$phase"
+        mkdir -p "$test_home/Library/Logs/DiagnosticReports" "$test_home/authored"
+        printf 'old' > "$test_home/Library/Logs/DiagnosticReports/report.txt"
+        printf 'keep' > "$test_home/authored/report.txt"
+        run env HOME="$test_home" PHASE="$phase" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_NO_AUTH=1 /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/bin/clean.sh"
+DRY_RUN=false
+[[ "$PHASE" != preview ]] || DRY_RUN=true
+record_dry_run_cleanup_target() { touch "$HOME/unsafe-preview"; }
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+clean_trash() { :; }
+_clean_recent_items() { :; }
+_clean_mail_downloads() { :; }
+retarget_logs() {
+    if [[ ! -L "$HOME/Library/Logs/DiagnosticReports" ]]; then
+        mv "$HOME/Library/Logs/DiagnosticReports" "$HOME/original-reports"
+        if [[ "$PHASE" == replacement ]]; then
+            mv "$HOME/authored" "$HOME/Library/Logs/DiagnosticReports"
+        else
+            ln -s "$HOME/authored" "$HOME/Library/Logs/DiagnosticReports"
+        fi
+    fi
+}
+if [[ "$PHASE" != sink ]]; then
+    get_cleanup_path_size_kb() { retarget_logs; printf '1\n'; }
+else
+    eval "$(declare -f safe_remove | sed '1s/safe_remove/_original_safe_remove/')"
+    safe_remove() { retarget_logs; _original_safe_remove "$@"; }
+fi
+clean_user_essentials
+if [[ "$PHASE" == replacement ]]; then
+    [[ -f "$HOME/Library/Logs/DiagnosticReports/report.txt" ]] || exit 1
+else
+    [[ -L "$HOME/Library/Logs/DiagnosticReports" && -f "$HOME/authored/report.txt" ]] || exit 1
+fi
+[[ ! -e "$HOME/unsafe-preview" ]] || exit 1
+EOF
+        [ "$status" -eq 0 ] || { echo "$phase: $output"; return 1; }
+    done
+}
+
+@test "standalone diagnostic logs preserve redirected roots" {
+    local relative=Library/DiagnosticReports mode
+        for mode in link replacement ordinary; do
+            local test_home="$BATS_TEST_TMPDIR/${relative//\//_}-$mode"
+            mkdir -p "$test_home/$relative" "$test_home/authored"
+            printf 'old' > "$test_home/$relative/report.txt"
+            printf 'keep' > "$test_home/authored/report.txt"
+            run env HOME="$test_home" RELATIVE="$relative" MODE="$mode" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_NO_AUTH=1 /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/bin/clean.sh"
+DRY_RUN=false
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+safe_clean() { :; }
+_clean_incomplete_downloads() { :; }
+clean_support_app_data() { :; }
+clean_group_container_caches() { :; }
+clean_handoff_pasteboard_cache() { :; }
+if [[ "$MODE" == link ]]; then
+    mv "$HOME/$RELATIVE" "$HOME/original"
+    ln -s "$HOME/authored" "$HOME/$RELATIVE"
+elif [[ "$MODE" == replacement ]]; then
+    get_cleanup_path_size_kb() {
+        mv "$HOME/$RELATIVE" "$HOME/original"
+        mv "$HOME/authored" "$HOME/$RELATIVE"
+        printf '1\n'
+    }
+fi
+clean_app_caches
+case "$MODE" in
+    link) [[ -f "$HOME/authored/report.txt" ]] || exit 1 ;;
+    replacement) [[ -f "$HOME/$RELATIVE/report.txt" ]] || exit 1 ;;
+    ordinary) [[ ! -e "$HOME/$RELATIVE/report.txt" ]] || exit 1 ;;
+esac
+EOF
+            [ "$status" -eq 0 ] || { echo "$relative $mode: $output"; return 1; }
+        done
+}
+
+@test "log cleanup entrypoints preserve cancellation statuses" {
+    local relative cancel_rc
+    for relative in Library/Logs Library/DiagnosticReports; do
+        for cancel_rc in 124 130 143; do
+            local test_home="$BATS_TEST_TMPDIR/${relative//\//_}-$cancel_rc"
+            mkdir -p "$test_home/$relative"
+            touch "$test_home/$relative/report.txt"
+            run env HOME="$test_home" RELATIVE="$relative" CANCEL_RC="$cancel_rc" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_NO_AUTH=1 /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/bin/clean.sh"
+DRY_RUN=false
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+safe_clean() { :; }
+safe_clean_guarded() { return "$CANCEL_RC"; }
+clean_trash() { touch "$HOME/continued"; }
+_clean_incomplete_downloads() { touch "$HOME/continued"; }
+case "$RELATIVE" in
+    Library/Logs) clean_user_essentials ;;
+    Library/DiagnosticReports) clean_app_caches ;;
+esac
+EOF
+            [ "$status" -eq "$cancel_rc" ] || { echo "$relative: $output"; return 1; }
+            [[ ! -e "$test_home/continued" ]] || return 1
+        done
+    done
+}
+
+@test "a custom whitelist still protects system caches, Poetry virtualenvs and the renv cache" {
+>>>>>>> 8811fcbd (fix(clean): recheck target ownership and preserve cancellation)
     # clean_user_essentials sweeps every child of ~/Library/Caches, and
     # load_mole_whitelist replaces DEFAULT_WHITELIST_PATTERNS wholesale once a
     # user saves one entry of their own. Anything that breaks macOS search,

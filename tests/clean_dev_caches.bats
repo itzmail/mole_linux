@@ -2783,6 +2783,7 @@ start_inline_spinner() { :; }
 stop_inline_spinner() { :; }
 create_temp_file() { mktemp; }
 safe_clean() { echo "$2|$1"; }
+safe_clean_guarded() { shift; safe_clean "$@"; }
 DRY_RUN=false
 clean_project_caches
 EOF

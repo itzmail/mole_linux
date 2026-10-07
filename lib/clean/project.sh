@@ -510,7 +510,7 @@ is_protected_vendor_dir() {
 # Names do not prove rebuildability: target/deploy carries Anchor keys,
 # and build/coverage can contain tracked source. Reused at discovery and sink.
 # Returns 0 when authored content is present, 1 when the walk completed and
-# found none, 2 when a probe timed out or failed. A 2 is not evidence either
+# found none, 2 when a probe timed out or failed; signals propagate. A 2 is not evidence either
 # way: callers keep the candidate but must say so instead of dropping it.
 purge_artifact_has_authored_content() {
     local path="${1%/}"
@@ -524,8 +524,11 @@ purge_artifact_has_authored_content() {
     # when nothing matches, so it takes the tree-walk budget, not the
     # command-probe one.
     probe_timeout=$(_mole_timeout_with_deadline "$MOLE_TIMEOUT_HINT_SCAN_SEC" "$deadline") || return 2
+    local probe_rc=0
     evidence=$(run_with_timeout "$probe_timeout" /usr/bin/find "$path" \
-        \( -name .git -o -name '*-keypair.json' \) -print -quit 2> /dev/null) || return 2
+        \( -name .git -o -name '*-keypair.json' \) -print -quit 2> /dev/null) || probe_rc=$?
+    [[ $probe_rc -le 128 ]] || return "$probe_rc"
+    [[ $probe_rc -eq 0 ]] || return 2
     [[ -z "$evidence" ]] || return 0
 
     local tracked_rc=0
@@ -545,6 +548,7 @@ is_protected_purge_artifact() {
     PURGE_PROTECTION_UNVERIFIED=false
     local authored_rc=0
     purge_artifact_has_authored_content "$path" "$deadline" || authored_rc=$?
+    [[ $authored_rc -le 128 ]] || return "$authored_rc"
     if [[ $authored_rc -eq 2 ]]; then
         PURGE_PROTECTION_UNVERIFIED=true
         return 0
@@ -921,6 +925,7 @@ filter_protected_artifacts() {
             probe_rc=0
             is_protected_purge_artifact "$item" "$deadline" || probe_rc=$?
             printf '%s %s %s\n' "$item_index" "$probe_rc" "$PURGE_PROTECTION_UNVERIFIED" >> "$results"
+            [[ $probe_rc -le 128 ]] || exit "$probe_rc"
         ) < /dev/null &
         probe_pids+=("$!")
         if [[ ${#probe_pids[@]} -ge $max_probe_jobs ]]; then
@@ -944,7 +949,11 @@ filter_protected_artifacts() {
         done
     fi
     for probe_pid in "${probe_pids[@]+"${probe_pids[@]}"}"; do
-        wait "$probe_pid" 2> /dev/null || true
+        wait_status=0
+        wait "$probe_pid" 2> /dev/null || wait_status=$?
+        if [[ $stop_status -eq 0 && $wait_status -gt 128 ]]; then
+            stop_status=$wait_status
+        fi
     done
     # The last probe can consume the remaining budget too. Never publish
     # that root's prefix as complete, even when there is no next item.
@@ -1096,7 +1105,10 @@ purge_target_activity_still_safe() {
 _mole_purge_final_remove_guard() {
     local path="$1"
     is_safe_configured_purge_artifact "$path" || return 1
-    is_protected_purge_artifact "$path" && return 1
+    local protection_rc=0
+    is_protected_purge_artifact "$path" || protection_rc=$?
+    [[ $protection_rc -le 128 ]] || return "$protection_rc"
+    [[ $protection_rc -ne 0 ]] || return 1
     purge_target_activity_still_safe "$path" "${_MOLE_PURGE_FINAL_ACTIVITY_STATE:-uncertain}" || return $?
 
     _mole_path_matches_identity \
@@ -2156,7 +2168,17 @@ clean_project_artifacts() {
             debug_log "Skipping purge target whose scan identity changed: $item"
             continue
         fi
-        if [[ "$discovery_verified" != *$'\n'"$item"$'\n'* ]] && is_protected_purge_artifact "$item"; then
+        local protection_rc=1
+        if [[ "$discovery_verified" != *$'\n'"$item"$'\n'* ]]; then
+            protection_rc=0
+            is_protected_purge_artifact "$item" || protection_rc=$?
+        fi
+        if [[ $protection_rc -gt 128 ]]; then
+            PURGE_RUN_OUTCOME="cancelled"
+            if [[ -t 1 ]]; then stop_inline_spinner; fi
+            return "$protection_rc"
+        fi
+        if [[ $protection_rc -eq 0 ]]; then
             if [[ "$PURGE_PROTECTION_UNVERIFIED" == "true" ]]; then
                 PURGE_RUN_OUTCOME="incomplete"
                 uninspected_paths+=("$item")
@@ -2883,7 +2905,14 @@ clean_project_artifacts() {
             debug_log "Skipping purge target outside configured safe roots: ${item_path:-<empty>}"
             continue
         fi
-        if is_protected_purge_artifact "$item_path"; then
+        local protection_rc=0
+        is_protected_purge_artifact "$item_path" || protection_rc=$?
+        if [[ $protection_rc -gt 128 ]]; then
+            PURGE_RUN_OUTCOME="cancelled"
+            echo "$cleaned_count" > "$stats_dir/purge_count"
+            return "$protection_rc"
+        fi
+        if [[ $protection_rc -eq 0 ]]; then
             if [[ "$PURGE_PROTECTION_UNVERIFIED" == "true" ]]; then
                 echo -e "${YELLOW}${ICON_WARNING}${NC} Skipped $display_item_path (could not inspect contents; re-run mo purge to review it again)"
             else
