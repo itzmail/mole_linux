@@ -1,28 +1,16 @@
 #!/usr/bin/env bats
 
+load helpers/common
+
 setup_file() {
-    PROJECT_ROOT="$(cd "${BATS_TEST_DIRNAME}/.." && pwd)"
-    export PROJECT_ROOT
-
-    ORIGINAL_HOME="${HOME:-}"
-    export ORIGINAL_HOME
-
-    HOME="$(mktemp -d "${BATS_TEST_DIRNAME}/tmp-clean-caches.XXXXXX")"
-    export HOME
-
-    mkdir -p "$HOME"
+    mole_test_setup_home clean-caches
     mkdir -p "$HOME/.cache/mole"
     mkdir -p "$HOME/Library/Caches"
     mkdir -p "$HOME/Library/Logs"
 }
 
 teardown_file() {
-    if [[ "$HOME" == "${BATS_TEST_DIRNAME}/tmp-"* ]]; then
-        rm -rf "$HOME"
-    fi
-    if [[ -n "${ORIGINAL_HOME:-}" ]]; then
-        export HOME="$ORIGINAL_HOME"
-    fi
+    mole_test_teardown_home
 }
 
 setup() {
@@ -88,6 +76,43 @@ setup() {
     [ "$status" -eq 0 ]
 
     rm -rf "$test_cache"
+}
+
+@test "clean_service_worker_cache finds depth-two entries with GNU find first in PATH" {
+    local test_cache="$HOME/sw_gnu_find"
+    local stub_bin="$HOME/sw-gnu-bin"
+    mkdir -p "$test_cache/origin_a/cache_one/deeper" "$stub_bin"
+    # GNU find takes -depth as an option with no argument, so the BSD-only
+    # `-depth 2` made it read "2" as a path and fail the whole discovery.
+    cat > "$stub_bin/find" << 'STUB'
+#!/bin/bash
+prev=""
+for arg in "$@"; do
+    if [[ "$prev" == "-depth" && "$arg" =~ ^[0-9]+$ ]]; then
+        echo "find: paths must precede expression: '$arg'" >&2
+        exit 1
+    fi
+    prev="$arg"
+done
+exec /usr/bin/find "$@"
+STUB
+    chmod +x "$stub_bin/find"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" PATH="$stub_bin:$PATH" CACHE="$test_cache" \
+        /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/caches.sh"
+DRY_RUN=true
+PROTECTED_SW_DOMAINS=(capcut.com)
+record_dry_run_cleanup_target() { echo "RECORD:$1"; }
+clean_service_worker_cache "TestBrowser" "$CACHE"
+EOF
+
+    rm -rf "$test_cache" "$stub_bin"
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [[ "$output" == *"RECORD:$test_cache/origin_a/cache_one"* ]] || { echo "$output"; return 1; }
+    [[ "$output" != *"RECORD:$test_cache/origin_a/cache_one/deeper"* ]] || { echo "$output"; return 1; }
 }
 
 @test "clean_service_worker_cache protects specified domains" {
@@ -171,7 +196,7 @@ setup() {
     rm -rf "$test_cache"
 }
 
-@test "clean_service_worker_cache colors cleaned size with success color" {
+@test "clean_service_worker_cache colors cleaned size by unit" {
     local test_cache="$HOME/test_sw_cache_colored"
     mkdir -p "$test_cache/abc123_https_example.com_0"
 
@@ -201,7 +226,8 @@ EOF
 
     [ "$status" -eq 0 ]
     [[ "$output" == *"TestBrowser Service Worker"* ]] || return 1
-    [[ "$output" == *$'\033[0;32m1.0MB\033[0m'* ]] || return 1
+    [[ "$output" == *$'\033[0;32m✓\033[0m'* ]] || return 1
+    [[ "$output" == *$'\033[0;33m1.0MB\033[0m'* ]] || return 1
 
     rm -rf "$test_cache"
 }
@@ -587,8 +613,6 @@ EOF
     rm -rf "$HOME/Projects" "$HOME/export.txt"
 }
 
-<<<<<<< HEAD
-=======
 @test "clean_project_caches keeps project caches that Git tracks" {
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
@@ -1170,7 +1194,6 @@ EOF
     [ "$status" -eq 0 ] || { echo "status $status: $output"; return 1; }
 }
 
->>>>>>> d7e9f6fc (fix: keep Mole correct with GNU tools first in PATH)
 @test "clean_project_caches scans configured roots instead of HOME" {
     mkdir -p "$HOME/.config/mole"
     mkdir -p "$HOME/CustomProjects/app/.next/cache"
@@ -1206,6 +1229,7 @@ source "$PROJECT_ROOT/lib/clean/caches.sh"
 FIND_BSD=find  # route the scan through the stub
 run_with_timeout() { shift; "$@"; }
 safe_clean() { echo "$2|$1"; }
+safe_clean_guarded() { shift; safe_clean "$@"; }
 clean_project_caches
 EOF
     [ "$status" -eq 0 ]
@@ -1227,6 +1251,7 @@ set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/caches.sh"
 safe_clean() { echo "$2|$1"; }
+safe_clean_guarded() { shift; safe_clean "$@"; }
 clean_project_caches
 EOF
     [ "$status" -eq 0 ]
@@ -1245,6 +1270,7 @@ set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/caches.sh"
 safe_clean() { echo "$2|$1"; }
+safe_clean_guarded() { shift; safe_clean "$@"; }
 clean_project_caches
 EOF
     [ "$status" -eq 0 ]
@@ -1396,7 +1422,7 @@ EOF
     [[ "$output" == *"ELAPSED="* ]] || return 1
     elapsed=$(printf '%s\n' "$output" | awk -F= '/ELAPSED=/{print $2}' | tail -1)
     [[ "$elapsed" =~ ^[0-9]+$ ]] || return 1
-    (( elapsed < 5 ))
+    (( elapsed < 5 )) || return 1
     [[ "$output" == *"Project caches · skipped 1 slow/incomplete root scan"* ]] || return 1
 
 	rm -rf "$HOME/.config/mole" "$HOME/SlowProjects" "$fake_bin"
@@ -1522,6 +1548,60 @@ EOF
 	[[ "$output" == "PARENT_RC=143 WORKER_SURVIVED=no" ]] || return 1
 }
 
+@test "clean_project_caches reaps a worker interrupted before PID registration" {
+	local scan_home="$HOME/interrupted-scan-registration"
+	mkdir -p "$scan_home/root"
+	mkfifo "$scan_home/worker-gate" "$scan_home/worker-ready"
+
+	run env HOME="$scan_home" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/caches.sh"
+exec 3<> "$HOME/worker-gate"
+exec 4<> "$HOME/worker-ready"
+discover_project_cache_roots() { printf '%s\n' "$HOME/root"; }
+get_optimal_parallel_jobs() { printf '1\n'; }
+armed=false
+previous_pid=""
+project_cache_root_is_walkable() {
+	previous_pid="${!:-}"
+	armed=true
+	return 0
+}
+scan_project_cache_root() {
+	: > "$2"
+	trap 'exit 143' TERM
+	printf 'ready\n' >&4
+	# A watchdog bounds the broken path; cancellation should interrupt this read immediately.
+	IFS= read -r -t 10 -u 3 release || true
+	touch "$HOME/worker-survived"
+}
+process_project_cache_matches() { :; }
+interrupt_new_worker() {
+	# DEBUG observes the new $! before the parent's next command can register it.
+	# Subshells inherit the trap but must not signal the owning shell themselves.
+	if [[ $BASH_SUBSHELL -eq 0 && $armed == true && -n "${!:-}" && "${!:-}" != "$previous_pid" ]]; then
+		armed=false
+		IFS= read -r -t 10 -u 4 ready || exit 1
+		touch "$HOME/window-hit"
+		kill -TERM "$$"
+	fi
+	return 0
+}
+set -T
+trap interrupt_new_worker DEBUG
+clean_rc=0
+clean_project_caches || clean_rc=$?
+trap - DEBUG
+printf 'RC=%s WINDOW=%s SURVIVED=%s\n' "$clean_rc" \
+	"$([[ -e "$HOME/window-hit" ]] && printf yes || printf no)" \
+	"$([[ -e "$HOME/worker-survived" ]] && printf yes || printf no)"
+EOF
+
+	[ "$status" -eq 0 ] || return 1
+	[[ "$output" == "RC=143 WINDOW=yes SURVIVED=no" ]] || return 1
+}
+
 @test "scan_project_cache_root discards partial output when its producer times out" {
 	mkdir -p "$HOME/Projects/app/.next/cache"
 	touch "$HOME/Projects/app/package.json"
@@ -1610,6 +1690,36 @@ EOF
     [[ "$output" == *"app/__pycache__"* ]] || return 1
     [[ "$output" != *"miniconda3"* ]] || return 1
     [[ "$output" != *"site-packages"* ]] || return 1
+
+    rm -rf "$HOME/Projects" "$output_file"
+}
+
+@test "scan_project_cache_root prunes build outputs and package stores" {
+    local name
+    for name in target .build .gradle Index.noindex _cacache; do
+        mkdir -p "$HOME/Projects/app/$name/sub/__pycache__"
+        touch "$HOME/Projects/app/$name/sub/__pycache__/mod.pyc"
+    done
+    mkdir -p "$HOME/Projects/app/__pycache__"
+    touch "$HOME/Projects/app/pyproject.toml"
+    touch "$HOME/Projects/app/__pycache__/mod.pyc"
+
+    local output_file
+    output_file=$(mktemp)
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<EOF
+set -euo pipefail
+source "\$PROJECT_ROOT/lib/core/common.sh"
+source "\$PROJECT_ROOT/lib/clean/caches.sh"
+run_with_timeout() { shift; "\$@"; }
+scan_project_cache_root "$HOME/Projects" "$output_file"
+cat "$output_file"
+EOF
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"app/__pycache__"* ]] || return 1
+    for name in target .build .gradle Index.noindex _cacache; do
+        [[ "$output" != *"/$name/"* ]] || return 1
+    done
 
     rm -rf "$HOME/Projects" "$output_file"
 }

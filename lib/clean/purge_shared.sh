@@ -164,6 +164,84 @@ mole_purge_is_project_root() {
     return 1
 }
 
+# The repository that owns a physical path: the nearest ancestor holding .git
+# (a directory, or a file for linked worktrees and submodules). Sets
+# MOLE_GIT_REPO_ROOT without a subshell, for callers that ask per candidate.
+mole_find_git_repo_root() {
+    local ancestor="${1%/}"
+    MOLE_GIT_REPO_ROOT=""
+    while [[ "$ancestor" != "/" && -n "$ancestor" ]]; do
+        if [[ -e "$ancestor/.git" || -L "$ancestor/.git" ]]; then
+            MOLE_GIT_REPO_ROOT="$ancestor"
+            return 0
+        fi
+        ancestor="${ancestor%/*}"
+    done
+    return 1
+}
+
+mole_git_repo_root() {
+    mole_find_git_repo_root "$1" || return 1
+    printf '%s\n' "$MOLE_GIT_REPO_ROOT"
+}
+
+# Run a bounded `git ls-files` in a repository from directory $3. Inherited Git
+# routing and pathspec switches are ignored so the repository's own index
+# answers and fsmonitor hooks never run. Callers name a path with
+# mole_git_path_spec; a bare name would be read as a glob. Returns git's or the
+# timeout's status.
+mole_git_ls_files() {
+    local repo="$1"
+    local deadline="$2"
+    local dir="$3"
+    shift 3
+    local probe_timeout=""
+    probe_timeout=$(_mole_timeout_with_deadline "$MOLE_TIMEOUT_HINT_SCAN_SEC" "$deadline") || return 124
+    run_with_timeout "$probe_timeout" \
+        env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR \
+        -u GIT_LITERAL_PATHSPECS -u GIT_GLOB_PATHSPECS -u GIT_NOGLOB_PATHSPECS -u GIT_ICASE_PATHSPECS \
+        GIT_OPTIONAL_LOCKS=0 \
+        git -c core.fsmonitor=false --git-dir="$repo/.git" --work-tree="$repo" -C "$dir" ls-files "$@" 2> /dev/null
+}
+
+# The pathspec for a physical path inside repository $1, set in
+# MOLE_GIT_PATH_SPEC without a subshell: the whole path from the work tree top,
+# literal so glob characters in a folder name match nothing else, and
+# case-blind. The default macOS volume keeps whichever spelling a folder was
+# created or renamed with while the index keeps the one Git first saw, so a
+# spelling taken from the disk can miss tracked files; matching without case
+# can only keep more, never less.
+mole_git_path_spec() {
+    local repo="$1"
+    local path="$2"
+    local rel=""
+    [[ "$path" == "$repo" ]] || rel="${path#"$repo"/}"
+    MOLE_GIT_PATH_SPEC=":(top,literal,icase)$rel"
+}
+
+# Whether Git tracks files below a directory, asked of the repository that owns
+# it. Names do not prove a directory is disposable: build/ can hold tracked
+# source and a cache-named folder a committed fixture. Returns 0 when Git tracks
+# files there, 1 when no repository owns the path or it tracks nothing there,
+# and 2 when the probe timed out or failed. Signal statuses propagate.
+mole_path_has_git_tracked_files() {
+    local path="${1%/}"
+    local deadline="${2:-}"
+    local evidence="" repo=""
+    [[ -d "$path" ]] || return 1
+    # A configured root can cross a symlink before reaching the candidate.
+    # Git ancestry must follow the actual repository, not the alias spelling.
+    path=$(cd "$path" 2> /dev/null && /bin/pwd -P) || return 2
+    repo=$(mole_git_repo_root "$path") || return 1
+    local probe_rc=0
+    mole_git_path_spec "$repo" "$path"
+    evidence=$(mole_git_ls_files "$repo" "$deadline" "$repo" -- "$MOLE_GIT_PATH_SPEC") || probe_rc=$?
+    [[ $probe_rc -le 128 ]] || return "$probe_rc"
+    [[ $probe_rc -eq 0 ]] || return 2
+    [[ -n "$evidence" ]] && return 0
+    return 1
+}
+
 mole_dir_has_cachedir_tag() {
     local dir="$1"
     local tag="$dir/$MOLE_CACHEDIR_TAG_NAME"
