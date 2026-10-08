@@ -578,7 +578,9 @@ is_protected_purge_artifact() {
     return 1
 }
 
-# Scan purge targets using fd (fast) or pruned find.
+# Scan purge targets using fd (fast) or pruned find. Optional $3 names a file
+# for the candidates the content probes verified clean; the caller that asks
+# for it owns and removes it, so a plain scan leaves nothing behind.
 scan_purge_targets() {
     local search_path="$1"
     local output_file="$2"
@@ -586,7 +588,7 @@ scan_purge_targets() {
     local tag_output="${output_file}.tags"
     local processed_output="${output_file}.processed"
     local error_output="${output_file}.errors"
-    local verified_output="${output_file}.verified"
+    local verified_output="${3:-}"
     local min_depth="$PURGE_MIN_DEPTH_DEFAULT"
     local max_depth="$PURGE_MAX_DEPTH_DEFAULT"
     if [[ ! "$min_depth" =~ ^[0-9]+$ ]]; then
@@ -606,7 +608,8 @@ scan_purge_targets() {
     # root completes. Keep the caller-visible file empty until that point so a
     # timeout or read failure cannot turn a partial prefix into delete candidates.
     : > "$output_file"
-    rm -f "$target_output" "$tag_output" "$processed_output" "$error_output" "$verified_output" "${verified_output}.probes" 2> /dev/null || true
+    rm -f "$target_output" "$tag_output" "$processed_output" "$error_output" 2> /dev/null || true
+    [[ -z "$verified_output" ]] || rm -f "$verified_output" "${verified_output}.probes" 2> /dev/null || true
 
     local cachedir_tag_min_depth=$((min_depth + 1))
     local cachedir_tag_max_depth=$((max_depth + 1))
@@ -666,7 +669,8 @@ scan_purge_targets() {
                 ) | filter_protected_artifacts "$deadline" "$verified_output" "$stats_dir/purge_scanning" > "$processed_output" || process_status=$?
 
             if [[ $process_status -ne 0 ]]; then
-                rm -f "$processed_output" "$verified_output" "${verified_output}.probes" 2> /dev/null || true
+                rm -f "$processed_output" 2> /dev/null || true
+                [[ -z "$verified_output" ]] || rm -f "$verified_output" "${verified_output}.probes" 2> /dev/null || true
                 return "$process_status"
             fi
             if ! mv "$processed_output" "$output_file"; then
@@ -955,6 +959,11 @@ filter_protected_artifacts() {
             stop_status=$wait_status
         fi
     done
+    # A scan cancelled while its last probes ran has already had its sidecars
+    # removed; publishing now would recreate them.
+    if [[ $stop_status -eq 0 && ${#items[@]} -gt 0 && -n "$cancel_file" && ! -f "$cancel_file" ]]; then
+        stop_status=130
+    fi
     # The last probe can consume the remaining budget too. Never publish
     # that root's prefix as complete, even when there is no next item.
     if [[ $stop_status -eq 0 && "$deadline" =~ ^[0-9]+$ && $SECONDS -ge $deadline ]]; then
@@ -1978,7 +1987,7 @@ clean_project_artifacts() {
             scan_root_physical_parent_ids+=("$_MOLE_PATH_SNAPSHOT_PARENT_ID")
             scan_root_physical_target_ids+=("$_MOLE_PATH_SNAPSHOT_TARGET_ID")
             # Launch scan in background for true parallelism
-            scan_purge_targets "$path" "$scan_output" < /dev/null &
+            scan_purge_targets "$path" "$scan_output" "${scan_output}.verified" < /dev/null &
             local scan_pid=$!
             scan_pids+=("$scan_pid")
             active_scan_indexes+=("$((${#scan_roots[@]} - 1))")
