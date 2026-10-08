@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -68,7 +69,7 @@ func TestGetDirectorySizeFromDuSkippingImmediateChildDoesNotMeasureExcludedPath(
 	}
 
 	var measured []string
-	size, err := getDirectorySizeFromDuSkippingImmediateChild(context.Background(), base, excluded, nil, func(path string) (int64, error) {
+	size, err := getDirectorySizeFromDuSkippingImmediateChild(context.Background(), base, excluded, func(path string) (int64, error) {
 		measured = append(measured, path)
 		return 100, nil
 	})
@@ -126,33 +127,56 @@ func TestGetDirectorySizeFromDuMeasuresUserLibraryInOneTraversal(t *testing.T) {
 	}
 }
 
-func TestOverviewPerChildDuSharesOnePermitPool(t *testing.T) {
-	base := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(base, "child"), 0o755); err != nil {
+func TestOverviewPerChildDuPoolBelongsToOneMeasurement(t *testing.T) {
+	workers := min(max(runtime.NumCPU()*2, 2), 8)
+	stuckBase := t.TempDir()
+	for i := range workers + 2 {
+		if err := os.MkdirAll(filepath.Join(stuckBase, fmt.Sprintf("child-%d", i)), 0o755); err != nil {
+			t.Fatalf("mkdir child: %v", err)
+		}
+	}
+	freshBase := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(freshBase, "child"), 0o755); err != nil {
 		t.Fatalf("mkdir child: %v", err)
 	}
 
-	for range cap(overviewChildDuSem) {
-		overviewChildDuSem <- struct{}{}
-	}
+	// Hold every permit of one measurement on children that never finish,
+	// the way a cancelled Home refresh can while its du processes wind down.
+	release := make(chan struct{})
+	stuckDone := make(chan struct{})
+	var started atomic.Int64
+	go func() {
+		defer close(stuckDone)
+		_, _ = getDirectorySizeFromDuSkippingImmediateChild(context.Background(), stuckBase, filepath.Join(stuckBase, "Library"), func(string) (int64, error) {
+			started.Add(1)
+			<-release
+			return 100, nil
+		})
+	}()
 	defer func() {
-		for range cap(overviewChildDuSem) {
-			<-overviewChildDuSem
-		}
+		close(release)
+		<-stuckDone
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	deadline := time.Now().Add(5 * time.Second)
+	for started.Load() < int64(workers) {
+		if time.Now().After(deadline) {
+			t.Fatalf("expected %d concurrent du workers, saw %d", workers, started.Load())
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	// A new measurement gets its own permits instead of queueing behind the
+	// stuck one.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	var calls atomic.Int64
-	_, err := getDirectorySizeFromDuSkippingImmediateChild(ctx, base, "", nil, func(string) (int64, error) {
+	_, err := getDirectorySizeFromDuSkippingImmediateChild(ctx, freshBase, filepath.Join(freshBase, "Library"), func(string) (int64, error) {
 		calls.Add(1)
 		return 100, nil
 	})
-	if calls.Load() != 0 {
-		t.Fatalf("expected no du while the shared pool is exhausted, ran %d", calls.Load())
-	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("expected the wait for a shared permit to end with the deadline, got %v", err)
+	if err != nil || calls.Load() != 1 {
+		t.Fatalf("a stuck measurement held this one's permits: du calls=%d err=%v", calls.Load(), err)
 	}
 }
 
