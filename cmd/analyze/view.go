@@ -250,7 +250,7 @@ func (m model) View() string {
 					sizeText := fmt.Sprintf("%s scanning", spinnerFrames[m.spinner])
 					sizeColor := colorCyan
 					if sizeVal >= 0 {
-						sizeText = measuredSizeLabel(sizeVal, entry.State)
+						sizeText = sizeColumn(measuredSizeLabel(sizeVal, entry.State))
 						sizeColor = colorGray
 						if totalSize > 0 {
 							sizeColor = sizeColorForPercent(percent)
@@ -316,7 +316,7 @@ func (m model) View() string {
 					bar := coloredProgressBar(sizeValue, maxSize, percent)
 
 					sizeColor := sizeColorForPercent(percent)
-					size := measuredSizeLabel(entry.Size, entry.State)
+					size := sizeColumn(measuredSizeLabel(entry.Size, entry.State))
 					if entry.Size < 0 {
 						size = fmt.Sprintf("%s %s", spinnerFrames[m.spinner], "scanning")
 						sizeColor = colorCyan

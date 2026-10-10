@@ -4787,3 +4787,48 @@ func TestDeleteAfterRefreshCancelsLiveScanBeforeCacheInvalidation(t *testing.T) 
 		t.Error("live scan restored a directory cache after delete invalidation")
 	}
 }
+
+func TestSizeColumnKeepsUnitsAlignedForPartialRows(t *testing.T) {
+	complete := sizeColumn(measuredSizeLabel(2*1024*1024*1024, scanComplete))
+	partial := sizeColumn(measuredSizeLabel(37*1024*1024*1024, scanPartial))
+	unknown := sizeColumn(measuredSizeLabel(0, scanUnavailable))
+	for _, col := range []string{complete, partial, unknown} {
+		if len(col) != 10 {
+			t.Fatalf("size column %q is %d columns, want 10", col, len(col))
+		}
+	}
+	if strings.Index(complete, "GB") != strings.Index(partial, "GB") {
+		t.Fatalf("units drift between %q and %q", complete, partial)
+	}
+	if partial[9] != '+' || complete[9] != ' ' || unknown[9] != ' ' {
+		t.Fatalf("partial marker not in its own last column: %q %q %q", complete, partial, unknown)
+	}
+}
+
+func TestOverviewPartialMarkerSitsRightOfAlignedUnits(t *testing.T) {
+	const gb = int64(1024 * 1024 * 1024)
+	m := model{
+		path:       "/",
+		isOverview: true,
+		selected:   -1,
+		entries: []dirEntry{
+			{Name: "User Library", Path: "/tmp/lib", Size: 37 * gb, IsDir: true, State: scanPartial},
+			{Name: "Applications", Path: "/tmp/apps", Size: 2 * gb, IsDir: true, State: scanComplete},
+		},
+		totalSize: 39 * gb,
+		scanState: scanPartial,
+	}
+
+	unitColumn := map[string]int{}
+	for _, line := range strings.Split(ansi.Strip(m.View()), "\n") {
+		for _, name := range []string{"User Library", "Applications"} {
+			if strings.Contains(line, name) {
+				// Display columns, not bytes: each bar block is a multibyte rune.
+				unitColumn[name] = ansi.StringWidth(line[:strings.LastIndex(line, "GB")])
+			}
+		}
+	}
+	if len(unitColumn) != 2 || unitColumn["User Library"] != unitColumn["Applications"] {
+		t.Fatalf("partial and complete rows should share the unit column, got %v in:\n%s", unitColumn, ansi.Strip(m.View()))
+	}
+}

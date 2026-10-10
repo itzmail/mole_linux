@@ -304,6 +304,15 @@ func measuredSizeLabel(size int64, state scanState) string {
 	return label
 }
 
+// sizeColumn fills the 10-column size field with the partial marker in its
+// own last column, so units line up whether or not a row is partial.
+func sizeColumn(label string) string {
+	if trimmed, partial := strings.CutSuffix(label, "+"); partial {
+		return fmt.Sprintf("%9s+", trimmed)
+	}
+	return fmt.Sprintf("%9s ", label)
+}
+
 func scanSummary(size int64, state scanState) string {
 	if state != scanComplete {
 		return "Partial scan · " + measuredSizeLabel(size, state)
