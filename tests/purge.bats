@@ -4563,6 +4563,7 @@ EOF
     [ "$failures" -eq 0 ]
 }
 <<<<<<< HEAD
+<<<<<<< HEAD
 
 @test "scan_purge_targets still walks when find rejects the dataless flag name" {
 	# An older macOS find that does not know `dataless` fails the whole walk
@@ -4604,6 +4605,8 @@ EOF
 	[[ "$output" == *"WALK_LOG:FLAG_SEEN"* ]] || return 1
 	[[ "$output" != *"WALK_LOG:FLAG_SEEN"*"FLAG_SEEN"* ]]
 }
+=======
+>>>>>>> 77050616 (fix(purge): skip online-only cloud folders during the scan (#1679))
 
 @test "scan_purge_targets skips online-only cloud folders and never uses fd for a cloud root (#1679)" {
 	local cloud="$HOME/Library/CloudStorage/GoogleDrive-test"
@@ -4617,7 +4620,10 @@ EOF
 		/bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/clean/project.sh"
+<<<<<<< HEAD
 _MOLE_PURGE_FIND=find  # route the purge walk through the stub
+=======
+>>>>>>> 77050616 (fix(purge): skip online-only cloud folders during the scan (#1679))
 run_with_timeout() { shift; "$@"; }
 fd() { echo "FD_USED" >> "$HOME/walk.log"; return 1; }
 # A real dataless flag needs a File Provider, so the stub stands in for it with
@@ -4652,6 +4658,7 @@ EOF
 	[[ "$output" != *"WALK_DATALESS=false"* ]] || return 1
 	[[ "$output" != *"FD_USED"* ]]
 }
+<<<<<<< HEAD
 
 @test "purge keeps the dataless prune with GNU find first in PATH" {
 	# GNU findutils has no -flags primary, so a PATH find would always answer
@@ -5117,3 +5124,5 @@ EOF
 >>>>>>> 934ffae5 (perf(purge): pool discovery probes and bind candidates once per root)
 =======
 >>>>>>> 8811fcbd (fix(clean): recheck target ownership and preserve cancellation)
+=======
+>>>>>>> 77050616 (fix(purge): skip online-only cloud folders during the scan (#1679))
