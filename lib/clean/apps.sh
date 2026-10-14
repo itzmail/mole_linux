@@ -983,6 +983,11 @@ clean_orphaned_system_services() {
         # /Library/Intego tree is root-only readable; never treat its services
         # as orphans while any Intego install evidence exists. See #1188.
         "com.intego.*:/Library/Intego|/Applications/Intego|/Library/Application Support/Intego"
+        # Symantec and Broadcom endpoint agents: a half-removed install leaves plists
+        # whose program is gone beside daemons that still run, and only the vendor's
+        # own uninstaller finishes that. Empty evidence = never an orphan.
+        "com.symantec.*:"
+        "com.broadcom.*:"
         # Homebrew-managed services (managed by brew services, not .app bundles)
         "homebrew.mxcl.*:"
     )

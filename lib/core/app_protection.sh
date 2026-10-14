@@ -151,7 +151,8 @@ official_uninstaller_vendor() {
     for rule in "${OFFICIAL_UNINSTALLER_RULES[@]}"; do
         IFS='|' read -r vendor prefixes fragments <<< "$rule"
         IFS=',' read -r -a _prefixes <<< "$prefixes"
-        for prefix in "${_prefixes[@]}"; do
+        # A rule may leave a field empty; bash 3.2 under set -u rejects an empty "${arr[@]}".
+        for prefix in "${_prefixes[@]+"${_prefixes[@]}"}"; do
             [[ -n "$prefix" && "$normalized_bundle" == "$prefix"* ]] && {
                 printf '%s\n' "$vendor"
                 return 0
@@ -159,7 +160,7 @@ official_uninstaller_vendor() {
         done
 
         IFS=',' read -r -a _fragments <<< "$fragments"
-        for fragment in "${_fragments[@]}"; do
+        for fragment in "${_fragments[@]+"${_fragments[@]}"}"; do
             if [[ -n "$fragment" ]] &&
                 { [[ "$normalized_name" == *"$fragment"* ]] || [[ "$normalized_path" == *"$fragment"* ]]; }; then
                 printf '%s\n' "$vendor"

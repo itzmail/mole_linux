@@ -275,6 +275,7 @@ var endpointSecurityBundlePrefixes = []string{
 	"com.paloaltonetworks.",
 	"com.cisco.anyconnect",
 	"com.cisco.secureclient",
+	"com.alibaba.security.",
 }
 
 // isEndpointSecurityCachePath reports whether path is an endpoint-security / EDR

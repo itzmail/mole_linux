@@ -183,6 +183,7 @@ readonly OFFICIAL_UNINSTALLER_RULES=(
     "SentinelOne|com.sentinelone.,com.sentinel-labs.|sentinelone,sentinel agent"
     "GlobalProtect|com.paloaltonetworks.|globalprotect"
     "Cisco|com.cisco.anyconnect,com.cisco.secureclient|cisco secure client,cisco anyconnect"
+    "Alibaba Cloud Security|com.alibaba.security.|"
 )
 
 # Endpoint-security / EDR / MDM agent bundle-id prefixes. Their per-user Darwin
@@ -201,6 +202,7 @@ readonly ENDPOINT_SECURITY_BUNDLE_PREFIXES=(
     "com.paloaltonetworks."
     "com.cisco.anyconnect"
     "com.cisco.secureclient"
+    "com.alibaba.security."
 )
 
 # Applications with sensitive data; protected during cleanup but removable

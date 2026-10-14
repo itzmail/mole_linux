@@ -2347,6 +2347,69 @@ EOF
     [[ "$output" != *"skipped 1 protected"* ]] || return 1
 }
 
+@test "clean_orphaned_system_services never nominates a half-removed Symantec or Broadcom agent" {
+    # A half-removed endpoint agent leaves launchd plists whose program is gone
+    # beside daemons that still run. The vendor's own uninstaller is the way to
+    # finish that, so these are never offered as orphans. A genuinely orphaned
+    # service in the same scan must still be found, which proves the scan ran.
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_MODE=0 MOLE_TEST_NO_AUTH=0 DRY_RUN=false MOLE_DRY_RUN=0 /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/apps.sh"
+
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+note_activity() { :; }
+debug_log() { :; }
+
+tmp_dir="$(mktemp -d)"
+symantec_plist="$tmp_dir/com.symantec.mes.daemon.plist"
+broadcom_plist="$tmp_dir/com.broadcom.mes.agent.plist"
+orphan_plist="$tmp_dir/com.example.gone.daemon.plist"
+/usr/libexec/PlistBuddy -c "Add :Program string $tmp_dir/missing-symantec" "$symantec_plist" > /dev/null 2>&1 || true
+/usr/libexec/PlistBuddy -c "Add :Program string $tmp_dir/missing-broadcom" "$broadcom_plist" > /dev/null 2>&1 || true
+/usr/libexec/PlistBuddy -c "Add :Program string $tmp_dir/missing-binary" "$orphan_plist" > /dev/null 2>&1 || true
+
+safe_sudo_remove() {
+  echo "removed:$1"
+  return 0
+}
+
+sudo() {
+  if [[ "$1" == "-n" && "$2" == "true" ]]; then
+    return 0
+  fi
+  [[ "${1:-}" == "-n" ]] && shift
+  if [[ "$1" == "test" ]]; then
+    return 1
+  fi
+  if [[ "$1" == "find" ]]; then
+    case "$2" in
+      /Library/LaunchDaemons) printf '%s\0' "$symantec_plist" "$broadcom_plist" "$orphan_plist" ;;
+      *) : ;;
+    esac
+    return 0
+  fi
+  if [[ "$1" == "du" ]]; then
+    echo "4 ${3:-}"
+    return 0
+  fi
+  if [[ "$1" == "launchctl" ]]; then
+    return 0
+  fi
+  command "$@"
+}
+
+clean_orphaned_system_services
+EOF
+
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [[ "$output" == *"Orphaned services · cleaned 1"* ]] || { echo "$output"; return 1; }
+    [[ "$output" == *"com.example.gone.daemon.plist"* ]] || { echo "$output"; return 1; }
+    [[ "$output" != *"com.symantec.mes.daemon.plist"* ]] || { echo "$output"; return 1; }
+    [[ "$output" != *"com.broadcom.mes.agent.plist"* ]] || { echo "$output"; return 1; }
+}
+
 @test "clean_orphaned_system_services keeps daemons whose binary is root-only readable (#1188)" {
     # Intego-style self-protecting software (antivirus, endpoint agents) makes
     # its install tree root-only readable, so the unprivileged -e probe misses

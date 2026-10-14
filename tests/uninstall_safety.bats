@@ -122,6 +122,20 @@ EOF
 	[[ "$result" == *"Jamf"* ]] || { echo "missed Jamf"; exit 1; }
 }
 
+@test "official uninstaller vendor covers AliEntSafe and leaves other Alibaba apps ordinary" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -uo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+printf 'ALIENTSAFE=%s\n' "$(official_uninstaller_vendor "com.alibaba.security.AliEntSafe" "AliEntSafe" "/Applications/AliEntSafe.app" || echo none)"
+printf 'DINGTALK=%s\n' "$(official_uninstaller_vendor "com.alibaba.DingTalkMac" "DingTalk" "/Applications/DingTalk.app" || echo none)"
+printf 'ALIYUN=%s\n' "$(official_uninstaller_vendor "com.alibaba.aliyun.drive" "AliyunDrive" "/Applications/AliyunDrive.app" || echo none)"
+EOF
+	[ "$status" -eq 0 ] || { echo "$output"; return 1; }
+	[[ "$output" == *"ALIENTSAFE=Alibaba Cloud Security"* ]] || { echo "$output"; return 1; }
+	[[ "$output" == *"DINGTALK=none"* ]] || { echo "$output"; return 1; }
+	[[ "$output" == *"ALIYUN=none"* ]] || { echo "$output"; return 1; }
+}
+
 @test "receipt payload allowlist rejects broad system roots" {
 	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
