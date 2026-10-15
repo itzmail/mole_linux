@@ -4699,6 +4699,7 @@ EOF
 	[[ "$output" != *"FD_USED"* ]]
 }
 <<<<<<< HEAD
+<<<<<<< HEAD
 
 @test "purge keeps the dataless prune with GNU find first in PATH" {
 	# GNU findutils has no -flags primary, so a PATH find would always answer
@@ -4743,6 +4744,8 @@ EOF
 	[[ "$path_find_calls" != *"-flags"* ]] || { echo "$path_find_calls"; return 1; }
 	[[ "$path_find_calls" != *"$root -mindepth"* ]] || { echo "$path_find_calls"; return 1; }
 }
+=======
+>>>>>>> df2f5e06 (fix(purge): preserve cancellation from the dataless capability probe)
 
 @test "dataless capability signals cancel discovery before any candidate is published" {
     local signal
@@ -4750,7 +4753,10 @@ EOF
         run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" SIGNAL="$signal" /bin/bash --noprofile --norc <<'SH'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/clean/project.sh"
+<<<<<<< HEAD
 _MOLE_PURGE_FIND=find  # route the purge walk through the stub
+=======
+>>>>>>> df2f5e06 (fix(purge): preserve cancellation from the dataless capability probe)
 mkdir -p "$HOME/.cache/mole" "$HOME/projects/app/node_modules"
 touch "$HOME/projects/app/package.json"
 run_with_timeout() { shift; "$@"; }
@@ -4770,6 +4776,7 @@ SH
         [ "$status" -eq 0 ] || { echo "$output"; return 1; }
     done
 }
+<<<<<<< HEAD
 
 # #1666: a container root (purge_paths entry that is not a project) is scanned
 # as one unit first. Only when that scan times out is it scanned again one
@@ -5166,3 +5173,5 @@ EOF
 >>>>>>> 8811fcbd (fix(clean): recheck target ownership and preserve cancellation)
 =======
 >>>>>>> 77050616 (fix(purge): skip online-only cloud folders during the scan (#1679))
+=======
+>>>>>>> df2f5e06 (fix(purge): preserve cancellation from the dataless capability probe)

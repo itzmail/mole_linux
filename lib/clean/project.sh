@@ -585,7 +585,10 @@ is_protected_purge_artifact() {
 # directory that is never dataless; any failure means "unknown", not "dataless".
 _purge_find_knows_dataless() {
     if [[ -z "${_MOLE_PURGE_FIND_DATALESS:-}" ]]; then
-        if run_with_timeout "$MOLE_TIMEOUT_QUICK_DETECT_SEC" find "$HOME" -maxdepth 0 -flags +dataless > /dev/null 2>&1; then
+        local probe_rc=0
+        run_with_timeout "$MOLE_TIMEOUT_QUICK_DETECT_SEC" find "$HOME" -maxdepth 0 -flags +dataless > /dev/null 2>&1 || probe_rc=$?
+        mole_rc_signal "$probe_rc" && return "$probe_rc"
+        if [[ $probe_rc -eq 0 ]]; then
             _MOLE_PURGE_FIND_DATALESS="yes"
         else
             _MOLE_PURGE_FIND_DATALESS="no"
@@ -833,7 +836,12 @@ scan_purge_targets() {
         # An older find that does not know the flag name fails the whole walk,
         # so ask it once, after the budget check, and walk without the prune
         # when it does not.
-        if [[ $find_status -eq 0 ]] && _purge_find_knows_dataless; then
+        local dataless_rc=0
+        _purge_find_knows_dataless || dataless_rc=$?
+        if mole_rc_signal "$dataless_rc"; then
+            cleanup_scan_outputs
+            return "$dataless_rc"
+        elif [[ $dataless_rc -eq 0 ]]; then
             prune_expr+=(-o -flags +dataless)
         fi
         if [[ $find_status -eq 0 ]]; then
