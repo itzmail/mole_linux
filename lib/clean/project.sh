@@ -581,12 +581,19 @@ is_protected_purge_artifact() {
 # Scan purge targets using fd (fast) or pruned find. Optional $3 names a file
 # for the candidates the content probes verified clean; the caller that asks
 # for it owns and removes it, so a plain scan leaves nothing behind.
+# The purge walk and its dataless probe use the system find: `-flags` is a BSD
+# primary, so a GNU findutils find earlier in PATH would always answer "unknown"
+# and the walk would descend into online-only cloud folders. One binary for the
+# probe and both walks keeps the probe's answer true for the walk. Not readonly
+# so a test can point it at a fixture stub after sourcing.
+_MOLE_PURGE_FIND="/usr/bin/find"
+
 # 0 when this find accepts `-flags +dataless`. Probed once per process on a
 # directory that is never dataless; any failure means "unknown", not "dataless".
 _purge_find_knows_dataless() {
     if [[ -z "${_MOLE_PURGE_FIND_DATALESS:-}" ]]; then
         local probe_rc=0
-        run_with_timeout "$MOLE_TIMEOUT_QUICK_DETECT_SEC" find "$HOME" -maxdepth 0 -flags +dataless > /dev/null 2>&1 || probe_rc=$?
+        run_with_timeout "$MOLE_TIMEOUT_QUICK_DETECT_SEC" "$_MOLE_PURGE_FIND" "$HOME" -maxdepth 0 -flags +dataless > /dev/null 2>&1 || probe_rc=$?
         mole_rc_signal "$probe_rc" && return "$probe_rc"
         if [[ $probe_rc -eq 0 ]]; then
             _MOLE_PURGE_FIND_DATALESS="yes"
@@ -824,8 +831,6 @@ scan_purge_targets() {
             [[ $i -lt $((${#purge_targets[@]} - 1)) ]] && target_expr+=(-o)
         done
 
-        # Use plain `find` here for compatibility with environments where
-        # `command find` behaves inconsistently in this complex expression.
         local find_status=0
         scan_stage_timeout=$(_mole_timeout_with_deadline "$scan_timeout" "$scan_deadline") || find_status=$?
         if [[ $find_status -ne 0 ]]; then
@@ -846,7 +851,7 @@ scan_purge_targets() {
         fi
         if [[ $find_status -eq 0 ]]; then
             debug_log "Using find for scanning"
-            run_with_timeout "$scan_stage_timeout" find "$search_path" -mindepth "$min_depth" -maxdepth "$max_depth" -type d \
+            run_with_timeout "$scan_stage_timeout" "$_MOLE_PURGE_FIND" "$search_path" -mindepth "$min_depth" -maxdepth "$max_depth" -type d \
                 \( "${prune_expr[@]}" \) -prune -o \
                 \( "${target_expr[@]}" \) -print -prune \
                 2> /dev/null > "$target_output" || find_status=$?
@@ -856,7 +861,7 @@ scan_purge_targets() {
             scan_stage_timeout=$(_mole_timeout_with_deadline "$scan_timeout" "$scan_deadline") || find_status=$?
         fi
         if [[ $find_status -eq 0 ]]; then
-            run_with_timeout "$scan_stage_timeout" find "$search_path" -mindepth "$cachedir_tag_min_depth" -maxdepth "$cachedir_tag_max_depth" \
+            run_with_timeout "$scan_stage_timeout" "$_MOLE_PURGE_FIND" "$search_path" -mindepth "$cachedir_tag_min_depth" -maxdepth "$cachedir_tag_max_depth" \
                 \( -type d \( \( "${prune_expr[@]}" \) -o \( "${target_expr[@]}" \) \) \) -prune -o \
                 -type f -name "$MOLE_CACHEDIR_TAG_NAME" -print \
                 2> /dev/null > "$tag_output" || find_status=$?

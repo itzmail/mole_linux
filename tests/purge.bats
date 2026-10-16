@@ -4622,6 +4622,7 @@ EOF
 		/bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/clean/project.sh"
+_MOLE_PURGE_FIND=find  # route the purge walk through the stub
 run_with_timeout() { shift; "$@"; }
 fd() { return 1; }
 find() {
@@ -4661,9 +4662,13 @@ EOF
 set -euo pipefail
 source "$PROJECT_ROOT/lib/clean/project.sh"
 <<<<<<< HEAD
+<<<<<<< HEAD
 _MOLE_PURGE_FIND=find  # route the purge walk through the stub
 =======
 >>>>>>> 77050616 (fix(purge): skip online-only cloud folders during the scan (#1679))
+=======
+_MOLE_PURGE_FIND=find  # route the purge walk through the stub
+>>>>>>> 66bd98a3 (fix(clean): keep purge and Service Worker discovery working under GNU find)
 run_with_timeout() { shift; "$@"; }
 fd() { echo "FD_USED" >> "$HOME/walk.log"; return 1; }
 # A real dataless flag needs a File Provider, so the stub stands in for it with
@@ -4747,6 +4752,50 @@ EOF
 =======
 >>>>>>> df2f5e06 (fix(purge): preserve cancellation from the dataless capability probe)
 
+@test "purge keeps the dataless prune with GNU find first in PATH" {
+	# GNU findutils has no -flags primary, so a PATH find would always answer
+	# "unknown" and the walk would list online-only cloud folders. The probe
+	# and both walks use the system find instead.
+	local root="$HOME/gnu-find-purge"
+	local stub_bin="$HOME/gnu-find-bin"
+	mkdir -p "$root/app/node_modules" "$stub_bin"
+	touch "$root/app/package.json"
+	cat > "$stub_bin/find" <<'STUB'
+#!/bin/bash
+echo "PATH_FIND $*" >> "$HOME/gnu-find.log"
+for arg in "$@"; do
+	[[ "$arg" == "-flags" ]] && { echo "find: unknown predicate '-flags'" >&2; exit 1; }
+done
+exec /usr/bin/find "$@"
+STUB
+	chmod +x "$stub_bin/find"
+
+	local scan_output
+	scan_output="$(mktemp)"
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" PATH="$stub_bin:$PATH" ROOT="$root" SCAN_OUTPUT="$scan_output" \
+		/bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/clean/project.sh"
+run_with_timeout() { shift; "$@"; }
+fd() { return 1; }
+rc=0
+_purge_find_knows_dataless || rc=$?
+echo "DATALESS_RC=$rc"
+scan_purge_targets "$ROOT" "$SCAN_OUTPUT"
+cat "$SCAN_OUTPUT"
+EOF
+
+	local path_find_calls=""
+	path_find_calls=$(cat "$HOME/gnu-find.log" 2> /dev/null || true)
+	rm -f "$scan_output" "$HOME/gnu-find.log"
+	rm -rf "$root" "$stub_bin"
+	[ "$status" -eq 0 ] || { echo "$output"; return 1; }
+	[[ "$output" == *"DATALESS_RC=0"* ]] || { echo "$output"; return 1; }
+	[[ "$output" == *"$root/app/node_modules"* ]] || { echo "$output"; return 1; }
+	[[ "$path_find_calls" != *"-flags"* ]] || { echo "$path_find_calls"; return 1; }
+	[[ "$path_find_calls" != *"$root -mindepth"* ]] || { echo "$path_find_calls"; return 1; }
+}
+
 @test "dataless capability signals cancel discovery before any candidate is published" {
     local signal
     for signal in 130 143; do
@@ -4754,9 +4803,13 @@ EOF
 set -euo pipefail
 source "$PROJECT_ROOT/lib/clean/project.sh"
 <<<<<<< HEAD
+<<<<<<< HEAD
 _MOLE_PURGE_FIND=find  # route the purge walk through the stub
 =======
 >>>>>>> df2f5e06 (fix(purge): preserve cancellation from the dataless capability probe)
+=======
+_MOLE_PURGE_FIND=find  # route the purge walk through the stub
+>>>>>>> 66bd98a3 (fix(clean): keep purge and Service Worker discovery working under GNU find)
 mkdir -p "$HOME/.cache/mole" "$HOME/projects/app/node_modules"
 touch "$HOME/projects/app/package.json"
 run_with_timeout() { shift; "$@"; }
