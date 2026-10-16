@@ -426,9 +426,6 @@ EOF
     rm -rf "$test_home"
 }
 
-<<<<<<< HEAD
-@test "a custom whitelist still protects system caches and Poetry virtualenvs" {
-=======
 @test "clean_user_essentials keeps the DiagnosticReports directory (#1689)" {
     local test_home="$HOME/diag-home"
     mkdir -p "$test_home/Library/Logs/DiagnosticReports"
@@ -595,7 +592,7 @@ EOF
 }
 
 @test "a custom whitelist still protects system caches, Poetry virtualenvs and the renv cache" {
->>>>>>> 8811fcbd (fix(clean): recheck target ownership and preserve cancellation)
+
     # clean_user_essentials sweeps every child of ~/Library/Caches, and
     # load_mole_whitelist replaces DEFAULT_WHITELIST_PATTERNS wholesale once a
     # user saves one entry of their own. Anything that breaks macOS search,
@@ -1533,8 +1530,6 @@ safe_clean() {
 files_cleaned=0
 total_size_cleaned=0
 total_items=0
-<<<<<<< HEAD
-=======
 # The wallpaper row only reaches its sink with an old render of another picture.
 renders="$HOME/Library/Containers/com.apple.wallpaper.agent/Data/Library/Caches/com.apple.wallpaper.caches/extension-com.apple.wallpaper.extension.image"
 mkdir -p "$renders"
@@ -1545,7 +1540,7 @@ echo x > "$renders/${hex//0/f}-5120-2880-0-1.bmp"
 # clean_utm_caches only reaches its sinks when a UTM target exists.
 mkdir -p "$HOME/Library/Containers/com.utmapp.UTM/Data/Library/Caches"
 echo x > "$HOME/Library/Containers/com.utmapp.UTM/Data/Library/Caches/blob"
->>>>>>> d7e9f6fc (fix: keep Mole correct with GNU tools first in PATH)
+
 
 clean_app_caches
 clean_office_applications
@@ -2925,8 +2920,6 @@ EOF_INNER
     [[ "$output" == *"REMOVE:$volume/Photos/._IMG_0001.jpg"* ]] || return 1
     [[ "$output" != *"REMOVE:$volume/.Spotlight-V100"* ]]
 }
-<<<<<<< HEAD
-=======
 
 @test "clean_trash names a Trash it cannot list instead of skipping silently" {
     local trash_home="$BATS_TEST_TMPDIR/locked-trash-home"
@@ -3111,4 +3104,4 @@ EOF
     [[ "$output" == *"OVERCAP n=0"* ]] || return 1
     [[ "$output" == *"SYMLINK n=0"* ]] || return 1
 }
->>>>>>> d7e9f6fc (fix: keep Mole correct with GNU tools first in PATH)
+

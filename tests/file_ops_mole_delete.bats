@@ -1496,8 +1496,6 @@ EOF
     # Nothing privileged may run against a symlinked root.
     [[ ! -s "$trace" ]]
 }
-<<<<<<< HEAD
-=======
 
 
 @test "Finder automation denial names the permission and records the actual error (#1644)" {
@@ -1718,4 +1716,4 @@ EOF
     [ "$status" -eq 0 ]
     [[ "$output" == *"destination-swap-refused"* ]]
 }
->>>>>>> d7e9f6fc (fix: keep Mole correct with GNU tools first in PATH)
+

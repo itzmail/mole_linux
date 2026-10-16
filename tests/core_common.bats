@@ -1018,8 +1018,6 @@ SCRIPT
     [ "$status" -eq 0 ]
     [[ "$output" == *"DRY_RUN=false"* ]]
 }
-<<<<<<< HEAD
-=======
 
 @test "Trash refusal stops the spinner with stdout redirected and clears only a terminal stderr" {
     if ! /usr/bin/script -q /dev/null /usr/bin/true < /dev/null > /dev/null 2>&1; then
@@ -1060,25 +1058,16 @@ assert b'Cleaning fixture...' not in raw.split(b'Error:', 1)[1], raw
 PY
 }
 
-<<<<<<< HEAD
-@test "BSD-only stat, date, find and tr forms never resolve through PATH (#1196, #1752)" {
-=======
 @test "BSD-only stat, date and find forms never resolve through PATH (#1196, #1752)" {
->>>>>>> 66bd98a3 (fix(clean): keep purge and Service Worker discovery working under GNU find)
+
     # GNU coreutils earlier in PATH reads stat -f as file-system status and
     # date -r/-j differently, so these calls go through $STAT_BSD and
     # $_DATE_CMD; GNU find reads `-depth 2` as a path, so use -mindepth/-maxdepth. Match the command position, skip comment lines, and prove
     # the matcher fires on a known positive.
     run env PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
-<<<<<<< HEAD
-# A command word starts after a separator, an opening quote or $( ; an
-# absolute /usr/bin/find is the BSD binary and may use -depth N.
-start='(^|[[:space:];(|&`"'"'"']|[$][(])'
-pattern="${start}(stat[[:space:]]+-|date[[:space:]]+-[A-Za-z]*[jrv]|find[^|;]*[[:space:]]-depth[[:space:]]+[0-9])"
-=======
 pattern='(^|[[:space:];(|&`]|[$][(])(stat[[:space:]]+-|date[[:space:]]+-[A-Za-z]*[jrv])|find[^|;]*[[:space:]]-depth[[:space:]]+[0-9]'
->>>>>>> 66bd98a3 (fix(clean): keep purge and Service Worker discovery working under GNU find)
+
 for probe in '    age=$(( now - $(stat -f %m "$d") ))' '    -exec stat -f "%z" {} +' '    d=$(date -r "$n" +%F)' "    'find \"\$1\" -type d -depth 2'"; do
     printf '%s\n' "$probe" | grep -qE "$pattern" || { echo "matcher missed: $probe"; exit 1; }
 done
@@ -1110,4 +1099,3 @@ EOF
 
     [[ "$status" -eq 0 ]] || { echo "$output"; return 1; }
 }
->>>>>>> d7e9f6fc (fix: keep Mole correct with GNU tools first in PATH)

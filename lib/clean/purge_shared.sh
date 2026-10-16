@@ -186,15 +186,8 @@ mole_git_repo_root() {
 }
 
 # Run a bounded `git ls-files` in a repository from directory $3. Inherited Git
-<<<<<<< HEAD
-# routing and pathspec switches are ignored so the repository's own index
-# answers and fsmonitor hooks never run. Callers name a path with
-# mole_git_path_spec; a bare name would be read as a glob. Returns git's or the
-# timeout's status.
-=======
 # routing is ignored so the repository's own index answers, fsmonitor hooks
 # never run, and pathspecs stay literal. Returns git's or the timeout's status.
->>>>>>> d929d156 (fix(clean): keep project caches that Git tracks (#1686))
 mole_git_ls_files() {
     local repo="$1"
     local deadline="$2"
@@ -204,46 +197,16 @@ mole_git_ls_files() {
     probe_timeout=$(_mole_timeout_with_deadline "$MOLE_TIMEOUT_HINT_SCAN_SEC" "$deadline") || return 124
     run_with_timeout "$probe_timeout" \
         env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR \
-<<<<<<< HEAD
-        -u GIT_LITERAL_PATHSPECS -u GIT_GLOB_PATHSPECS -u GIT_NOGLOB_PATHSPECS -u GIT_ICASE_PATHSPECS \
-        GIT_OPTIONAL_LOCKS=0 \
-        git -c core.fsmonitor=false --git-dir="$repo/.git" --work-tree="$repo" -C "$dir" ls-files "$@" 2> /dev/null
-}
-
-# The pathspec for a physical path inside repository $1, set in
-# MOLE_GIT_PATH_SPEC without a subshell: the whole path from the work tree top,
-# literal so glob characters in a folder name match nothing else, and
-# case-blind. The default macOS volume keeps whichever spelling a folder was
-# created or renamed with while the index keeps the one Git first saw, so a
-# spelling taken from the disk can miss tracked files; matching without case
-# can only keep more, never less.
-mole_git_path_spec() {
-    local repo="$1"
-    local path="$2"
-    local rel=""
-    [[ "$path" == "$repo" ]] || rel="${path#"$repo"/}"
-    MOLE_GIT_PATH_SPEC=":(top,literal,icase)$rel"
-}
-
-=======
         GIT_OPTIONAL_LOCKS=0 GIT_LITERAL_PATHSPECS=1 \
         git -c core.fsmonitor=false --git-dir="$repo/.git" --work-tree="$repo" -C "$dir" ls-files "$@" 2> /dev/null
 }
 
->>>>>>> d929d156 (fix(clean): keep project caches that Git tracks (#1686))
 # Whether Git tracks files below a directory, asked of the repository that owns
 # it. Names do not prove a directory is disposable: build/ can hold tracked
 # source and a cache-named folder a committed fixture. Returns 0 when Git tracks
 # files there, 1 when no repository owns the path or it tracks nothing there,
-<<<<<<< HEAD
-<<<<<<< HEAD
-# and 2 when the probe timed out or failed. Signal statuses propagate.
-=======
 # and 2 when the probe timed out or failed.
->>>>>>> d929d156 (fix(clean): keep project caches that Git tracks (#1686))
-=======
 # and 2 when the probe timed out or failed. Signal statuses propagate.
->>>>>>> 8811fcbd (fix(clean): recheck target ownership and preserve cancellation)
 mole_path_has_git_tracked_files() {
     local path="${1%/}"
     local deadline="${2:-}"
@@ -253,22 +216,11 @@ mole_path_has_git_tracked_files() {
     # Git ancestry must follow the actual repository, not the alias spelling.
     path=$(cd "$path" 2> /dev/null && /bin/pwd -P) || return 2
     repo=$(mole_git_repo_root "$path") || return 1
-<<<<<<< HEAD
-<<<<<<< HEAD
-    local probe_rc=0
-    mole_git_path_spec "$repo" "$path"
-    evidence=$(mole_git_ls_files "$repo" "$deadline" "$repo" -- "$MOLE_GIT_PATH_SPEC") || probe_rc=$?
-    [[ $probe_rc -le 128 ]] || return "$probe_rc"
-    [[ $probe_rc -eq 0 ]] || return 2
-=======
     evidence=$(mole_git_ls_files "$repo" "$deadline" "$path" -- .) || return 2
->>>>>>> d929d156 (fix(clean): keep project caches that Git tracks (#1686))
-=======
     local probe_rc=0
     evidence=$(mole_git_ls_files "$repo" "$deadline" "$path" -- .) || probe_rc=$?
     [[ $probe_rc -le 128 ]] || return "$probe_rc"
     [[ $probe_rc -eq 0 ]] || return 2
->>>>>>> 8811fcbd (fix(clean): recheck target ownership and preserve cancellation)
     [[ -n "$evidence" ]] && return 0
     return 1
 }

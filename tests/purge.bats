@@ -42,8 +42,6 @@ get_dir_size_kb() { echo 1; }
 safe_remove() { printf 'SELECTED:%s\n' "$1"; }
 is_recently_modified() { _PURGE_ACTIVITY_STATE=old; return 1; }
 printf() {
-<<<<<<< HEAD
-<<<<<<< HEAD
     if [[ "$1" == '%s %s %s\n' && "${item:-}" == *a-bad* ]]; then
         case "$RESULT_MODE" in
             truncated) builtin printf '1' ;;
@@ -51,23 +49,6 @@ printf() {
             missing-mtime) builtin printf '1 old\n' ;;
             failed-worker) builtin printf '1 old 1700000000\n'; exit 7 ;;
             failed-write) builtin printf '1 old 1700000000\n'; return 7 ;;
-=======
-    if [[ "$1" == '%s %s\n' && "${item:-}" == *a-bad* ]]; then
-        case "$RESULT_MODE" in
-            truncated) builtin printf '1' ;;
-            missing-field) builtin printf '1 \n' ;;
-            failed-worker) builtin printf '1 old\n'; exit 7 ;;
-            failed-write) builtin printf '1 old\n'; return 7 ;;
->>>>>>> f3b6ea5b (fix(purge): bound parallel activity classification safely)
-=======
-    if [[ "$1" == '%s %s %s\n' && "${item:-}" == *a-bad* ]]; then
-        case "$RESULT_MODE" in
-            truncated) builtin printf '1' ;;
-            missing-field) builtin printf '1 \n' ;;
-            missing-mtime) builtin printf '1 old\n' ;;
-            failed-worker) builtin printf '1 old 1700000000\n'; exit 7 ;;
-            failed-write) builtin printf '1 old 1700000000\n'; return 7 ;;
->>>>>>> 934ffae5 (perf(purge): pool discovery probes and bind candidates once per root)
         esac
     else
         builtin printf "$@"
@@ -3578,10 +3559,6 @@ EOF_INNER
 }
 
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> 33cc6bfe (perf(purge): reuse the discovery content verdict in the review step)
 @test "purge review does not walk a candidate discovery already verified" {
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash <<'EOF_INNER'
 set -euo pipefail
@@ -3648,11 +3625,6 @@ EOF_INNER
     }
 }
 
-<<<<<<< HEAD
-=======
->>>>>>> f3b6ea5b (fix(purge): bound parallel activity classification safely)
-=======
->>>>>>> 33cc6bfe (perf(purge): reuse the discovery content verdict in the review step)
 @test "activity batch inspects later fast artifacts without selecting recent or failed probes" {
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF_ACTIVITY'
 set -euo pipefail
@@ -3847,19 +3819,10 @@ EOF_REPEAT_TERM
     assert_activity_result_fails_closed missing-field
 }
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> 934ffae5 (perf(purge): pool discovery probes and bind candidates once per root)
 @test "activity batch retains a worker result missing its mtime" {
     assert_activity_result_fails_closed missing-mtime
 }
 
-<<<<<<< HEAD
-=======
->>>>>>> f3b6ea5b (fix(purge): bound parallel activity classification safely)
-=======
->>>>>>> 934ffae5 (perf(purge): pool discovery probes and bind candidates once per root)
 @test "activity batch retains a result from an unsuccessful worker" {
     assert_activity_result_fails_closed failed-worker
 }
@@ -3948,15 +3911,7 @@ is_recently_modified() {
     return 143
 }
 printf() {
-<<<<<<< HEAD
-<<<<<<< HEAD
     [[ "$1" != '%s %s %s\n' ]] || return 7
-=======
-    [[ "$1" != '%s %s\n' ]] || return 7
->>>>>>> f3b6ea5b (fix(purge): bound parallel activity classification safely)
-=======
-    [[ "$1" != '%s %s %s\n' ]] || return 7
->>>>>>> 934ffae5 (perf(purge): pool discovery probes and bind candidates once per root)
     builtin printf "$@"
 }
 export MOLE_DRY_RUN=1
@@ -3969,10 +3924,6 @@ EOF_SIGNAL_WRITE
     [[ "$output" == *CANCELLED_WITH_FAILED_WRITER* ]] || return 1
     [[ "$output" != *SIZE_PHASE_REACHED* && "$output" != *LATER_PROBE_REACHED* && "$output" != *UNEXPECTED_REMOVE* ]] || return 1
 }
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> b19a7d2d (fix(purge): refill activity workers while preserving cancellation)
 
 @test "activity sliding window reaches a later fast artifact while an earlier probe waits" {
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF_WINDOW'
@@ -4053,18 +4004,8 @@ is_recently_modified() {
     return 1
 }
 printf() {
-<<<<<<< HEAD
-<<<<<<< HEAD
     if [[ "$1" == '%s %s %s\n' && "${item:-}" == */b-failed/node_modules ]]; then
         builtin printf '1 old 1700000000\n'
-=======
-    if [[ "$1" == '%s %s\n' && "${item:-}" == */b-failed/node_modules ]]; then
-        builtin printf '1 old\n'
->>>>>>> b19a7d2d (fix(purge): refill activity workers while preserving cancellation)
-=======
-    if [[ "$1" == '%s %s %s\n' && "${item:-}" == */b-failed/node_modules ]]; then
-        builtin printf '1 old 1700000000\n'
->>>>>>> 934ffae5 (perf(purge): pool discovery probes and bind candidates once per root)
         exit 7
     fi
     builtin printf "$@"
@@ -4083,10 +4024,6 @@ EOF_INDEX
     [[ "$output" != *"SELECTED:$fixture/www/d-recent/node_modules"* ]] || return 1
     [[ "$output" != *"SELECTED:$fixture/www/e-error/node_modules"* ]] || return 1
 }
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> 934ffae5 (perf(purge): pool discovery probes and bind candidates once per root)
 
 @test "purge menu rows reuse the activity mtime and batch scratch removal" {
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF_ROWS'
@@ -4299,14 +4236,7 @@ is_protected_purge_artifact() {
     PURGE_PROTECTION_UNVERIFIED=false
     return 1
 }
-<<<<<<< HEAD
-<<<<<<< HEAD
 
-=======
->>>>>>> 934ffae5 (perf(purge): pool discovery probes and bind candidates once per root)
-=======
-
->>>>>>> 8811fcbd (fix(clean): recheck target ownership and preserve cancellation)
 : > "$fixture/scanning"
 result=0
 {
@@ -4322,8 +4252,6 @@ EOF_CANCEL
     [ "$status" -eq 0 ] || { echo "$output"; return 1; }
     [[ "$output" == *"STATUS=130"* ]] || { echo "$output"; return 1; }
 }
-<<<<<<< HEAD
-<<<<<<< HEAD
 
 @test "purge content probes never run more than four at a time and keep input order past the pool" {
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF_WIDE'
@@ -4454,16 +4382,12 @@ EOF_SIDECAR
     grep -Fxq "$HOME/www/test-project/node_modules" "$plain" || { echo "plain scan found nothing"; return 1; }
     grep -Fxq "$HOME/www/test-project/node_modules" "$asked" || { echo "named scan found nothing"; return 1; }
     local leftovers
-<<<<<<< HEAD
     # shellcheck disable=SC2010  # Scratch directory with mktemp-generated ASCII names.
-=======
->>>>>>> c2ad966d (fix(purge): leave the verified sidecar to the scan caller that asks for it)
     leftovers="$(ls "$BATS_TEST_TMPDIR" | grep '^plain\.' || true)"
     [ -z "$leftovers" ] || { echo "plain scan left: $leftovers"; return 1; }
     # The caller that named a sidecar gets the verified list, and nothing else.
     grep -Fxq "$HOME/www/test-project/node_modules" "$asked.verified" || { echo "no verified list"; return 1; }
     ! grep -Fq "$HOME/stale/node_modules" "$asked.verified" || { echo "stale entry survived the rescan"; return 1; }
-<<<<<<< HEAD
     # shellcheck disable=SC2010  # Scratch directory with mktemp-generated ASCII names.
     leftovers="$(ls "$BATS_TEST_TMPDIR" | grep '^asked\.' | tr '\n' ' ' || true)"
     [ "$leftovers" = "asked.verified " ] || { echo "named scan left: $leftovers"; return 1; }
@@ -4471,15 +4395,6 @@ EOF_SIDECAR
     leftovers="$(ls "$BATS_TEST_TMPDIR" | grep '^failed\.' | tr '\n' ' ' || true)"
     [ -z "$leftovers" ] || { echo "failed scan left: $leftovers"; return 1; }
 }
-=======
->>>>>>> 8811fcbd (fix(clean): recheck target ownership and preserve cancellation)
-=======
-    leftovers="$(ls "$BATS_TEST_TMPDIR" | grep '^asked\.' | tr '\n' ' ' || true)"
-    [ "$leftovers" = "asked.verified " ] || { echo "named scan left: $leftovers"; return 1; }
-    leftovers="$(ls "$BATS_TEST_TMPDIR" | grep '^failed\.' | tr '\n' ' ' || true)"
-    [ -z "$leftovers" ] || { echo "failed scan left: $leftovers"; return 1; }
-}
->>>>>>> c2ad966d (fix(purge): leave the verified sidecar to the scan caller that asks for it)
 
 @test "purge authored probes preserve signals through the final guard and pool" {
     local failures=0
@@ -4562,51 +4477,6 @@ EOF
     done
     [ "$failures" -eq 0 ]
 }
-<<<<<<< HEAD
-<<<<<<< HEAD
-
-@test "scan_purge_targets still walks when find rejects the dataless flag name" {
-	# An older macOS find that does not know `dataless` fails the whole walk
-	# with the flag in it. The probe must turn the prune off instead.
-	local root="$HOME/dataless-probe"
-	mkdir -p "$root/app/node_modules"
-	touch "$root/app/package.json"
-
-	local scan_output
-	scan_output="$(mktemp)"
-
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" ROOT="$root" SCAN_OUTPUT="$scan_output" \
-		/bin/bash --noprofile --norc <<'EOF'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/clean/project.sh"
-_MOLE_PURGE_FIND=find  # route the purge walk through the stub
-run_with_timeout() { shift; "$@"; }
-fd() { return 1; }
-find() {
-	local arg
-	for arg in "$@"; do
-		if [[ "$arg" == "-flags" ]]; then
-			echo "FLAG_SEEN" >> "$HOME/walk.log"
-			echo "find: -flags: dataless: illegal flag name" >&2
-			return 1
-		fi
-	done
-	/usr/bin/find "$@"
-}
-scan_purge_targets "$ROOT" "$SCAN_OUTPUT"
-cat "$SCAN_OUTPUT"
-echo "WALK_LOG:$(cat "$HOME/walk.log")"
-EOF
-
-	rm -f "$scan_output" "$HOME/walk.log"
-	rm -rf "$root"
-	[ "$status" -eq 0 ] || { echo "$output"; return 1; }
-	[[ "$output" == *"$root/app/node_modules"* ]] || return 1
-	[[ "$output" == *"WALK_LOG:FLAG_SEEN"* ]] || return 1
-	[[ "$output" != *"WALK_LOG:FLAG_SEEN"*"FLAG_SEEN"* ]]
-}
-=======
->>>>>>> 77050616 (fix(purge): skip online-only cloud folders during the scan (#1679))
 
 @test "scan_purge_targets still walks when find rejects the dataless flag name" {
 	# An older macOS find that does not know `dataless` fails the whole walk
@@ -4661,14 +4531,7 @@ EOF
 		/bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/clean/project.sh"
-<<<<<<< HEAD
-<<<<<<< HEAD
 _MOLE_PURGE_FIND=find  # route the purge walk through the stub
-=======
->>>>>>> 77050616 (fix(purge): skip online-only cloud folders during the scan (#1679))
-=======
-_MOLE_PURGE_FIND=find  # route the purge walk through the stub
->>>>>>> 66bd98a3 (fix(clean): keep purge and Service Worker discovery working under GNU find)
 run_with_timeout() { shift; "$@"; }
 fd() { echo "FD_USED" >> "$HOME/walk.log"; return 1; }
 # A real dataless flag needs a File Provider, so the stub stands in for it with
@@ -4703,54 +4566,6 @@ EOF
 	[[ "$output" != *"WALK_DATALESS=false"* ]] || return 1
 	[[ "$output" != *"FD_USED"* ]]
 }
-<<<<<<< HEAD
-<<<<<<< HEAD
-
-@test "purge keeps the dataless prune with GNU find first in PATH" {
-	# GNU findutils has no -flags primary, so a PATH find would always answer
-	# "unknown" and the walk would list online-only cloud folders. The probe
-	# and both walks use the system find instead.
-	local root="$HOME/gnu-find-purge"
-	local stub_bin="$HOME/gnu-find-bin"
-	mkdir -p "$root/app/node_modules" "$stub_bin"
-	touch "$root/app/package.json"
-	cat > "$stub_bin/find" <<'STUB'
-#!/bin/bash
-echo "PATH_FIND $*" >> "$HOME/gnu-find.log"
-for arg in "$@"; do
-	[[ "$arg" == "-flags" ]] && { echo "find: unknown predicate '-flags'" >&2; exit 1; }
-done
-exec /usr/bin/find "$@"
-STUB
-	chmod +x "$stub_bin/find"
-
-	local scan_output
-	scan_output="$(mktemp)"
-	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" PATH="$stub_bin:$PATH" ROOT="$root" SCAN_OUTPUT="$scan_output" \
-		/bin/bash --noprofile --norc <<'EOF'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/clean/project.sh"
-run_with_timeout() { shift; "$@"; }
-fd() { return 1; }
-rc=0
-_purge_find_knows_dataless || rc=$?
-echo "DATALESS_RC=$rc"
-scan_purge_targets "$ROOT" "$SCAN_OUTPUT"
-cat "$SCAN_OUTPUT"
-EOF
-
-	local path_find_calls=""
-	path_find_calls=$(cat "$HOME/gnu-find.log" 2> /dev/null || true)
-	rm -f "$scan_output" "$HOME/gnu-find.log"
-	rm -rf "$root" "$stub_bin"
-	[ "$status" -eq 0 ] || { echo "$output"; return 1; }
-	[[ "$output" == *"DATALESS_RC=0"* ]] || { echo "$output"; return 1; }
-	[[ "$output" == *"$root/app/node_modules"* ]] || { echo "$output"; return 1; }
-	[[ "$path_find_calls" != *"-flags"* ]] || { echo "$path_find_calls"; return 1; }
-	[[ "$path_find_calls" != *"$root -mindepth"* ]] || { echo "$path_find_calls"; return 1; }
-}
-=======
->>>>>>> df2f5e06 (fix(purge): preserve cancellation from the dataless capability probe)
 
 @test "purge keeps the dataless prune with GNU find first in PATH" {
 	# GNU findutils has no -flags primary, so a PATH find would always answer
@@ -4802,14 +4617,7 @@ EOF
         run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" SIGNAL="$signal" /bin/bash --noprofile --norc <<'SH'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/clean/project.sh"
-<<<<<<< HEAD
-<<<<<<< HEAD
 _MOLE_PURGE_FIND=find  # route the purge walk through the stub
-=======
->>>>>>> df2f5e06 (fix(purge): preserve cancellation from the dataless capability probe)
-=======
-_MOLE_PURGE_FIND=find  # route the purge walk through the stub
->>>>>>> 66bd98a3 (fix(clean): keep purge and Service Worker discovery working under GNU find)
 mkdir -p "$HOME/.cache/mole" "$HOME/projects/app/node_modules"
 touch "$HOME/projects/app/package.json"
 run_with_timeout() { shift; "$@"; }
@@ -4829,10 +4637,6 @@ SH
         [ "$status" -eq 0 ] || { echo "$output"; return 1; }
     done
 }
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> fc5368af (fix(purge): re-scan a timed-out container root one child at a time)
 
 # #1666: a container root (purge_paths entry that is not a project) is scanned
 # as one unit first. Only when that scan times out is it scanned again one
@@ -5219,18 +5023,3 @@ EOF
 	[[ "$output" != *"~/many-skipped-1666/p11"* ]] || { echo "$output"; return 1; }
 	[[ "$output" == *"and 3 more"* ]] || { echo "$output"; return 1; }
 }
-<<<<<<< HEAD
-=======
->>>>>>> f3b6ea5b (fix(purge): bound parallel activity classification safely)
-=======
->>>>>>> b19a7d2d (fix(purge): refill activity workers while preserving cancellation)
-=======
->>>>>>> 934ffae5 (perf(purge): pool discovery probes and bind candidates once per root)
-=======
->>>>>>> 8811fcbd (fix(clean): recheck target ownership and preserve cancellation)
-=======
->>>>>>> 77050616 (fix(purge): skip online-only cloud folders during the scan (#1679))
-=======
->>>>>>> df2f5e06 (fix(purge): preserve cancellation from the dataless capability probe)
-=======
->>>>>>> fc5368af (fix(purge): re-scan a timed-out container root one child at a time)

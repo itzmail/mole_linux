@@ -437,8 +437,6 @@ EOF
     [[ "$output" != *"cannot be removed safely by Mole"* ]]
 }
 
-<<<<<<< HEAD
-=======
 @test "batch uninstall continues when best-effort teardown steps time out" {
     local fixture_home
     fixture_home=$(mktemp -d "$HOME/inventory-fixture.XXXXXX")
@@ -845,7 +843,7 @@ EOF
     [[ "$output" == *"Uninstall stopped at SlowDelete: app removal timed out"* ]]
 }
 
->>>>>>> d7e9f6fc (fix: keep Mole correct with GNU tools first in PATH)
+
 @test "batch uninstall rejects privileged permanent removal below a mutable parent before side effects (#1299)" {
     mkdir -p "$HOME/Applications/RootOwned.app"
     mkdir -p "$HOME/Library/Application Support/RootOwned"
@@ -2312,8 +2310,6 @@ EOF
         }
 }
 
-<<<<<<< HEAD
-=======
 @test "an unrenamed Electron executable names no app for crash reports or kills" {
     # Every unrenamed Electron app ships its binary as Electron, so neither its
     # crash-report prefix nor a name-based kill may treat it as this app.
@@ -2391,7 +2387,7 @@ EOF
     [ "$status" -eq 0 ] || { echo "$output"; return 1; }
 }
 
->>>>>>> d7e9f6fc (fix: keep Mole correct with GNU tools first in PATH)
+
 @test "force_kill_app refuses to operate on system process names" {
     # Defensive guard: a third-party .app could set CFBundleExecutable to a
     # system process name (Finder, Dock, loginwindow, etc.). Even though the
@@ -3467,8 +3463,6 @@ EOF
     [[ "$output" == *"count=1"* ]]
 }
 
-<<<<<<< HEAD
-=======
 @test "match_apps_by_name runs tr a fixed number of times regardless of app count" {
     local shim="$HOME/tr-shim"
     mkdir -p "$shim"
@@ -3551,7 +3545,7 @@ EOF
     [[ "$output" == *"count=1"* ]] || { printf '%s\n' "$output"; return 1; }
 }
 
->>>>>>> d7e9f6fc (fix: keep Mole correct with GNU tools first in PATH)
+
 @test "main clears pending input before app selection after scan (#726)" {
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'INNER'
 set -euo pipefail
@@ -4807,8 +4801,6 @@ INNER
     [[ "$output" != *"UNEXPECTED_TEARDOWN"* ]] || return 1
     [[ "$output" != *"UNEXPECTED_DELETE"* ]]
 }
-<<<<<<< HEAD
-=======
 
 @test "uninstall preview excludes protected leftovers before sizing and execution" {
     mkdir -p "$HOME/Applications/ChatGPT.app" "$HOME/Library/Logs/com.openai.codex" "$HOME/eligible-leftover"
@@ -5627,4 +5619,4 @@ SCRIPT
         [ ! -e "$HOME/auth-called" ] || return 1
     done
 }
->>>>>>> d7e9f6fc (fix: keep Mole correct with GNU tools first in PATH)
+

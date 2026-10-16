@@ -3142,8 +3142,6 @@ EOF
     }
     [[ "$output" == *"UNREADABLE=2"* ]]
 }
-<<<<<<< HEAD
-=======
 
 @test "SQLite handle timeout keeps the file without cancelling later cleanup (#1595)" {
     local database="$TEST_DIR/timeout.sqlite"
@@ -3304,4 +3302,4 @@ EOF
 
     [[ "$status" -eq 0 ]] || { echo "$output"; return 1; }
 }
->>>>>>> d7e9f6fc (fix: keep Mole correct with GNU tools first in PATH)
+

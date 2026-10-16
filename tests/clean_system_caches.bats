@@ -663,10 +663,7 @@ EOF
     rm -rf "$HOME/Projects"
 }
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> 8811fcbd (fix(clean): recheck target ownership and preserve cancellation)
+
 @test "project cache final guard rejects changed Git evidence after sizing" {
     local failures=0
     for route in main fallback python preview; do
@@ -780,12 +777,8 @@ EOF
 }
 
 @test "clean_project_caches batches Git discovery and rechecks each deletion" {
-<<<<<<< HEAD
-=======
 @test "clean_project_caches asks Git once per repository" {
->>>>>>> d929d156 (fix(clean): keep project caches that Git tracks (#1686))
-=======
->>>>>>> 8811fcbd (fix(clean): recheck target ownership and preserve cancellation)
+
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
@@ -799,32 +792,17 @@ touch "$repo/svc/pyproject.toml"
 git init -q "$repo"
 git -C "$repo" add -f svc/c/__pycache__/m.pyc
 eval "real_$(declare -f mole_git_ls_files)"
-<<<<<<< HEAD
-<<<<<<< HEAD
-mole_git_ls_files() { printf '%s\n' "$3|${*: -1}" >> "$HOME/ls-files.calls"; real_mole_git_ls_files "$@"; }
-DRY_RUN=false
-clean_project_caches
-[[ "$(grep -Fxc "$repo|." "$HOME/ls-files.calls")" == 1 ]] || { cat "$HOME/ls-files.calls"; exit 11; }
-[[ -f "$repo/svc/c/__pycache__/m.pyc" ]] || exit 12
-for pkg in a b d e f; do
-    [[ ! -e "$repo/svc/$pkg/__pycache__" ]] || exit 13
-    grep -Fxq "$repo|:(top,literal,icase)svc/$pkg/__pycache__" "$HOME/ls-files.calls" || exit 14
-=======
 mole_git_ls_files() { printf 'call\n' >> "$HOME/ls-files.calls"; real_mole_git_ls_files "$@"; }
-=======
 mole_git_ls_files() { printf '%s\n' "$3|${*: -1}" >> "$HOME/ls-files.calls"; real_mole_git_ls_files "$@"; }
->>>>>>> 8811fcbd (fix(clean): recheck target ownership and preserve cancellation)
+
 DRY_RUN=false
 clean_project_caches
 [[ "$(grep -Fxc "$repo|." "$HOME/ls-files.calls")" == 1 ]] || { cat "$HOME/ls-files.calls"; exit 11; }
 [[ -f "$repo/svc/c/__pycache__/m.pyc" ]] || exit 12
 for pkg in a b d e f; do
     [[ ! -e "$repo/svc/$pkg/__pycache__" ]] || exit 13
-<<<<<<< HEAD
->>>>>>> d929d156 (fix(clean): keep project caches that Git tracks (#1686))
-=======
     grep -Fxq "$repo/svc/$pkg|__pycache__" "$HOME/ls-files.calls" || exit 14
->>>>>>> 8811fcbd (fix(clean): recheck target ownership and preserve cancellation)
+
 done
 EOF
     [ "$status" -eq 0 ] || { echo "$output"; return 1; }
@@ -949,57 +927,7 @@ EOF
     rm -rf "$HOME/Projects" "$HOME/Other"
 }
 
-<<<<<<< HEAD
-@test "clean_project_caches keeps a Flutter build/ that holds a nested repository" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/clean/caches.sh"
-app="$HOME/Projects/app"
-mkdir -p "$app/.dart_tool" "$app/build/plugins/local_plugin/lib"
-touch "$app/pubspec.yaml" "$app/.dart_tool/state" "$app/build/plugins/local_plugin/lib/main.dart"
-git init -q "$app"
-git init -q "$app/build/plugins/local_plugin"
-DRY_RUN=false
-clean_project_caches
-[[ ! -e "$app/.dart_tool" ]] || exit 11
-[[ -d "$app/build/plugins/local_plugin/.git" ]] || exit 12
-[[ -f "$app/build/plugins/local_plugin/lib/main.dart" ]] || exit 13
-EOF
-    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
 
-    rm -rf "$HOME/Projects"
-}
-
-@test "clean_project_caches keeps a Flutter build/ whose nested repository check cannot finish" {
-    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/clean/caches.sh"
-app="$HOME/Projects/app"
-mkdir -p "$app/.dart_tool" "$app/build"
-touch "$app/pubspec.yaml" "$app/.dart_tool/state" "$app/build/out.bin"
-git init -q "$app"
-eval "real_$(declare -f run_with_timeout)"
-run_with_timeout() {
-    # Only the nested-repository probe times out; discovery still runs.
-    if [[ "$2" == find && "$*" == *"/build -mindepth 1 -name .git -print -quit"* ]]; then
-        return 124
-    fi
-    real_run_with_timeout "$@"
-}
-DRY_RUN=false
-clean_project_caches
-[[ ! -e "$app/.dart_tool" ]] || exit 11
-[[ -f "$app/build/out.bin" ]] || exit 12
-EOF
-    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
-
-    rm -rf "$HOME/Projects"
-}
-
-=======
->>>>>>> d929d156 (fix(clean): keep project caches that Git tracks (#1686))
 @test "project cache index gives no free pass to a path it never saw" {
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
@@ -1018,216 +946,7 @@ EOF
     [ "$status" -eq 0 ] || { echo "$output"; return 1; }
 }
 
-<<<<<<< HEAD
-@test "clean_project_caches gives every recheck its own bound, so real cleaning matches the preview" {
-    local mode cost
-    for cost in walk git; do
-        for mode in real dry; do
-            run env HOME="$BATS_TEST_TMPDIR/bound-$cost-$mode" PROJECT_ROOT="$PROJECT_ROOT" MODE="$mode" COST="$cost" /bin/bash --noprofile --norc <<'EOF'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/clean/caches.sh"
-repo="$HOME/Projects/mono"
-for n in 01 02 03 04 05 06 07 08 09 10 11 12; do
-    mkdir -p "$repo/svc/p$n/__pycache__"
-    touch "$repo/svc/p$n/__pycache__/m.pyc"
-done
-mkdir -p "$repo/svc/keep/__pycache__"
-touch "$repo/svc/keep/__pycache__/m.pyc" "$repo/svc/pyproject.toml"
-git init -q "$repo"
-git -C "$repo" add -f svc/keep/__pycache__/m.pyc
-DRY_RUN=false
-[[ "$MODE" != dry ]] || DRY_RUN=true
-record_dry_run_cleanup_target() { printf '%s\n' "$1" >> "$HOME/preview"; }
-# Every recheck costs simulated seconds, in its Git half or in its nested
-# repository walk. One 15 s budget for the whole step is spent after a few
-# deletions, and every later candidate was then kept.
-if [[ "$COST" == git ]]; then
-    eval "real_$(declare -f _mole_snapshot_path_identity)"
-    _mole_snapshot_path_identity() { SECONDS=$((SECONDS + 1)); real__mole_snapshot_path_identity "$@"; }
-else
-    eval "real_$(declare -f _project_cache_holds_nested_repo)"
-    _project_cache_holds_nested_repo() { SECONDS=$((SECONDS + 2)); real__project_cache_holds_nested_repo "$@"; }
-fi
-clean_project_caches
-[[ -f "$repo/svc/keep/__pycache__/m.pyc" ]] || exit 11
-handled=0
-for n in 01 02 03 04 05 06 07 08 09 10 11 12; do
-    dir="$repo/svc/p$n/__pycache__"
-    if [[ "$MODE" == dry ]]; then
-        ! grep -Fxq "$dir" "$HOME/preview" || handled=$((handled + 1))
-    else
-        [[ -e "$dir" ]] || handled=$((handled + 1))
-    fi
-done
-[[ "$handled" -eq 12 ]] || { echo "$COST/$MODE handled $handled of 12"; exit 12; }
-EOF
-            [ "$status" -eq 0 ] || { echo "$cost/$mode: status $status: $output"; return 1; }
-        done
-    done
-}
 
-@test "clean_project_caches builds each root's Git index on a fresh budget" {
-    run env HOME="$BATS_TEST_TMPDIR/index-bound" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/clean/caches.sh"
-for root in Projects Code; do
-    repo="$HOME/$root/app"
-    mkdir -p "$repo/pkg/__pycache__"
-    touch "$repo/pyproject.toml" "$repo/pkg/__pycache__/m.pyc"
-    git init -q "$repo"
-done
-DRY_RUN=false
-# Time spent on the first root must not leave the second one's listing with an
-# expired budget, which kept every one of its caches.
-eval "real_$(declare -f process_project_cache_matches)"
-passes=0
-process_project_cache_matches() {
-    passes=$((passes + 1))
-    [[ $passes -ne 2 ]] || SECONDS=$((SECONDS + 20))
-    real_process_project_cache_matches "$@"
-}
-clean_project_caches
-[[ "$passes" -eq 2 ]] || exit 11
-[[ ! -e "$HOME/Projects/app/pkg/__pycache__" ]] || exit 12
-[[ ! -e "$HOME/Code/app/pkg/__pycache__" ]] || exit 13
-EOF
-    [ "$status" -eq 0 ] || { echo "status $status: $output"; return 1; }
-}
-
-@test "clean_project_caches skips a refused .next/cache child and still cleans its siblings" {
-    local mode
-    for mode in real dry; do
-        run env HOME="$BATS_TEST_TMPDIR/next-$mode" PROJECT_ROOT="$PROJECT_ROOT" MODE="$mode" /bin/bash --noprofile --norc <<'EOF'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/bin/clean.sh"
-repo="$HOME/Projects/web"
-cache="$repo/.next/cache"
-mkdir -p "$cache/a" "$cache/c" "$cache/d/inner" "$cache/e" "$cache/f" "$HOME/Other"
-touch "$cache/a/x" "$cache/c/x" "$cache/e/x" "$cache/f/x" "$HOME/Other/data"
-# b is a link out of the project and d holds an authored repository: the guard
-# refuses each of them by name, and the children after them are still caches.
-ln -s "$HOME/Other" "$cache/b"
-git init -q "$repo"
-git init -q "$cache/d/inner"
-DRY_RUN=false
-[[ "$MODE" != dry ]] || DRY_RUN=true
-files_cleaned=0
-total_size_cleaned=0
-total_items=0
-record_dry_run_cleanup_target() { printf '%s\n' "$1" >> "$HOME/preview"; }
-rc=0
-clean_project_cache_target "$cache"/* "Next.js build cache" || rc=$?
-[[ "$rc" -eq 0 ]] || exit 11
-[[ -L "$cache/b" && -f "$HOME/Other/data" && -d "$cache/d/inner/.git" ]] || exit 12
-for child in a c e f; do
-    if [[ "$MODE" == dry ]]; then
-        [[ -d "$cache/$child" ]] || exit 13
-        grep -Fxq "$cache/$child" "$HOME/preview" || exit 14
-    else
-        [[ ! -e "$cache/$child" ]] || exit 15
-    fi
-done
-if [[ "$MODE" == dry ]]; then
-    [[ "$(grep -c . "$HOME/preview")" -eq 4 ]] || exit 16
-fi
-EOF
-        [ "$status" -eq 0 ] || { echo "$mode: status $status: $output"; return 1; }
-    done
-}
-
-@test "project cache removal timeouts count one failed removal while a signal still stops the run" {
-    local route rm_rc
-    for route in python fallback; do
-        for rm_rc in 124 130; do
-            run env HOME="$BATS_TEST_TMPDIR/rm-$route-$rm_rc" PROJECT_ROOT="$PROJECT_ROOT" ROUTE="$route" RM_RC="$rm_rc" /bin/bash --noprofile --norc <<'EOF'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/clean/caches.sh"
-repo="$HOME/repo"
-mkdir -p "$repo/a/__pycache__" "$repo/b/__pycache__"
-touch "$repo/a/__pycache__/m.pyc" "$repo/b/__pycache__/m.pyc"
-DRY_RUN=false
-# The first removal fails with the given status; later ones succeed.
-safe_remove() {
-    printf '%s\n' "$1" >> "$HOME/sinks"
-    if [[ "$(wc -l < "$HOME/sinks")" -eq 1 ]]; then
-        return "$RM_RC"
-    fi
-    /bin/rm -rf "$1"
-}
-rc=0
-if [[ "$ROUTE" == python ]]; then
-    clean_python_bytecode_cache_group "$repo" "$repo/a/__pycache__" "$repo/b/__pycache__" || rc=$?
-else
-    clean_project_cache_target "$repo/a/__pycache__" "$repo/b/__pycache__" fixture || rc=$?
-fi
-if [[ "$RM_RC" == 124 ]]; then
-    [[ "$rc" -eq 0 ]] || exit 11
-    [[ "$(wc -l < "$HOME/sinks")" -eq 2 ]] || exit 12
-    [[ -d "$repo/a/__pycache__" && ! -e "$repo/b/__pycache__" ]] || exit 13
-else
-    [[ "$rc" -eq 130 ]] || exit 14
-    [[ "$(wc -l < "$HOME/sinks")" -eq 1 ]] || exit 15
-    [[ -d "$repo/b/__pycache__" ]] || exit 16
-fi
-EOF
-            [ "$status" -eq 0 ] || { echo "$route/$rm_rc: status $status: $output"; return 1; }
-        done
-    done
-}
-
-@test "project cache Git evidence survives a case-only folder rename" {
-    run env HOME="$BATS_TEST_TMPDIR/case" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
-set -euo pipefail
-source "$PROJECT_ROOT/lib/core/common.sh"
-source "$PROJECT_ROOT/lib/clean/caches.sh"
-repo="$HOME/Projects/repo"
-mkdir -p "$repo/Svc/p/__pycache__" "$repo/Svc/q/__pycache__"
-touch "$repo/pyproject.toml" "$repo/Svc/p/__pycache__/m.pyc" "$repo/Svc/q/__pycache__/n.pyc"
-git init -q "$repo"
-git -C "$repo" add -f Svc/p/__pycache__/m.pyc
-# A plain mv leaves the index with the old spelling and git status clean.
-/bin/mv "$repo/Svc" "$repo/svc"
-cache="$repo/svc/p/__pycache__"
-
-# Discovery: the listing prefix and the spelling on disk differ only in case.
-printf '%s\t%s\n' "$HOME/Projects" "$cache" > "$HOME/matches"
-project_cache_build_git_index "$HOME/matches" "$HOME/index" "$((SECONDS + 15))"
-grep -Fxq "T$cache" "$HOME/index" || { cat "$HOME/index"; exit 11; }
-
-# The recheck must not trust a stale clear verdict either.
-_project_cache_git_index=$'\nC'"$cache"$'\n'
-rc=0
-_project_cache_final_guard "$cache" || rc=$?
-[[ "$rc" -ne 0 ]] || exit 12
-rc=0
-mole_path_has_git_tracked_files "$cache" || rc=$?
-[[ "$rc" -eq 0 ]] || exit 13
-# An inherited literal-pathspec switch would turn the case-blind spec into plain
-# text that matches nothing, so the query must not honor it.
-rc=0
-GIT_LITERAL_PATHSPECS=1 mole_path_has_git_tracked_files "$cache" || rc=$?
-[[ "$rc" -eq 0 ]] || exit 16
-rc=0
-GIT_LITERAL_PATHSPECS=1 _project_cache_final_guard "$cache" || rc=$?
-[[ "$rc" -ne 0 ]] || exit 17
-_project_cache_git_index=""
-
-# Positive control: the untracked sibling under the same renamed folder is
-# still a cache, so the keep above is evidence and not a blanket refusal.
-DRY_RUN=false
-clean_project_caches
-[[ -f "$cache/m.pyc" ]] || exit 14
-[[ ! -e "$repo/svc/q/__pycache__" ]] || exit 15
-EOF
-    [ "$status" -eq 0 ] || { echo "status $status: $output"; return 1; }
-}
-
-=======
->>>>>>> d929d156 (fix(clean): keep project caches that Git tracks (#1686))
 @test "clean_project_caches scans configured roots instead of HOME" {
     mkdir -p "$HOME/.config/mole"
     mkdir -p "$HOME/CustomProjects/app/.next/cache"

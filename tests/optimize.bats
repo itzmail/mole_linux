@@ -1906,7 +1906,6 @@ source "$PROJECT_ROOT/lib/optimize/diagnostics.sh"
 # extract_mount regex incorrectly accepted as a mount point. Only the
 # /dev/disk* line is a real mount.
 sample=$(cat <<'HDIUTIL'
-================================================
 image-path                 : /Volumes/EXT3/Mail/TB.dmg
 image-alias                : /Volumes/EXT3/Mail/TB.dmg
 shadow-path                : <none>
@@ -2059,11 +2058,9 @@ source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/optimize/diagnostics.sh"
 
 sample=$(cat <<'HDIUTIL'
-================================================
 image-path                 : /Users/test/Sample.dmg
 image-alias                : /Users/test/Sample.dmg
 /dev/disk5s2               Apple_HFS                       /Volumes/Sample
-================================================
 image-path                 : /Library/Developer/CoreSimulator/Volumes/iOS_17.dmg
 image-alias                : /Library/Developer/CoreSimulator/Volumes/iOS_17.dmg
 /dev/disk7s1               Apple_APFS                      /Library/Developer/CoreSimulator/Volumes/iOS_17.0

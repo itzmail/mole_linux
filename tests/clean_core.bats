@@ -1508,12 +1508,10 @@ Backup session status:
 TMUTIL_OUTPUT
 elif [[ "$1" == "destinationinfo" ]]; then
     cat << 'DEST_OUTPUT'
-====================================================
 Name          : TestBackup
 Kind          : Local
 Mount Point   : /Volumes/TestBackup
 ID            : 12345678-1234-1234-1234-123456789012
-====================================================
 DEST_OUTPUT
 fi
 MOCK_TMUTIL
@@ -1554,12 +1552,10 @@ Backup session status:
 TMUTIL_OUTPUT
 elif [[ "$1" == "destinationinfo" ]]; then
     cat << 'DEST_OUTPUT'
-====================================================
 Name          : TestBackup
 Kind          : Local
 Mount Point   : /Volumes/TestBackup
 ID            : 12345678-1234-1234-1234-123456789012
-====================================================
 DEST_OUTPUT
 fi
 MOCK_TMUTIL

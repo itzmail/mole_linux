@@ -271,11 +271,8 @@ clean_user_essentials() {
     fi
     stop_section_spinner
 
-<<<<<<< HEAD
-    safe_clean ~/Library/Logs/* "User app logs"
-=======
     _clean_user_log_directory "$HOME/Library/Logs" "User app logs" || return $?
->>>>>>> 8811fcbd (fix(clean): recheck target ownership and preserve cancellation)
+
 
     clean_trash
     stop_section_spinner
