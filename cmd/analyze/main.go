@@ -152,7 +152,7 @@ func newModel(path string, isOverview bool) model {
 		cachePublications:   make(map[string]*scanPublication),
 		multiSelected:       make(map[string]bool),
 		largeMultiSelected:  make(map[string]bool),
-		liveSortMode:        liveScanSortModeFromEnv(),
+		liveSortMode:        liveSortFreezeOnMove,
 		snapshotRunner:      runLocalSnapshotCommand,
 	}
 

@@ -214,9 +214,7 @@ clean_user_essentials() {
 
     safe_clean ~/Library/Logs/* "User app logs"
 
-    if [[ "${MOLE_SKIP_TRASH_CLEANUP:-0}" != "1" ]]; then
-        clean_trash
-    fi
+    clean_trash
     stop_section_spinner
 
     # Recent items
@@ -875,8 +873,7 @@ clean_finder_metadata() {
 
 # Conservative cleanup for support caches not covered by generic rules.
 clean_support_app_data() {
-    local support_age_days="${MOLE_SUPPORT_CACHE_AGE_DAYS:-30}"
-    [[ "$support_age_days" =~ ^[0-9]+$ ]] || support_age_days=30
+    local support_age_days=30
 
     local crash_reporter_dir="$HOME/Library/Application Support/CrashReporter"
     if [[ -d "$crash_reporter_dir" && ! -L "$crash_reporter_dir" ]]; then

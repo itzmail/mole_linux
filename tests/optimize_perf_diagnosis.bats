@@ -173,18 +173,26 @@ setup_file() {
     [[ "$output" == *"NO_FINDING"* ]] || { echo "$output"; return 1; }
 }
 
-@test "thresholds reject non-numeric env overrides" {
-    run /bin/bash -c "
-        source '$PROJECT_ROOT/lib/core/common.sh'
-        source '$PROJECT_ROOT/lib/optimize/diagnostics.sh'
-        opt_diag_int_env 'bogus' 50
-        opt_diag_int_env '12.5' 50
-        opt_diag_int_env '70' 50
-    "
-    [ "$status" -eq 0 ]
-    [ "${lines[0]}" -eq 50 ]
-    [ "${lines[1]}" -eq 50 ]
-    [ "${lines[2]}" -eq 70 ]
+@test "removed tuning environment variables are not read again" {
+    # These overrides were undocumented and untested, so their defaults are
+    # now fixed in code (weekly audit 2026-10-16). Match the expansion form,
+    # skip comment lines, and prove the matcher fires on a known positive.
+    run env PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+names='MOLE_SKIP_TRASH_CLEANUP|MOLE_SUPPORT_CACHE_AGE_DAYS|MOLE_CLAUDE_VM_ORPHAN_AGE_DAYS|MOLE_MENU_SORT_DEFAULT'
+names+='|MOLE_OPTIMIZE_(SWAP_PCT|FREE_PCT|IDLE_VM_GB|RUNAWAY_PCT|RUNAWAY_MIN_HOURS|DIAG_CPU_THRESHOLD|DIAG_SAMPLE_DELAY)'
+pattern="[$][{]?($names)([^A-Za-z0-9_]|$)"
+probe='    local x="${MOLE_SUPPORT_CACHE_AGE_DAYS:-30}"'
+printf '%s\n' "$probe" | grep -qE "$pattern" || { echo "matcher missed a known positive"; exit 1; }
+matched=$(grep -rnE "$pattern" "$PROJECT_ROOT/lib" "$PROJECT_ROOT/bin" "$PROJECT_ROOT/mole" |
+    grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' || true)
+if [[ -n "$matched" ]]; then
+    echo "a removed tuning variable is read again: $matched"
+    exit 1
+fi
+EOF
+
+    [[ "$status" -eq 0 ]] || { echo "$output"; return 1; }
 }
 
 @test "the size column stays aligned when a long name is truncated" {

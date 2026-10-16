@@ -6,22 +6,6 @@ set -euo pipefail
 readonly MOLE_OPTIMIZE_DIAG_CPU_THRESHOLD_DEFAULT=25
 readonly MOLE_OPTIMIZE_DIAG_SAMPLE_DELAY_DEFAULT=1
 
-opt_diag_cpu_threshold() {
-    local threshold="${MOLE_OPTIMIZE_DIAG_CPU_THRESHOLD:-$MOLE_OPTIMIZE_DIAG_CPU_THRESHOLD_DEFAULT}"
-    if ! [[ "$threshold" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-        threshold="$MOLE_OPTIMIZE_DIAG_CPU_THRESHOLD_DEFAULT"
-    fi
-    printf '%s\n' "$threshold"
-}
-
-opt_diag_sample_delay() {
-    local delay="${MOLE_OPTIMIZE_DIAG_SAMPLE_DELAY:-$MOLE_OPTIMIZE_DIAG_SAMPLE_DELAY_DEFAULT}"
-    if ! [[ "$delay" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-        delay="$MOLE_OPTIMIZE_DIAG_SAMPLE_DELAY_DEFAULT"
-    fi
-    printf '%s\n' "$delay"
-}
-
 opt_diag_float_ge() {
     local left="${1:-0}"
     local right="${2:-0}"
@@ -358,14 +342,14 @@ opt_diag_offer_detach_candidates() {
 run_optimize_diagnostics() {
     local sample1 sample2 totals1 totals2 threshold delay
     sample1=$(opt_diag_get_ps_sample 1)
-    delay=$(opt_diag_sample_delay)
+    delay=$MOLE_OPTIMIZE_DIAG_SAMPLE_DELAY_DEFAULT
     if [[ -z "${MOLE_OPTIMIZE_PS_SAMPLE_1:-}" || -z "${MOLE_OPTIMIZE_PS_SAMPLE_2:-}" ]]; then
         sleep "$delay"
     fi
     sample2=$(opt_diag_get_ps_sample 2)
     totals1=$(opt_diag_family_totals "$sample1")
     totals2=$(opt_diag_family_totals "$sample2")
-    threshold=$(opt_diag_cpu_threshold)
+    threshold=$MOLE_OPTIMIZE_DIAG_CPU_THRESHOLD_DEFAULT
 
     echo ""
     echo -e "${BLUE}PERFORMANCE DIAGNOSIS${NC}"
@@ -512,12 +496,6 @@ opt_diag_get_vm_sample() {
     ps -Ao rss,command 2> /dev/null | tail -n +2 | grep -v CoreSimulator || true
 }
 
-opt_diag_int_env() {
-    local value="${1:-}" fallback="${2:-0}"
-    [[ "$value" =~ ^[0-9]+$ ]] || value="$fallback"
-    printf '%s\n' "$value"
-}
-
 # Convert ps time/etime ([[dd-]hh:]mm:ss) to seconds. Returns 0 on garbage so a
 # malformed row can never inflate a ratio into a false runaway report. Shared
 # as awk source rather than a shell function because the runaway scan reads
@@ -541,8 +519,8 @@ function opt_secs(t,   n, a, p, d, first, h, m, s) {
 # memory is healthy.
 opt_diag_memory_pressure() {
     local swap_line swap_total swap_used swap_pct free_pct warn_swap warn_free
-    warn_swap=$(opt_diag_int_env "${MOLE_OPTIMIZE_SWAP_PCT:-}" "$MOLE_OPTIMIZE_SWAP_PCT_DEFAULT")
-    warn_free=$(opt_diag_int_env "${MOLE_OPTIMIZE_FREE_PCT:-}" "$MOLE_OPTIMIZE_FREE_PCT_DEFAULT")
+    warn_swap=$MOLE_OPTIMIZE_SWAP_PCT_DEFAULT
+    warn_free=$MOLE_OPTIMIZE_FREE_PCT_DEFAULT
 
     swap_line=$(opt_diag_get_swapusage)
     [[ -n "$swap_line" ]] || return 0
@@ -615,7 +593,7 @@ opt_diag_memory_pressure() {
 # zero containers running, which is invisible to disk-oriented checks.
 opt_diag_idle_vm() {
     local min_gb vm_kb vm_gb
-    min_gb=$(opt_diag_int_env "${MOLE_OPTIMIZE_IDLE_VM_GB:-}" "$MOLE_OPTIMIZE_IDLE_VM_GB_DEFAULT")
+    min_gb=$MOLE_OPTIMIZE_IDLE_VM_GB_DEFAULT
 
     vm_kb=$(opt_diag_get_vm_sample |
         awk '/Virtualization.framework.*VirtualMachine/ {s += $1} END {print s + 0}')
@@ -655,8 +633,8 @@ opt_diag_idle_vm() {
 # trip this, and neither can a short-lived process.
 opt_diag_runaway_process() {
     local pct_floor min_hours
-    pct_floor=$(opt_diag_int_env "${MOLE_OPTIMIZE_RUNAWAY_PCT:-}" "$MOLE_OPTIMIZE_RUNAWAY_PCT_DEFAULT")
-    min_hours=$(opt_diag_int_env "${MOLE_OPTIMIZE_RUNAWAY_MIN_HOURS:-}" "$MOLE_OPTIMIZE_RUNAWAY_MIN_HOURS_DEFAULT")
+    pct_floor=$MOLE_OPTIMIZE_RUNAWAY_PCT_DEFAULT
+    min_hours=$MOLE_OPTIMIZE_RUNAWAY_MIN_HOURS_DEFAULT
 
     # The whole scan is one awk pass. Splitting fields and converting two
     # timestamps per row in the shell cost six forks for each of 400 rows,

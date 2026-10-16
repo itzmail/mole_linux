@@ -3,7 +3,7 @@
 set -euo pipefail
 
 readonly ORPHAN_AGE_THRESHOLD=${ORPHAN_AGE_THRESHOLD:-${MOLE_ORPHAN_AGE_DAYS:-30}}
-readonly CLAUDE_VM_ORPHAN_AGE_THRESHOLD=${MOLE_CLAUDE_VM_ORPHAN_AGE_DAYS:-7}
+readonly CLAUDE_VM_ORPHAN_AGE_THRESHOLD=7
 readonly INSTALLED_APPS_CACHE_COMPLETE_MARKER="# mole-installed-apps-cache:v3:complete"
 # Args: $1=target_dir, $2=label
 clean_ds_store_tree() {
@@ -538,7 +538,7 @@ is_claude_vm_bundle_orphaned() {
         local current_epoch
         current_epoch=$(get_epoch_seconds)
         local days_since_modified=$(((current_epoch - last_modified_epoch) / 86400))
-        if [[ $days_since_modified -lt ${CLAUDE_VM_ORPHAN_AGE_THRESHOLD:-7} ]]; then
+        if [[ $days_since_modified -lt $CLAUDE_VM_ORPHAN_AGE_THRESHOLD ]]; then
             return 1
         fi
     fi

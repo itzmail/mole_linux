@@ -92,7 +92,7 @@ paginated_multi_select() {
     local items_per_page=$(_pm_calculate_items_per_page)
     local cursor_pos=0
     local top_index=0
-    local sort_mode="${MOLE_MENU_SORT_MODE:-${MOLE_MENU_SORT_DEFAULT:-date}}" # date|name|size
+    local sort_mode="${MOLE_MENU_SORT_MODE:-date}" # date|name|size
     local sort_reverse="${MOLE_MENU_SORT_REVERSE:-false}"
     local filter_text="" # Filter keyword
     local filter_text_lower=""

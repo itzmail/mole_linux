@@ -1808,24 +1808,18 @@ func TestCanceledCacheMutationsDoNotPublish(t *testing.T) {
 	}
 }
 
-func TestLiveScanSortConfigFromEnv(t *testing.T) {
-	t.Run("defaults to freeze on move", func(t *testing.T) {
-		t.Setenv(liveSortModeEnv, "")
+func TestLiveScanSortDefaultsToFreezeOnMove(t *testing.T) {
+	// The former MOLE_ANALYZE_LIVE_SORT override is gone; the s key is the
+	// only way to switch, so the environment must not change the default.
+	t.Setenv("MOLE_ANALYZE_LIVE_SORT", "continuous")
 
-		m := newModel(t.TempDir(), false)
-		if m.liveSortMode != liveSortFreezeOnMove {
-			t.Fatalf("expected freeze-on-move sort mode, got %v", m.liveSortMode)
-		}
-	})
-
-	t.Run("continuous remains available", func(t *testing.T) {
-		t.Setenv(liveSortModeEnv, "continuous")
-
-		m := newModel(t.TempDir(), false)
-		if m.liveSortMode != liveSortContinuous {
-			t.Fatalf("expected continuous sort mode, got %v", m.liveSortMode)
-		}
-	})
+	m := newModel(t.TempDir(), false)
+	if m.liveSortMode != liveSortFreezeOnMove {
+		t.Fatalf("expected freeze-on-move sort mode, got %v", m.liveSortMode)
+	}
+	if next := nextLiveSortMode(m.liveSortMode); next != liveSortContinuous {
+		t.Fatalf("expected the s toggle to reach continuous, got %v", next)
+	}
 }
 
 func TestLiveScanInitialListingShowsImmediateChildren(t *testing.T) {
