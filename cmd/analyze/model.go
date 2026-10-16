@@ -202,6 +202,7 @@ type deleteProgressMsg struct {
 	count        int64
 	path         string
 	removedPaths []string
+	logWarning   string // set when the audit log could not be written
 }
 
 type model struct {
@@ -389,6 +390,27 @@ func (m *model) clampLargeSelection() {
 	if m.largeSelected >= m.largeOffset+viewport {
 		m.largeOffset = m.largeSelected - viewport + 1
 	}
+}
+
+// selectedPathSizes returns the sizes the view showed for paths, which is
+// what the audit log records for each Trash move.
+func (m model) selectedPathSizes(paths []string) map[string]int64 {
+	sizes := make(map[string]int64, len(paths))
+	wanted := make(map[string]bool, len(paths))
+	for _, path := range paths {
+		wanted[path] = true
+	}
+	for _, entry := range m.entriesAll {
+		if wanted[entry.Path] && entry.Size > 0 {
+			sizes[entry.Path] = entry.Size
+		}
+	}
+	for _, file := range m.largeFilesAll {
+		if wanted[file.Path] && file.Size > 0 {
+			sizes[file.Path] = file.Size
+		}
+	}
+	return sizes
 }
 
 func (m *model) removePathFromView(path string) {

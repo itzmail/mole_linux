@@ -342,6 +342,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else {
 					m.status = fmt.Sprintf("Deleted %d items", msg.count)
 				}
+				if msg.logWarning != "" {
+					m.status += " · " + msg.logWarning
+				}
 
 				// Selective invalidation: only views whose size the delete
 				// changed need a refresh.
@@ -380,6 +383,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.status = fmt.Sprintf("Failed to delete: %v", msg.err)
 			} else {
 				m.status = fmt.Sprintf("Deleted %d items", msg.count)
+			}
+			if msg.logWarning != "" {
+				m.status += " · " + msg.logWarning
 			}
 		}
 		return m, nil
@@ -621,15 +627,16 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
+			audit := newDeleteAudit(m.selectedPathSizes(pathsToDelete))
 			if len(pathsToDelete) == 1 {
 				targetPath := pathsToDelete[0]
 				m.status = fmt.Sprintf("Deleting %s...", filepath.Base(targetPath))
-				cmd := tea.Batch(deletePathCmd(targetPath, m.deleteCount), m.startTick())
+				cmd := tea.Batch(deletePathCmd(targetPath, m.deleteCount, audit), m.startTick())
 				return m, cmd
 			}
 
 			m.status = fmt.Sprintf("Deleting %d items...", len(pathsToDelete))
-			cmd := tea.Batch(deleteMultiplePathsCmd(pathsToDelete, m.deleteCount), m.startTick())
+			cmd := tea.Batch(deleteMultiplePathsCmd(pathsToDelete, m.deleteCount, audit), m.startTick())
 			return m, cmd
 		case "esc", "q":
 			m.status = "Cancelled"

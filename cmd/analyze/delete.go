@@ -15,21 +15,27 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-func deletePathCmd(path string, counter *int64) tea.Cmd {
+func deletePathCmd(path string, counter *int64, audit *deleteAudit) tea.Cmd {
 	return func() tea.Msg {
+		audit.begin()
 		count, err := trashPathWithProgress(path, counter)
+		audit.record(path, err)
+		audit.end()
 		return deleteProgressMsg{
-			done:  true,
-			err:   err,
-			count: count,
-			path:  path,
+			done:       true,
+			err:        err,
+			count:      count,
+			path:       path,
+			logWarning: audit.warning(),
 		}
 	}
 }
 
 // deleteMultiplePathsCmd moves paths to Trash and aggregates results.
-func deleteMultiplePathsCmd(paths []string, counter *int64) tea.Cmd {
+func deleteMultiplePathsCmd(paths []string, counter *int64, audit *deleteAudit) tea.Cmd {
 	return func() tea.Msg {
+		audit.begin()
+		defer audit.end()
 		var totalCount int64
 		var errors []string
 		var removedPaths []string
@@ -43,6 +49,7 @@ func deleteMultiplePathsCmd(paths []string, counter *int64) tea.Cmd {
 		for _, path := range pathsToDelete {
 			count, err := trashPathWithProgress(path, counter)
 			totalCount += count
+			audit.record(path, err)
 			if err != nil {
 				if os.IsNotExist(err) {
 					removedPaths = append(removedPaths, path)

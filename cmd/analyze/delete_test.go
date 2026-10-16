@@ -64,7 +64,7 @@ func TestDeleteMultiplePathsCmdHandlesParentChild(t *testing.T) {
 	}
 
 	var counter int64
-	msg := deleteMultiplePathsCmd([]string{parent, child}, &counter)()
+	msg := deleteMultiplePathsCmd([]string{parent, child}, &counter, nil)()
 	progress, ok := msg.(deleteProgressMsg)
 	if !ok {
 		t.Fatalf("expected deleteProgressMsg, got %T", msg)
