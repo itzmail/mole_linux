@@ -1414,6 +1414,34 @@ match_apps_by_name() {
     selected_apps=()
     local -a matched_indices=()
 
+<<<<<<< HEAD
+=======
+    # Lowercase every display name and bundle directory name in one tr pass,
+    # indexed like apps_data. Forking echo|tr and basename per app, per term,
+    # per round cost seconds with a few hundred apps. tr keeps the locale's
+    # case mapping (É to é under UTF-8), which mole_ascii_lowercase would not.
+    # Fields come from one `read` line each, so they hold no newline and the
+    # 2N output lines stay aligned with the input.
+    local -a app_names_lower=() app_dirs_lower=()
+    if [[ ${#apps_data[@]} -gt 0 ]]; then
+        local lower_app lower_dir lower_line lower_i=0
+        local -a lower_input=() lower_output=()
+        for lower_app in "${apps_data[@]}"; do
+            IFS='|' read -r epoch app_path app_name bundle_id size last_used size_kb <<< "$lower_app"
+            lower_dir="${app_path##*/}"
+            lower_input+=("$app_name" "${lower_dir%.[aA][pP][pP]}")
+        done
+        while IFS= read -r lower_line; do
+            lower_output+=("$lower_line")
+        done < <(printf '%s\n' "${lower_input[@]}" | /usr/bin/tr '[:upper:]' '[:lower:]')
+        while [[ $lower_i -lt ${#apps_data[@]} ]]; do
+            app_names_lower+=("${lower_output[$((lower_i * 2))]-}")
+            app_dirs_lower+=("${lower_output[$((lower_i * 2 + 1))]-}")
+            lower_i=$((lower_i + 1))
+        done
+    fi
+
+>>>>>>> d7e9f6fc (fix: keep Mole correct with GNU tools first in PATH)
     # `mo uninstall Tor Browser` arrives as two words. Matching each word
     # alone sent "Tor" into a substring hit on WebSTORm while the app the
     # user actually named sat in the list (#1365). When the words joined
@@ -1426,7 +1454,7 @@ match_apps_by_name() {
         local every_word_exact=true
         local word word_lower word_app word_hit
         for word in "${search_terms[@]}"; do
-            word_lower=$(echo "$word" | tr '[:upper:]' '[:lower:]')
+            word_lower=$(echo "$word" | /usr/bin/tr '[:upper:]' '[:lower:]')
             word_hit=false
             for word_app in "${apps_data[@]}"; do
                 IFS='|' read -r epoch app_path app_name bundle_id size last_used size_kb <<< "$word_app"
@@ -1446,9 +1474,14 @@ match_apps_by_name() {
             fi
         done
         if [[ "$every_word_exact" == "false" ]]; then
+<<<<<<< HEAD
             local joined_lower
             joined_lower=$(echo "$*" | tr '[:upper:]' '[:lower:]')
             local joined_app
+=======
+            local joined_lower joined_app joined_idx=0
+            joined_lower=$(echo "$*" | /usr/bin/tr '[:upper:]' '[:lower:]')
+>>>>>>> d7e9f6fc (fix: keep Mole correct with GNU tools first in PATH)
             for joined_app in "${apps_data[@]}"; do
                 IFS='|' read -r epoch app_path app_name bundle_id size last_used size_kb <<< "$joined_app"
                 local joined_name_lower joined_dir_lower
@@ -1466,7 +1499,7 @@ match_apps_by_name() {
 
     for search_term in "${search_terms[@]}"; do
         local search_lower
-        search_lower=$(echo "$search_term" | tr '[:upper:]' '[:lower:]')
+        search_lower=$(echo "$search_term" | /usr/bin/tr '[:upper:]' '[:lower:]')
         # Escape glob characters to prevent pattern injection
         search_lower=${search_lower//\\/\\\\}
         search_lower=${search_lower//\*/\\*}

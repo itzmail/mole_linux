@@ -83,7 +83,7 @@ bundle_has_installed_app() {
     # cases (com.foo.app.helper, com.stclairsoft.AppTamer.Helper), so derive the
     # parent ID and compare identifiers on lowercased copies. See #1210.
     local bundle_id_lower
-    bundle_id_lower=$(printf '%s' "$bundle_id" | tr '[:upper:]' '[:lower:]')
+    bundle_id_lower=$(printf '%s' "$bundle_id" | /usr/bin/tr '[:upper:]' '[:lower:]')
 
     local parent_id_lower=""
     local suffix
@@ -168,7 +168,7 @@ bundle_has_installed_app() {
                 break
             fi
             local app_bundle_lower
-            app_bundle_lower=$(printf '%s' "$app_bundle" | tr '[:upper:]' '[:lower:]')
+            app_bundle_lower=$(printf '%s' "$app_bundle" | /usr/bin/tr '[:upper:]' '[:lower:]')
             if [[ "$app_bundle_lower" == "$bundle_id_lower" ||
                 -n "$parent_id_lower" && "$app_bundle_lower" == "$parent_id_lower" ]]; then
                 app_scan_found_or_unknown=true

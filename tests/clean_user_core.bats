@@ -1364,6 +1364,19 @@ safe_clean() {
 files_cleaned=0
 total_size_cleaned=0
 total_items=0
+<<<<<<< HEAD
+=======
+# The wallpaper row only reaches its sink with an old render of another picture.
+renders="$HOME/Library/Containers/com.apple.wallpaper.agent/Data/Library/Caches/com.apple.wallpaper.caches/extension-com.apple.wallpaper.extension.image"
+mkdir -p "$renders"
+hex=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+echo x > "$renders/${hex}-5120-2880-0-1.bmp"
+touch -t "$(/bin/date -v-30d +%Y%m%d%H%M)" "$renders/${hex}-5120-2880-0-1.bmp"
+echo x > "$renders/${hex//0/f}-5120-2880-0-1.bmp"
+# clean_utm_caches only reaches its sinks when a UTM target exists.
+mkdir -p "$HOME/Library/Containers/com.utmapp.UTM/Data/Library/Caches"
+echo x > "$HOME/Library/Containers/com.utmapp.UTM/Data/Library/Caches/blob"
+>>>>>>> d7e9f6fc (fix: keep Mole correct with GNU tools first in PATH)
 
 clean_app_caches
 clean_office_applications
@@ -2743,3 +2756,190 @@ EOF_INNER
     [[ "$output" == *"REMOVE:$volume/Photos/._IMG_0001.jpg"* ]] || return 1
     [[ "$output" != *"REMOVE:$volume/.Spotlight-V100"* ]]
 }
+<<<<<<< HEAD
+=======
+
+@test "clean_trash names a Trash it cannot list instead of skipping silently" {
+    local trash_home="$BATS_TEST_TMPDIR/locked-trash-home"
+    mkdir -p "$trash_home/.Trash"
+    touch "$trash_home/.Trash/kept.tmp"
+    chmod 000 "$trash_home/.Trash"
+
+    run env HOME="$trash_home" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/user.sh"
+stop_section_spinner() { :; }
+note_activity() { :; }
+is_path_whitelisted() { return 1; }
+safe_remove() { echo "REMOVE:$1"; }
+for DRY_RUN in true false; do
+    clean_trash
+done
+EOF
+
+    chmod 700 "$trash_home/.Trash"
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [ "$(printf '%s\n' "$output" | grep -c 'Trash · skipped, grant Full Disk Access')" -eq 2 ] || return 1
+    [[ "$output" != *"REMOVE:"* ]] || return 1
+    [ -e "$trash_home/.Trash/kept.tmp" ]
+}
+
+@test "wallpaper cleanup offers only old renders of pictures that are not on screen" {
+    local fixture_home="$HOME/wallpaper-renders"
+    run env HOME="$fixture_home" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+source "$PROJECT_ROOT/lib/clean/user.sh"
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+note_activity() { :; }
+clean_support_app_data() { :; }
+_clean_user_log_directory() { :; }
+_clean_incomplete_downloads() { :; }
+safe_clean() {
+    local label="${*: -1}"
+    [[ "$label" == "Wallpaper agent cache" ]] || return 0
+    local path
+    for path in "${@:1:$#-1}"; do printf 'OFFER=%s\n' "${path##*/}"; done
+}
+caches="$HOME/Library/Containers/com.apple.wallpaper.agent/Data/Library/Caches"
+renders="$caches/com.apple.wallpaper.caches/extension-com.apple.wallpaper.extension.image"
+mkdir -p "$renders" "$caches/com.apple.wallpaper.caches/extension-com.apple.wallpaper.extension.bad..name"
+echo x > "$caches/com.apple.wallpaper.caches/extension-com.apple.wallpaper.extension.bad..name/$(printf "%064d" 0 | tr 0 a)-640-480-0-1.bmp"
+touch -t "$(/bin/date -v-30d +%Y%m%d%H%M)" "$caches/com.apple.wallpaper.caches/extension-com.apple.wallpaper.extension.bad..name/$(printf "%064d" 0 | tr 0 a)-640-480-0-1.bmp"
+echo x > "$caches/com.apple.wallpaper.caches/extension-com.apple.wallpaper.extension.bad..name/$(printf "%064d" 0 | tr 0 f)-640-480-0-1.bmp"
+pic() { printf '%064d' 0 | tr 0 "$1"; }
+make() { echo x > "$renders/$1"; touch -t "$(/bin/date -v-"$2"d +%Y%m%d%H%M)" "$renders/$1"; }
+make "$(pic a)-5120-2880-0-1.bmp" 30   # old, other picture: offered
+make "$(pic a)-2560-1440-0-1.bmp" 30   # same old picture, other display: offered
+make "$(pic c)-5120-2880-0-1.bmp" 8    # newest 5K render: on screen
+make "$(pic c)-2560-1440-0-1.bmp" 40   # same picture as the 5K one: kept
+make "$(pic b)-2560-1440-0-1.bmp" 9    # newest render of that size: kept
+make "$(pic e)-1920-1080-0-1.bmp" 1    # too young
+make "renamed-$(pic d).bmp" 40         # not a render name
+echo x > "$caches/rebuildable.bin"
+ln -s "$renders/$(pic a)-5120-2880-0-1.bmp" "$renders/$(pic d)-5120-2880-0-1.bmp"
+clean_app_caches
+EOF
+
+    [ "$status" -eq 0 ] || return 1
+    local a c
+    a=$(printf '%064d' 0 | tr 0 a)
+    c=$(printf '%064d' 0 | tr 0 c)
+    [[ "$output" == *"OFFER=${a}-5120-2880-0-1.bmp"* ]] || return 1
+    [[ "$output" == *"OFFER=${a}-2560-1440-0-1.bmp"* ]] || return 1
+    [ "$(grep -c '^OFFER=' <<< "$output")" -eq 2 ] || return 1
+    [[ "$output" != *"OFFER=${c}"* ]] || return 1
+    [[ "$output" != *"OFFER=com.apple.wallpaper.caches"* ]] || return 1
+}
+
+@test "wallpaper render listing keeps everything on timeout and stops on a signal" {
+    local fixture_home="$HOME/wallpaper-renders-status"
+    run env HOME="$fixture_home" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+source "$PROJECT_ROOT/lib/clean/user.sh"
+folder="$HOME/Library/Containers/com.apple.wallpaper.agent/Data/Library/Caches/com.apple.wallpaper.caches/extension-com.apple.wallpaper.extension.image"
+mkdir -p "$folder"
+hex=$(printf '%064d' 0 | tr 0 a)
+touch "$folder/${hex}-5120-2880-0-1.bmp" "$folder/${hex//a/b}-5120-2880-0-1.bmp"
+ln -s "$folder/${hex}-5120-2880-0-1.bmp" "$folder/${hex//a/d}-5120-2880-0-1.bmp"
+# A partial listing that would otherwise offer one old render; the symlink
+# line stands for a listing entry that is no longer a regular file.
+partial() {
+    printf '%s %s\n' 1 "$folder/${hex}-5120-2880-0-1.bmp" 1 "$folder/${hex//a/d}-5120-2880-0-1.bmp" \
+        "$(date +%s)" "$folder/${hex//a/b}-5120-2880-0-1.bmp"
+}
+run_with_timeout() { partial; return 124; }
+rc=0; _wallpaper_stale_render_files || rc=$?
+echo "TIMEOUT rc=$rc n=${#_MOLE_WALLPAPER_RENDERS[@]}"
+run_with_timeout() { partial; return 130; }
+rc=0; _wallpaper_stale_render_files || rc=$?
+echo "SIGNAL rc=$rc n=${#_MOLE_WALLPAPER_RENDERS[@]}"
+run_with_timeout() { partial; return 0; }
+rc=0; _wallpaper_stale_render_files || rc=$?
+echo "COMPLETE rc=$rc n=${#_MOLE_WALLPAPER_RENDERS[@]}"
+
+start_section_spinner() { :; }
+stop_section_spinner() { :; }
+note_activity() { :; }
+clean_support_app_data() { :; }
+_clean_user_log_directory() { :; }
+_clean_incomplete_downloads() { :; }
+safe_clean() { printf 'CLEAN=%s\n' "${*: -1}"; }
+_wallpaper_stale_render_files() { return 130; }
+rc=0; clean_app_caches || rc=$?
+echo "SECTION rc=$rc"
+EOF
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"COMPLETE rc=0 n=1"* ]] || return 1
+    [[ "$output" == *"TIMEOUT rc=0 n=0"* ]] || return 1
+    [[ "$output" == *"SIGNAL rc=130 n=0"* ]] || return 1
+    [[ "$output" == *"SECTION rc=130"* ]] || return 1
+    [[ "$output" == *"CLEAN=Saved application states"* ]] || return 1
+    [[ "$output" != *"CLEAN=Media analysis cache"* ]] || return 1
+}
+
+@test "wallpaper cleanup caps a backlog, keeps its own probe budget and skips unsafe listings" {
+    local fixture_home="$HOME/wallpaper-renders-bounds"
+    run env HOME="$fixture_home" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/app_caches.sh"
+source "$PROJECT_ROOT/lib/clean/user.sh"
+caches="$HOME/Library/Containers/com.apple.wallpaper.agent/Data/Library/Caches"
+folder="$caches/com.apple.wallpaper.caches/extension-com.apple.wallpaper.extension.image"
+mkdir -p "$folder"
+for i in $(seq 1 60); do
+    name="$(printf '%064x' "$i")-5120-2880-0-1.bmp"
+    echo x > "$folder/$name"
+    touch -t "$(/bin/date -v-$((10 + i))d +%Y%m%d%H%M)" "$folder/$name"
+done
+newest="$(printf '%064x' 999)-5120-2880-0-1.bmp"
+echo x > "$folder/$newest"
+_wallpaper_stale_render_files
+echo "CAPPED n=${#_MOLE_WALLPAPER_RENDERS[@]}"
+oldest="$(printf '%064x' 60)-5120-2880-0-1.bmp"
+printf '%s\n' "${_MOLE_WALLPAPER_RENDERS[@]}" | grep -q "/$oldest\$" && echo "OLDEST_OFFERED"
+
+# Each render costs one handle probe; the section budget stays untouched.
+_MOLE_CONTAINER_CACHE_PROBE_DEADLINE=""
+safe_clean() {
+    if [[ "${*: -1}" == "Wallpaper agent cache" ]]; then
+        [[ -n "${_MOLE_CONTAINER_CACHE_PROBE_DEADLINE+x}" ]] && _MOLE_CONTAINER_CACHE_PROBE_DEADLINE=spent
+    fi
+}
+_clean_wallpaper_renders
+echo "SECTION_BUDGET=[${_MOLE_CONTAINER_CACHE_PROBE_DEADLINE}]"
+
+# A listing larger than the cap cannot show which picture is newest. Without
+# the cap check the real old render below would be offered.
+(
+    run_with_timeout() {
+        local i
+        for i in $(seq 1 20001); do printf '2 %s/%s\n' "$folder" "$(printf '%064x' "$i")-640-480-0-1.bmp"; done
+        printf '1 %s/%s\n%s %s/%s\n' "$folder" "$oldest" "$(date +%s)" "$folder" "$newest"
+    }
+    _wallpaper_stale_render_files
+    echo "OVERCAP n=${#_MOLE_WALLPAPER_RENDERS[@]}"
+)
+
+mv "$caches/com.apple.wallpaper.caches" "$HOME/real-caches"
+ln -s "$HOME/real-caches" "$caches/com.apple.wallpaper.caches"
+declare -f run_with_timeout > /dev/null || exit 1
+_wallpaper_stale_render_files
+echo "SYMLINK n=${#_MOLE_WALLPAPER_RENDERS[@]}"
+EOF
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"CAPPED n=50"* ]] || return 1
+    [[ "$output" == *"OLDEST_OFFERED"* ]] || return 1
+    [[ "$output" == *"SECTION_BUDGET=[]"* ]] || return 1
+    [[ "$output" == *"OVERCAP n=0"* ]] || return 1
+    [[ "$output" == *"SYMLINK n=0"* ]] || return 1
+}
+>>>>>>> d7e9f6fc (fix: keep Mole correct with GNU tools first in PATH)

@@ -39,6 +39,11 @@ type scanFailures struct {
 	firstTransient error
 }
 
+// duBinary is the system du. The size probe passes BSD-only -I ignore patterns
+// and parses BSD's "du: <path>: ..." errors, and a GNU coreutils du earlier in
+// PATH rejects -I outright. A var only so tests can point it at a stub.
+var duBinary = "/usr/bin/du"
+
 func (f *scanFailures) record(err error) {
 	if err != nil {
 		f.once.Do(func() { f.first = err })
@@ -1023,7 +1028,7 @@ func getDirectorySizeFromDuWithExcludeAndIgnores(ctx context.Context, path strin
 			}
 		}
 		args = append(args, target)
-		cmd := exec.CommandContext(ctx, "du", args...)
+		cmd := exec.CommandContext(ctx, duBinary, args...)
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout = &stdout
 		cmd.Stderr = &stderr

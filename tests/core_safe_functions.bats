@@ -2137,7 +2137,7 @@ SCRIPT
     local target_file="$target_dir/old.log"
     mkdir -p "$target_dir"
     touch "$target_file"
-    touch -t "$(date -v-8d '+%Y%m%d%H%M.%S')" "$target_file"
+    touch -t "$(/bin/date -v-8d '+%Y%m%d%H%M.%S')" "$target_file"
 
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" TARGET_DIR="$target_dir" TARGET_FILE="$target_file" \
         MOLE_TEST_MODE=0 MOLE_TEST_NO_AUTH=0 /bin/bash --noprofile --norc <<'SCRIPT'
@@ -2892,7 +2892,7 @@ SCRIPT
     touch "$old_file"
     touch "$new_file"
 
-    touch -t "$(date -v-8d '+%Y%m%d%H%M.%S' 2>/dev/null || date -d '8 days ago' '+%Y%m%d%H%M.%S')" "$old_file" 2>/dev/null || true
+    touch -t "$(/bin/date -v-8d '+%Y%m%d%H%M.%S' 2>/dev/null || date -d '8 days ago' '+%Y%m%d%H%M.%S')" "$old_file" 2>/dev/null || true
 
     run /bin/bash -c "source '$PROJECT_ROOT/lib/core/common.sh'; safe_find_delete '$TEST_DIR' '*.tmp' 7 'f'"
     [ "$status" -eq 0 ]
@@ -2940,7 +2940,7 @@ SCRIPT
 @test "safe_find_delete works when app protection is not loaded" {
     local old_file="$TEST_DIR/file-ops-only.tmp"
     touch "$old_file"
-    touch -t "$(date -v-8d '+%Y%m%d%H%M.%S' 2>/dev/null || date -d '8 days ago' '+%Y%m%d%H%M.%S')" "$old_file" 2>/dev/null || true
+    touch -t "$(/bin/date -v-8d '+%Y%m%d%H%M.%S' 2>/dev/null || date -d '8 days ago' '+%Y%m%d%H%M.%S')" "$old_file" 2>/dev/null || true
 
     run /bin/bash --noprofile --norc <<EOF
 set -euo pipefail
@@ -3142,3 +3142,166 @@ EOF
     }
     [[ "$output" == *"UNREADABLE=2"* ]]
 }
+<<<<<<< HEAD
+=======
+
+@test "SQLite handle timeout keeps the file without cancelling later cleanup (#1595)" {
+    local database="$TEST_DIR/timeout.sqlite"
+    printf 'database' > "$database"
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" database="$database" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+MOLE_CURRENT_COMMAND=clean
+MOLE_CLEAN_CANCEL_STATUS=0
+_MOLE_COMPLETE_LSOF_MODE=direct
+_mole_run_complete_lsof() { return 124; }
+rc=0
+safe_remove "$database" true || rc=$?
+printf 'RC=%s CANCEL=%s EXISTS=%s\n' "$rc" "$MOLE_CLEAN_CANCEL_STATUS" "$(test -f "$database" && echo yes || echo no)"
+next="${database%.sqlite}.log"
+printf 'stale' > "$next"
+safe_remove "$next" true 0 || exit 1
+[[ ! -e "$next" ]] || exit 1
+printf 'LATER_REMOVED\n'
+EOF
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"RC=1 CANCEL=0 EXISTS=yes"* ]] || return 1
+    [[ "$output" == *"LATER_REMOVED"* ]]
+}
+
+@test "SQLite handle interruption still cancels cleanup (#1595)" {
+    local database="$TEST_DIR/interrupted.sqlite"
+    printf 'database' > "$database"
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" database="$database" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+MOLE_CURRENT_COMMAND=clean
+MOLE_CLEAN_CANCEL_STATUS=0
+_MOLE_COMPLETE_LSOF_MODE=direct
+_mole_run_complete_lsof() { return 130; }
+rc=0
+safe_remove "$database" true || rc=$?
+printf 'RC=%s CANCEL=%s EXISTS=%s\n' "$rc" "$MOLE_CLEAN_CANCEL_STATUS" "$(test -f "$database" && echo yes || echo no)"
+EOF
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"RC=130 CANCEL=130 EXISTS=yes"* ]]
+}
+
+@test "SQLite timeout after sizing keeps the file without cancellation (#1595)" {
+    local database="$TEST_DIR/final-timeout.sqlite"
+    printf 'database' > "$database"
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" database="$database" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+MOLE_CURRENT_COMMAND=clean
+MOLE_CLEAN_CANCEL_STATUS=0
+_MOLE_COMPLETE_LSOF_MODE=direct
+_mole_run_complete_lsof() {
+    [[ -e "${database}.sized" ]] && return 124
+    return 1
+}
+oplog_enabled() { return 0; }
+get_path_size_kb() { touch "${database}.sized"; printf '1\n'; }
+rc=0
+safe_remove "$database" true || rc=$?
+printf 'RC=%s CANCEL=%s EXISTS=%s SIZED=%s\n' "$rc" "$MOLE_CLEAN_CANCEL_STATUS" \
+    "$(test -f "$database" && echo yes || echo no)" "$(test -f "${database}.sized" && echo yes || echo no)"
+EOF
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"RC=1 CANCEL=0 EXISTS=yes SIZED=yes"* ]]
+}
+
+
+@test "container probe timeout keeps its target and permits later cleanup (#1653)" {
+    local stage
+    for stage in visibility query final; do
+        check_handle_probe_outcome container 124 "$stage" || return 1
+    done
+}
+
+@test "group container probe timeout keeps its target and permits later cleanup (#1653)" {
+    local stage
+    for stage in visibility query final; do
+        check_handle_probe_outcome group 124 "$stage" || return 1
+    done
+}
+
+@test "download probe timeout keeps its target and permits later cleanup (#1653)" {
+    local stage
+    for stage in visibility query final; do
+        check_handle_probe_outcome download 124 "$stage" || return 1
+    done
+}
+
+@test "handle probe timeouts keep targets out of dry-run previews (#1653)" {
+    local kind stage
+    for kind in container group download; do
+        for stage in visibility query final; do
+            check_handle_probe_outcome "$kind" 124 "$stage" 1 || return 1
+        done
+    done
+}
+
+@test "handle probe signals remain sticky and prevent a later eligible sink (#1653)" {
+    local kind stage scripted_rc
+    for kind in container group download; do
+        for stage in visibility query final; do
+            for scripted_rc in 130 143; do
+                check_handle_probe_outcome "$kind" "$scripted_rc" "$stage" || return 1
+            done
+        done
+    done
+}
+
+@test "read-only handle timeouts retain paths without cancelling cleanup (#1653)" {
+    local cache_dir="$HOME/Library/Group Containers/TEAM.com.example.shared/Library/Caches/Timeout"
+    mkdir -p "$cache_dir"
+    touch "$cache_dir/payload"
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" cache_dir="$cache_dir" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+lsof() { return 1; }
+run_with_timeout() { return "$PROBE_STATUS"; }
+for probe in _mole_paths_have_open_handle _mole_container_cache_has_open_handle; do
+    for visibility in direct unknown; do
+        for PROBE_STATUS in 124 130 143; do
+            if [[ "$visibility" == direct ]]; then
+                _MOLE_COMPLETE_LSOF_MODE=direct
+            else
+                unset _MOLE_COMPLETE_LSOF_MODE
+            fi
+            rc=0
+            "$probe" "$cache_dir" || rc=$?
+            printf '%s:%s:%s=%s\n' "$probe" "$visibility" "$PROBE_STATUS" "$rc"
+            [[ "$PROBE_STATUS" != 124 || "$rc" == 2 ]] || exit 1
+            [[ "$PROBE_STATUS" == 124 || "$rc" == "$PROBE_STATUS" ]] || exit 1
+        done
+    done
+done
+EOF
+    [ "$status" -eq 0 ] || return 1
+    [[ -e "$cache_dir/payload" ]] || return 1
+}
+
+@test "_mole_regex_escape matches names literally without undefined ERE escapes" {
+    run env PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+name='com.foo-bar App (x)+[y]{1}^$|?*\z'
+escaped=$(_mole_regex_escape "$name")
+# A backslash may only precede an ERE metacharacter; `\-` or `\ ` is undefined
+# and GNU grep warns "stray \" on every match.
+stray=$(printf '%s' "$escaped" | LC_ALL=C sed 's/\\[][(){}.^$*+?|\\]//g' | LC_ALL=C grep -c '\\' || true)
+[[ "$stray" == 0 ]] || { echo "undefined escape left: $escaped"; exit 1; }
+for grep_bin in /usr/bin/grep /opt/homebrew/opt/grep/libexec/gnubin/grep; do
+    [[ -x "$grep_bin" ]] || continue
+    err=$(printf '%s\n' "$name" | LC_ALL=C "$grep_bin" -E -- "^${escaped}\$" 2>&1 > /dev/null) || { echo "$grep_bin missed the literal"; exit 1; }
+    [[ -z "$err" ]] || { echo "$grep_bin warned: $err"; exit 1; }
+    ! printf '%s\n' 'comXfoo-bar App (x)+[y]{1}^$|?*\z' | LC_ALL=C "$grep_bin" -qE -- "^${escaped}\$" 2> /dev/null ||
+        { echo "$grep_bin treated . as a wildcard"; exit 1; }
+done
+EOF
+
+    [[ "$status" -eq 0 ]] || { echo "$output"; return 1; }
+}
+>>>>>>> d7e9f6fc (fix: keep Mole correct with GNU tools first in PATH)

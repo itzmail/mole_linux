@@ -835,6 +835,7 @@ EOF
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/dev.sh"
+STAT_BSD="$HOME/fake-bin/stat"  # Mole calls stat through STAT_BSD
 set +e
 _plan_versioned_agent_cleanup_targets "$HOME/versions" 1
 rc=$?
@@ -902,7 +903,7 @@ _versioned_agent_entry_mtime() {
         rm -f "$HOME/.local/bin/claude"
         ln -s "$HOME/.local/share/claude/versions/1.0/claude" "$HOME/.local/bin/claude"
     fi
-    command stat -f%m "$1"
+    /usr/bin/stat -f%m "$1"
 }
 safe_remove() { echo "UNEXPECTED_DELETE:$1"; return 0; }
 clean_dev_ai_agents
@@ -1003,7 +1004,7 @@ _versioned_agent_entry_mtime() {
         : > "$HOME/flipped-sdk-plan-race"
         echo "2.1.140" > "$HOME/Library/Application Support/Claude/claude-code-vm/.sdk-version"
     fi
-    command stat -f%m "$1"
+    /usr/bin/stat -f%m "$1"
 }
 safe_remove() { echo "UNEXPECTED_DELETE:$1"; return 0; }
 clean_claude_desktop_bundled_versions 1

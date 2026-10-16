@@ -710,7 +710,7 @@ _uninstall_materialize_complete_find0() {
         # (#1339, #1340).
         local scan_errors=""
         scan_errors=$(create_temp_file) || return 2
-        run_with_timeout "$scan_timeout" find "$@" -print0 \
+        run_with_timeout "$scan_timeout" "$FIND_BSD" "$@" -print0 \
             < /dev/null > "$output_file" 2> "$scan_errors" || scan_rc=$?
         if [[ $scan_rc -eq 1 && -s "$scan_errors" ]]; then
             # Partial view: the listing is real but not exhaustive, so it can

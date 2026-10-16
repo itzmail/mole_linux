@@ -115,6 +115,7 @@ func installBlockingDuProbe(t *testing.T) string {
 		t.Fatalf("write du stub: %v", err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	useDuStub(t, duStub)
 	t.Setenv("MOLE_TEST_DU_STARTED", started)
 	return started
 }
@@ -4021,6 +4022,7 @@ func TestTransientPartialIsNotCachedAndDenialOnlyPartialIs(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Setenv("PATH", stubDir)
+			useDuStub(t, filepath.Join(stubDir, "du"))
 
 			var files, dirs, bytes int64
 			current := &atomic.Value{}
@@ -4522,6 +4524,7 @@ func TestDeleteCancelsOverviewPublicationBeforeInvalidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	useDuStub(t, filepath.Join(bin, "du"))
 	m := newModel("/", true)
 	m.entries = []dirEntry{{Name: "Project", Path: root, IsDir: true, Size: -1}, {Name: "Applications", Path: sibling, IsDir: true, Size: -1}}
 	batch := m.scheduleOverviewScans()().(tea.BatchMsg)

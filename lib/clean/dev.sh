@@ -3041,7 +3041,7 @@ _materialize_versioned_agent_entries() {
 _versioned_agent_entry_mtime() {
     local entry="$1"
     local timeout_seconds="$2"
-    run_with_timeout "$timeout_seconds" stat \
+    run_with_timeout "$timeout_seconds" "$STAT_BSD" \
         -f%m "$entry" < /dev/null 2> /dev/null
 }
 

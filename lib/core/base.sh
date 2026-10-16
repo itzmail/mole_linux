@@ -447,8 +447,20 @@ load_mole_whitelist() {
 # ============================================================================
 # BSD Stat Compatibility
 # ============================================================================
+<<<<<<< HEAD
 readonly STAT_BSD="/usr/bin/stat"
 readonly MOLE_IS_LINUX=$([[ "$(uname -s)" == "Linux" ]] && echo "true" || echo "false")
+=======
+# Every stat call names this path: a PATH stat can be GNU coreutils, whose
+# `-f` prints file-system text that reads as a value (#1196, #1752). Assigned
+# unconditionally on load, so the environment cannot redirect it; not readonly
+# so a test can rebind it to a fixture stub after sourcing.
+STAT_BSD="/usr/bin/stat"
+# Scans whose result depends on BSD find's error format or its handling of
+# File Provider mounts use this path too; GNU findutils earlier in PATH quotes
+# paths in its errors and fails on mounts BSD find walks past.
+FIND_BSD="/usr/bin/find"
+>>>>>>> d7e9f6fc (fix: keep Mole correct with GNU tools first in PATH)
 
 # Get file size in bytes
 get_file_size() {

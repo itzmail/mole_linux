@@ -367,8 +367,13 @@ scan_project_cache_root() {
     : > "$output_file"
 
     local -a find_args=(
+<<<<<<< HEAD
         find -P "$root" -maxdepth 9 -mount
         "(" -name "Library" -o -name ".Trash" -o -name "node_modules" -o -name ".git" -o -name ".svn" -o -name ".hg" -o -name ".venv" -o -name "venv" -o -name ".pnpm-store" -o -name ".fvm" -o -name "DerivedData" -o -name "Pods" -o -name "miniconda3" -o -name "anaconda3" -o -name "miniforge3" -o -name "mambaforge" -o -name "site-packages" ")"
+=======
+        "$FIND_BSD" -P "$root" -maxdepth 9 -mount
+        "(" -name "Library" -o -name ".Trash" -o -name "node_modules" -o -name ".git" -o -name ".svn" -o -name ".hg" -o -name ".venv" -o -name "venv" -o -name ".pnpm-store" -o -name ".fvm" -o -name "DerivedData" -o -name "Pods" -o -name "miniconda3" -o -name "anaconda3" -o -name "miniforge3" -o -name "mambaforge" -o -name "site-packages" -o -name "target" -o -name ".build" -o -name ".gradle" -o -name "Index.noindex" -o -name "_cacache" ")"
+>>>>>>> d7e9f6fc (fix: keep Mole correct with GNU tools first in PATH)
         -prune -o
         -type d
         "(" -name ".next" -o -name "__pycache__" -o -name ".dart_tool" ")"

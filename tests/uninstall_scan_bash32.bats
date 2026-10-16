@@ -414,7 +414,7 @@ EOF
 	# and display name, plus a matching language signature, are the conditions
 	# the awk classifier and
 	# use_cached_scan_metadata require for the cached branch to "stick".
-	app_mtime="$(stat -f %m "$apps_root/TestApp.app")"
+	app_mtime="$(/usr/bin/stat -f %m "$apps_root/TestApp.app")"
 	done_marker="$HOME/scan.done"
 
 	# The bug not only emits "unbound variable"; the spinner subshell can
@@ -506,7 +506,7 @@ EOF
 	mkdir -p "$app_path/Contents/Resources/en.lproj"
 	printf '"CFBundleDisplayName" = "VideoFusion";\n' \
 		> "$app_path/Contents/Resources/en.lproj/InfoPlist.strings"
-	app_mtime="$(stat -f %m "$app_path")"
+	app_mtime="$(/usr/bin/stat -f %m "$app_path")"
 
 	bin_dir="$HOME/bin"
 	mkdir -p "$bin_dir"

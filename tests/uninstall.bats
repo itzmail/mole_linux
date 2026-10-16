@@ -437,6 +437,415 @@ EOF
     [[ "$output" != *"cannot be removed safely by Mole"* ]]
 }
 
+<<<<<<< HEAD
+=======
+@test "batch uninstall continues when best-effort teardown steps time out" {
+    local fixture_home
+    fixture_home=$(mktemp -d "$HOME/inventory-fixture.XXXXXX")
+    mkdir -p "$fixture_home/Applications/SlowTeardown.app"
+    local trace="$fixture_home/slow-teardown.log"
+
+    run env HOME="$fixture_home" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+source "$PROJECT_ROOT/tests/helpers/uninstall.bash"
+mole_test_isolate_uninstall_inventory
+brew() { :; }
+
+start_inline_spinner() { :; }
+stop_inline_spinner() { :; }
+pgrep() { return 1; }
+find_app_files() { return 0; }
+find_app_system_files() { return 0; }
+ensure_sudo_session() { echo "UNEXPECTED_SUDO"; return 1; }
+# osascript waiting on the System Events automation prompt, a slow lsregister,
+# and a hung launchctl all surface here as the timeout status.
+stop_launch_services() { return 124; }
+unregister_app_bundle() { return 124; }
+remove_login_item() { return 124; }
+bootout_login_item_helpers() { return 124; }
+force_kill_app() { return 0; }
+mole_delete() {
+	printf 'DELETE:%s\n' "$1" >> "$HOME/slow-teardown.log"
+	return 0
+}
+
+selected_apps=("0|$HOME/Applications/SlowTeardown.app|SlowTeardown|com.example.SlowTeardown|0|Never")
+files_cleaned=0
+total_items=0
+total_size_cleaned=0
+
+printf '\n' | batch_uninstall_applications
+EOF
+
+    [[ -s "$fixture_home/inventory.trace" ]] || { echo "$output"; return 1; }
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+    [[ "$(grep -c "^DELETE:$fixture_home/Applications/SlowTeardown.app$" "$trace" 2> /dev/null || true)" -eq 1 ]] || return 1
+    [[ "$output" != *"UNEXPECTED_SUDO"* ]]
+}
+
+@test "batch uninstall narrows the plan when the same-bundle scan cannot run (#1624)" {
+    mkdir -p "$HOME/Applications/Managed.app" "$HOME/Library/Preferences"
+    local pref="$HOME/Library/Preferences/com.example.Managed.plist"
+    printf 'pref' > "$pref"
+    local trace="$HOME/managed-deletes.log"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+brew() { :; }
+
+start_inline_spinner() { :; }
+stop_inline_spinner() { :; }
+pgrep() { return 1; }
+find_app_files() { printf '%s\n' "$HOME/Library/Preferences/com.example.Managed.plist"; }
+find_app_system_files() { return 0; }
+ensure_sudo_session() { return 1; }
+# A managed Mac where receipts or an app root cannot be read at all.
+uninstall_live_bundle_has_other_install() {
+	_MOLE_UNINSTALL_LIVE_SIBLING_FINGERPRINT=""
+	_MOLE_UNINSTALL_LIVE_SIBLING_PATHS=()
+	return 2
+}
+stop_launch_services() { :; }
+unregister_app_bundle() { :; }
+remove_login_item() { echo "UNEXPECTED_LOGIN_ITEM"; }
+force_kill_app() { echo "UNEXPECTED_KILL"; return 0; }
+mole_delete() {
+	printf 'DELETE:%s\n' "$1" >> "$HOME/managed-deletes.log"
+	return 0
+}
+
+selected_apps=("0|$HOME/Applications/Managed.app|Managed|com.example.Managed|0|Never")
+files_cleaned=0
+total_items=0
+total_size_cleaned=0
+
+printf '\n' | batch_uninstall_applications 2>&1
+EOF
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+    [[ "$output" == *"Shared leftovers kept (other copies unchecked)"* ]] || return 1
+    [[ "$output" != *"UNEXPECTED_"* ]] || return 1
+    [[ "$(grep -c "^DELETE:$HOME/Applications/Managed.app$" "$trace" 2> /dev/null || true)" -eq 1 ]] || return 1
+    [[ "$(grep -c "Preferences" "$trace" 2> /dev/null || true)" -eq 0 ]]
+}
+
+@test "same-bundle scan names the first unreadable path and keeps the generic wording when none is known (#1735)" {
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -uo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+root="$HOME/vols-1735"
+rm -rf "$root"; mkdir -p "$root/Readable/Good.app" "$root/Backups of mole-test"
+chmod 000 "$root/Backups of mole-test"
+out="$HOME/scan-1735.out"
+_MOLE_UNINSTALL_SCAN_UNREADABLE=""
+rc=0
+_uninstall_materialize_complete_find0 "$out" "$((SECONDS + 30))" "$root" -mindepth 1 -maxdepth 2 -iname '*.app' || rc=$?
+chmod 755 "$root/Backups of mole-test"
+echo "RC=$rc"
+echo "UNREADABLE=${_MOLE_UNINSTALL_SCAN_UNREADABLE}"
+tr '\0' '\n' < "$out"
+# A fully readable tree leaves it empty.
+rm -rf "$root/Backups of mole-test"
+_MOLE_UNINSTALL_SCAN_UNREADABLE=""
+rc=0
+_uninstall_materialize_complete_find0 "$out" "$((SECONDS + 30))" "$root" -mindepth 1 -maxdepth 2 -iname '*.app' || rc=$?
+echo "CLEAN_RC=$rc CLEAN_UNREADABLE=[${_MOLE_UNINSTALL_SCAN_UNREADABLE}]"
+EOF
+	[ "$status" -eq 0 ] || { echo "$output"; return 1; }
+	[[ "$output" == *"RC=$MOLE_UNINSTALL_SCAN_PARTIAL"* || "$output" == *"RC=3"* ]] || { echo "$output"; return 1; }
+	[[ "$output" == *"UNREADABLE=$HOME/vols-1735/Backups of mole-test"* ]] || { echo "$output"; return 1; }
+	[[ "$output" == *"Good.app"* ]] || { echo "$output"; return 1; }
+	[[ "$output" == *"CLEAN_RC=0 CLEAN_UNREADABLE=[]"* ]] || { echo "$output"; return 1; }
+}
+
+@test "same-bundle scan names the unreadable path verbatim with GNU find first in PATH" {
+	local stub_bin="$HOME/gnu-find-1735"
+	mkdir -p "$stub_bin"
+	# GNU findutils quotes the path in its errors, which the BSD-format parser
+	# would carry into the preview as part of the name.
+	cat > "$stub_bin/find" << 'STUB'
+#!/bin/bash
+printf "find: \xe2\x80\x98%s/Backups of mole-test\xe2\x80\x99: Permission denied\n" "$1" >&2
+exit 1
+STUB
+	chmod +x "$stub_bin/find"
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" PATH="$stub_bin:$PATH" /bin/bash --noprofile --norc << 'EOF'
+set -uo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+root="$HOME/vols-gnu-1735"
+rm -rf "$root"; mkdir -p "$root/Readable/Good.app" "$root/Backups of mole-test"
+chmod 000 "$root/Backups of mole-test"
+_MOLE_UNINSTALL_SCAN_UNREADABLE=""
+rc=0
+_uninstall_materialize_complete_find0 "$HOME/scan-gnu-1735.out" "$((SECONDS + 30))" "$root" -mindepth 1 -maxdepth 2 -iname '*.app' || rc=$?
+chmod 755 "$root/Backups of mole-test"
+echo "UNREADABLE=[${_MOLE_UNINSTALL_SCAN_UNREADABLE}]"
+tr '\0' '\n' < "$HOME/scan-gnu-1735.out"
+EOF
+	rm -rf "$stub_bin"
+	[ "$status" -eq 0 ] || { echo "$output"; return 1; }
+	[[ "$output" == *"UNREADABLE=[$HOME/vols-gnu-1735/Backups of mole-test]"* ]] || { echo "$output"; return 1; }
+	[[ "$output" == *"Good.app"* ]] || { echo "$output"; return 1; }
+}
+
+@test "batch uninstall shows a partial same-bundle scan in the preview, not on the scan spinner" {
+    mkdir -p "$HOME/Applications/Managed.app" "$HOME/Library/Preferences"
+    local pref="$HOME/Library/Preferences/com.example.Managed.plist"
+    printf 'pref' > "$pref"
+    local trace="$HOME/managed-deletes.log"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+brew() { :; }
+
+start_inline_spinner() { :; }
+stop_inline_spinner() { :; }
+pgrep() { return 1; }
+find_app_files() { printf '%s\n' "$HOME/Library/Preferences/com.example.Managed.plist"; }
+find_app_system_files() { return 0; }
+ensure_sudo_session() { return 1; }
+# TCC hides one directory from the same-bundle scan, as on macOS 26.
+uninstall_live_bundle_has_other_install() {
+	_MOLE_UNINSTALL_LIVE_SIBLING_FINGERPRINT=""
+	_MOLE_UNINSTALL_LIVE_SIBLING_PATHS=()
+	return "$MOLE_UNINSTALL_SCAN_PARTIAL"
+}
+stop_launch_services() { :; }
+unregister_app_bundle() { :; }
+remove_login_item() { echo "UNEXPECTED_LOGIN_ITEM"; }
+force_kill_app() { echo "UNEXPECTED_KILL"; return 0; }
+mole_delete() {
+	printf 'DELETE:%s\n' "$1" >> "$HOME/managed-deletes.log"
+	return 0
+}
+
+selected_apps=("0|$HOME/Applications/Managed.app|Managed|com.example.Managed|0|Never")
+files_cleaned=0
+total_items=0
+total_size_cleaned=0
+
+printf '\n' | batch_uninstall_applications 2>&1
+EOF
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+    # The note belongs to this app's preview block. Printed during the scan,
+    # it landed on the scan spinner line, before the preview header.
+    local header_line app_line note_line
+    header_line=$(printf '%s\n' "$output" | grep -n 'Files to be removed' | head -1 | cut -d: -f1)
+    app_line=$(printf '%s\n' "$output" | grep -n ' Managed .*0B' | head -1 | cut -d: -f1)
+    note_line=$(printf '%s\n' "$output" | grep -n 'Shared leftovers kept (some paths unreadable)' | head -1 | cut -d: -f1)
+    [[ -n "$header_line" && -n "$app_line" && -n "$note_line" ]] || { echo "$output"; return 1; }
+    [[ $app_line -gt $header_line && $note_line -eq $((app_line + 1)) ]] || { echo "$output"; return 1; }
+    [[ "$output" != *"UNEXPECTED_"* ]] || return 1
+    [[ "$(grep -c "^DELETE:$HOME/Applications/Managed.app$" "$trace" 2> /dev/null || true)" -eq 1 ]] || return 1
+    [[ "$(grep -c "Preferences" "$trace" 2> /dev/null || true)" -eq 0 ]]
+}
+
+@test "batch uninstall names the unreadable path of a partial same-bundle scan in the preview (#1735)" {
+    mkdir -p "$HOME/Applications/Managed.app" "$HOME/Library/Preferences"
+    local pref="$HOME/Library/Preferences/com.example.Managed.plist"
+    printf 'pref' > "$pref"
+    local trace="$HOME/managed-deletes.log"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+brew() { :; }
+
+start_inline_spinner() { :; }
+stop_inline_spinner() { :; }
+pgrep() { return 1; }
+find_app_files() { printf '%s\n' "$HOME/Library/Preferences/com.example.Managed.plist"; }
+find_app_system_files() { return 0; }
+ensure_sudo_session() { return 1; }
+# TCC hides one directory from the same-bundle scan, as on macOS 26.
+uninstall_live_bundle_has_other_install() {
+	_MOLE_UNINSTALL_LIVE_SIBLING_FINGERPRINT=""
+	_MOLE_UNINSTALL_LIVE_SIBLING_PATHS=()
+	_MOLE_UNINSTALL_SCAN_UNREADABLE='/Volumes/Backups of mole-test\new'
+	return "$MOLE_UNINSTALL_SCAN_PARTIAL"
+}
+stop_launch_services() { :; }
+unregister_app_bundle() { :; }
+remove_login_item() { echo "UNEXPECTED_LOGIN_ITEM"; }
+force_kill_app() { echo "UNEXPECTED_KILL"; return 0; }
+mole_delete() {
+	printf 'DELETE:%s\n' "$1" >> "$HOME/managed-deletes.log"
+	return 0
+}
+
+selected_apps=("0|$HOME/Applications/Managed.app|Managed|com.example.Managed|0|Never")
+files_cleaned=0
+total_items=0
+total_size_cleaned=0
+
+printf '\n' | batch_uninstall_applications 2>&1
+EOF
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+    # The note belongs to this app's preview block. Printed during the scan,
+    # it landed on the scan spinner line, before the preview header.
+    local header_line app_line note_line
+    header_line=$(printf '%s\n' "$output" | grep -n 'Files to be removed' | head -1 | cut -d: -f1)
+    app_line=$(printf '%s\n' "$output" | grep -n ' Managed .*0B' | head -1 | cut -d: -f1)
+    note_line=$(printf '%s\n' "$output" | grep -nF 'Shared leftovers kept (cannot read /Volumes/Backups of mole-test\new)' | head -1 | cut -d: -f1)
+    [[ -n "$header_line" && -n "$app_line" && -n "$note_line" ]] || { echo "$output"; return 1; }
+    [[ $app_line -gt $header_line && $note_line -eq $((app_line + 1)) ]] || { echo "$output"; return 1; }
+    [[ "$output" != *"UNEXPECTED_"* ]] || return 1
+    [[ "$(grep -c "^DELETE:$HOME/Applications/Managed.app$" "$trace" 2> /dev/null || true)" -eq 1 ]] || return 1
+    [[ "$(grep -c "Preferences" "$trace" 2> /dev/null || true)" -eq 0 ]]
+}
+
+@test "batch uninstall still stops on a signal during teardown before deleting" {
+    local fixture_home
+    fixture_home=$(mktemp -d "$HOME/inventory-fixture.XXXXXX")
+    mkdir -p "$fixture_home/Applications/SignalTeardown.app"
+    local trace="$fixture_home/signal-teardown.log"
+
+    local step
+    for step in stop_launch_services remove_login_item; do
+        rm -f "$trace" "$fixture_home/inventory.trace"
+        run env HOME="$fixture_home" PROJECT_ROOT="$PROJECT_ROOT" SIGNAL_STEP="$step" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+source "$PROJECT_ROOT/tests/helpers/uninstall.bash"
+mole_test_isolate_uninstall_inventory
+brew() { :; }
+
+start_inline_spinner() { :; }
+stop_inline_spinner() { :; }
+pgrep() { return 1; }
+find_app_files() { return 0; }
+find_app_system_files() { return 0; }
+ensure_sudo_session() { return 1; }
+stop_launch_services() { :; }
+unregister_app_bundle() { :; }
+remove_login_item() { :; }
+eval "${SIGNAL_STEP}() { return 130; }"
+force_kill_app() { return 0; }
+mole_delete() {
+	printf 'DELETE:%s\n' "$1" >> "$HOME/signal-teardown.log"
+	return 0
+}
+
+selected_apps=("0|$HOME/Applications/SignalTeardown.app|SignalTeardown|com.example.SignalTeardown|0|Never")
+files_cleaned=0
+total_items=0
+total_size_cleaned=0
+
+batch_rc=0
+printf '\n' | batch_uninstall_applications > /dev/null 2>&1 || batch_rc=$?
+echo "BATCH_RC=$batch_rc"
+EOF
+
+        [[ -s "$fixture_home/inventory.trace" ]] || { echo "$output"; return 1; }
+
+        [ "$status" -eq 0 ] || {
+            echo "$step: $output"
+            return 1
+        }
+        [[ "$output" == *"BATCH_RC=130"* ]] || {
+            echo "$step: $output"
+            return 1
+        }
+        [[ ! -e "$trace" ]] || return 1
+    done
+}
+
+@test "stop_launch_services propagates an unload timeout after one scan" {
+    mkdir -p "$HOME/Library/LaunchAgents"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+_uninstall_unload_launch_plists() {
+	printf 'ROOT:%s:%s\n' "$1" "${4:-}" >> "$HOME/unload-roots.log"
+	return 124
+}
+
+rc=0
+stop_launch_services "com.example.SlowAgent" false "$HOME/Applications/SlowAgent.app" || rc=$?
+echo "RC=$rc"
+EOF
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+    [[ "$output" == *"RC=124"* ]] || return 1
+    [[ "$(grep -c '^ROOT:' "$HOME/unload-roots.log" 2> /dev/null || true)" -eq 1 ]]
+}
+
+@test "batch uninstall names the app and step when a removal times out" {
+    local fixture_home
+    fixture_home=$(mktemp -d "$HOME/inventory-fixture.XXXXXX")
+    mkdir -p "$fixture_home/Applications/SlowDelete.app"
+
+    run env HOME="$fixture_home" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+source "$PROJECT_ROOT/tests/helpers/uninstall.bash"
+mole_test_isolate_uninstall_inventory
+brew() { :; }
+
+start_inline_spinner() { :; }
+stop_inline_spinner() { :; }
+pgrep() { return 1; }
+find_app_files() { return 0; }
+find_app_system_files() { return 0; }
+ensure_sudo_session() { return 1; }
+stop_launch_services() { :; }
+unregister_app_bundle() { :; }
+remove_login_item() { :; }
+force_kill_app() { return 0; }
+mole_delete() { return 124; }
+
+selected_apps=("0|$HOME/Applications/SlowDelete.app|SlowDelete|com.example.SlowDelete|0|Never")
+files_cleaned=0
+total_items=0
+total_size_cleaned=0
+
+batch_rc=0
+printf '\n' | batch_uninstall_applications 2>&1 || batch_rc=$?
+echo "BATCH_RC=$batch_rc"
+EOF
+
+    [[ -s "$fixture_home/inventory.trace" ]] || { echo "$output"; return 1; }
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+    [[ "$output" == *"BATCH_RC=1"* ]] || return 1
+    [[ "$output" == *"Uninstall stopped at SlowDelete: app removal timed out"* ]]
+}
+
+>>>>>>> d7e9f6fc (fix: keep Mole correct with GNU tools first in PATH)
 @test "batch uninstall rejects privileged permanent removal below a mutable parent before side effects (#1299)" {
     mkdir -p "$HOME/Applications/RootOwned.app"
     mkdir -p "$HOME/Library/Application Support/RootOwned"
@@ -893,6 +1302,7 @@ EOF
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+FIND_BSD=find  # route the scan through the stub
 pkg_receipt_nonstandard_app_paths() { :; }
 
 selected_apps=("0|$APP_ROOT/Selected.app|Selected|com.example.partial|0|Never")
@@ -1902,6 +2312,86 @@ EOF
         }
 }
 
+<<<<<<< HEAD
+=======
+@test "an unrenamed Electron executable names no app for crash reports or kills" {
+    # Every unrenamed Electron app ships its binary as Electron, so neither its
+    # crash-report prefix nor a name-based kill may treat it as this app.
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_NO_AUTH=1 /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+app_path="$HOME/Applications/WorkBuddy.app"
+mkdir -p "$app_path/Contents"
+cat > "$app_path/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+  <key>CFBundleExecutable</key><string>Electron</string>
+  <key>CFBundleIdentifier</key><string>com.example.workbuddy</string>
+</dict></plist>
+PLIST
+reports="$HOME/Library/Logs/DiagnosticReports"
+mkdir -p "$reports"
+touch "$reports/Electron-2026-10-15-101010.ips" "$reports/WorkBuddy-2026-10-15-101010.ips"
+found=$(get_diagnostic_report_paths_for_app "$app_path" "WorkBuddy" "$reports")
+[[ "$found" == *"WorkBuddy-2026-10-15-101010.ips"* ]] || { echo "missed own report: $found"; exit 1; }
+[[ "$found" != *"Electron-"* ]] || { echo "took another app's Electron report: $found"; exit 1; }
+pgrep() { echo "pgrep $*" >> "$HOME/kill-trace"; return 0; }
+pkill() { echo "pkill $*" >> "$HOME/kill-trace"; return 0; }
+force_kill_app "WorkBuddy" "$app_path"
+[[ ! -e "$HOME/kill-trace" ]] || { cat "$HOME/kill-trace"; exit 1; }
+EOF
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+}
+
+@test "force_kill_app quits an unrenamed Electron app only by its bundle id" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_MODE=0 MOLE_TEST_NO_AUTH=0 /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+app_path="$HOME/Applications/WorkBuddy.app"
+mkdir -p "$app_path/Contents"
+cat > "$app_path/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+  <key>CFBundleExecutable</key><string>Electron</string>
+  <key>CFBundleIdentifier</key><string>com.example.workbuddy</string>
+</dict></plist>
+PLIST
+pgrep() { echo "pgrep $*" >> "$HOME/name-trace"; return 0; }
+pkill() { echo "pkill $*" >> "$HOME/name-trace"; return 0; }
+run_with_timeout() { shift; "$@"; }
+sleep() { :; }
+# Each scenario lists the answers to successive "is running" queries.
+osascript() {
+    local answer
+    if [[ "$2" == *"to quit"* ]]; then
+        echo "quit" >> "$HOME/trace"
+        return 0
+    fi
+    [[ "$2" == 'application id "com.example.workbuddy" is running' ]] || return 1
+    answer=$(head -1 "$HOME/answers")
+    /usr/bin/sed -i '' '1d' "$HOME/answers" 2> /dev/null || true
+    [[ "$answer" == signal ]] && return 130
+    echo "$answer"
+}
+scenario() {
+    printf '%s\n' "$@" > "$HOME/answers"
+    : > "$HOME/trace"
+    local rc=0
+    force_kill_app "WorkBuddy" "$app_path" || rc=$?
+    echo "$rc"
+}
+[[ $(scenario false) == 0 ]] || exit 1
+[[ ! -s "$HOME/trace" ]] || { echo "quit a stopped app"; exit 1; }
+[[ $(scenario true true false) == 0 ]] || exit 1
+[[ $(cat "$HOME/trace") == quit ]] || { echo "expected one quit"; exit 1; }
+[[ $(scenario $(for i in $(seq 1 30); do echo true; done)) == 1 ]] || { echo "kept running not reported"; exit 1; }
+[[ $(scenario signal) == 130 ]] || { echo "signal not propagated"; exit 1; }
+[[ ! -e "$HOME/name-trace" ]] || { cat "$HOME/name-trace"; exit 1; }
+EOF
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+}
+
+>>>>>>> d7e9f6fc (fix: keep Mole correct with GNU tools first in PATH)
 @test "force_kill_app refuses to operate on system process names" {
     # Defensive guard: a third-party .app could set CFBundleExecutable to a
     # system process name (Finder, Dock, loginwindow, etc.). Even though the
@@ -2977,6 +3467,91 @@ EOF
     [[ "$output" == *"count=1"* ]]
 }
 
+<<<<<<< HEAD
+=======
+@test "match_apps_by_name runs tr a fixed number of times regardless of app count" {
+    local shim="$HOME/tr-shim"
+    mkdir -p "$shim"
+    cat > "$shim/tr" <<'SHIM'
+#!/bin/bash
+printf 'tr\n' >> "$TR_TRACE"
+exec /usr/bin/tr "$@"
+SHIM
+    cat > "$shim/basename" <<'SHIM'
+#!/bin/bash
+printf 'basename\n' >> "$TR_TRACE"
+exec /usr/bin/basename "$@"
+SHIM
+    chmod +x "$shim/tr" "$shim/basename"
+
+    run env PATH="$shim:$PATH" TR_TRACE="$HOME/tr.trace" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+selected_apps=()
+apps_data=()
+for i in $(seq 1 60); do
+    apps_data+=("1000|$HOME/Applications/App$i.app|App $i|com.example.app$i|1 MB|1000000|1024")
+done
+apps_data+=("1000|$HOME/Applications/Tor Browser.app|Tor Browser|org.torproject|1 MB|1000000|1024")
+source "$PROJECT_ROOT/tests/test_match_apps_helper.sh"
+match_apps_by_name "nothing-here"
+match_apps_by_name "Tor" "Browser"
+echo "count=${#selected_apps[@]}"
+echo "match=${selected_apps[0]}"
+EOF
+
+    [ "$status" -eq 0 ] || { printf '%s\n' "$output"; return 1; }
+    [[ "$output" == *"count=1"* ]] || return 1
+    [[ "$output" == *"|Tor Browser|"* ]] || return 1
+    # One batch pass per call plus one per query term and joined query.
+    local tr_calls basename_calls
+    tr_calls=$(grep -c '^tr$' "$HOME/tr.trace" || true)
+    basename_calls=$(grep -c '^basename$' "$HOME/tr.trace" || true)
+    [[ "$tr_calls" -le 6 ]] || { echo "tr ran $tr_calls times"; return 1; }
+    [[ "$basename_calls" -eq 0 ]] || { echo "basename ran $basename_calls times"; return 1; }
+}
+
+@test "match_apps_by_name keeps locale case folding for non-ASCII names" {
+    run env LC_ALL=en_US.UTF-8 /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+selected_apps=()
+apps_data=(
+	"1000|$HOME/Applications/Écrivain.app|Écrivain|com.example.ecrivain|1 MB|1000000|1024"
+	"1001|$HOME/Applications/Other.app|Other|com.example.other|1 MB|1000001|1024"
+)
+source "$PROJECT_ROOT/tests/test_match_apps_helper.sh"
+match_apps_by_name "écrivain"
+echo "count=${#selected_apps[@]}"
+echo "match=${selected_apps[0]-}"
+EOF
+
+    [ "$status" -eq 0 ] || return 1
+    [[ "$output" == *"count=1"* ]] || { printf '%s\n' "$output"; return 1; }
+    [[ "$output" == *"|Écrivain|"* ]]
+}
+
+@test "match_apps_by_name folds non-ASCII case with a byte-only tr first in PATH" {
+    local stub_bin="$HOME/gnu-tr-bin"
+    mkdir -p "$stub_bin"
+    # GNU tr maps case byte by byte, so É never became é and the search missed.
+    printf '#!/bin/bash\nLC_ALL=C exec /usr/bin/tr "$@"\n' > "$stub_bin/tr"
+    chmod +x "$stub_bin/tr"
+    run env LC_ALL=en_US.UTF-8 PATH="$stub_bin:$PATH" /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+selected_apps=()
+apps_data=(
+	"1000|$HOME/Applications/Écrivain.app|Écrivain|com.example.ecrivain|1 MB|1000000|1024"
+	"1001|$HOME/Applications/Other.app|Other|com.example.other|1 MB|1000001|1024"
+)
+source "$PROJECT_ROOT/tests/test_match_apps_helper.sh"
+match_apps_by_name "écrivain"
+echo "count=${#selected_apps[@]}"
+EOF
+    rm -rf "$stub_bin"
+    [ "$status" -eq 0 ] || { printf '%s\n' "$output"; return 1; }
+    [[ "$output" == *"count=1"* ]] || { printf '%s\n' "$output"; return 1; }
+}
+
+>>>>>>> d7e9f6fc (fix: keep Mole correct with GNU tools first in PATH)
 @test "main clears pending input before app selection after scan (#726)" {
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc << 'INNER'
 set -euo pipefail
@@ -4232,3 +4807,824 @@ INNER
     [[ "$output" != *"UNEXPECTED_TEARDOWN"* ]] || return 1
     [[ "$output" != *"UNEXPECTED_DELETE"* ]]
 }
+<<<<<<< HEAD
+=======
+
+@test "uninstall preview excludes protected leftovers before sizing and execution" {
+    mkdir -p "$HOME/Applications/ChatGPT.app" "$HOME/Library/Logs/com.openai.codex" "$HOME/eligible-leftover"
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'SCRIPT'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+source "$PROJECT_ROOT/tests/helpers/uninstall.bash"
+brew() { :; }
+request_sudo_access() { :; }
+start_inline_spinner() { :; }
+stop_inline_spinner() { :; }
+enter_alt_screen() { :; }
+leave_alt_screen() { :; }
+hide_cursor() { :; }
+show_cursor() { :; }
+remove_apps_from_dock() { :; }
+force_kill_app() { :; }
+stop_launch_services() { :; }
+unregister_app_bundle() { :; }
+bootout_login_item_helpers() { :; }
+pgrep() { return 1; }
+pkill() { :; }
+get_file_owner() { whoami; }
+get_path_size_kb() { echo 10; }
+calculate_total_size() { printf '%s\n' "$1" > "$HOME/sized-plan"; echo 17; }
+find_app_files() { printf '%s\n' "$HOME/Library/Logs/com.openai.codex" "$HOME/eligible-leftover"; }
+find_app_system_files() { :; }
+get_diagnostic_report_paths_for_app() {
+    [[ "$3" == "$HOME/Library/Logs/DiagnosticReports" ]] || return 0
+    printf '%s\n' "$HOME/Library/Logs/com.openai.codex"
+}
+_mole_complete_lsof_mode() { echo unexpected-lsof >> "$HOME/forbidden"; return 2; }
+validate_path_for_deletion() { echo unexpected-validation >> "$HOME/forbidden"; return 2; }
+remove_file_list() {
+    [[ -n "$1" ]] || return 0
+    printf '%s\n' "$1" >> "$HOME/executed-plan"
+    [[ "$1" == "$HOME/eligible-leftover" ]] || return 1
+    rmdir "$1"
+}
+mole_delete() { rmdir "$1"; }
+selected_apps=("0|$HOME/Applications/ChatGPT.app|ChatGPT|unknown|0|Never")
+files_cleaned=0
+total_items=0
+total_size_cleaned=0
+mole_test_select_all_uninstall_data
+printf 'd\n' | batch_uninstall_applications > "$HOME/output.log" 2>&1
+[[ "$(cat "$HOME/sized-plan")" == "$HOME/eligible-leftover" ]] || exit 1
+[[ "$(cat "$HOME/executed-plan")" == "$HOME/eligible-leftover" ]] || exit 1
+[[ -d "$HOME/Library/Logs/com.openai.codex" ]] || exit 1
+[[ ! -e "$HOME/Applications/ChatGPT.app" && ! -e "$HOME/eligible-leftover" ]] || exit 1
+[[ ! -e "$HOME/forbidden" ]] || { cat "$HOME/forbidden"; exit 1; }
+! grep -q 'Logs/com.openai.codex' "$HOME/output.log" || exit 1
+SCRIPT
+    [ "$status" -eq 0 ] || { echo "$output"; cat "$HOME/output.log"; return 1; }
+}
+
+@test "batch uninstall explains changed agent ownership once after the cleanup phase" {
+    for preview in 0 1; do
+        mkdir -p "$HOME/Applications/OwnedApp.app/Contents/MacOS" "$HOME/Library/LaunchAgents"
+        touch "$HOME/Applications/OwnedApp.app/Contents/MacOS/OwnedApp"
+        cat > "$HOME/Applications/OwnedApp.app/Contents/Info.plist" <<'PLIST'
+<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.example.owned</string></dict></plist>
+PLIST
+        cat > "$HOME/Library/LaunchAgents/com.thirdparty.owned.plist" <<PLIST
+<plist version="1.0"><dict><key>Program</key><string>$HOME/Applications/OwnedApp.app/Contents/MacOS/OwnedApp</string></dict></plist>
+PLIST
+        run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_DRY_RUN="$preview" /bin/bash --noprofile --norc <<'SCRIPT'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+source "$PROJECT_ROOT/tests/helpers/uninstall.bash"
+mole_test_isolate_uninstall_inventory
+export MOLE_TEST_TRASH_DIR="$HOME/Trash"
+brew() { :; }
+request_sudo_access() { :; }
+start_inline_spinner() { :; }
+stop_inline_spinner() { :; }
+enter_alt_screen() { :; }
+leave_alt_screen() { :; }
+hide_cursor() { :; }
+show_cursor() { :; }
+remove_apps_from_dock() { :; }
+pgrep() { return 1; }
+stop_launch_services() {
+    cat > "$HOME/Library/LaunchAgents/com.thirdparty.owned.plist" <<'PLIST'
+<plist version="1.0"><dict><key>Program</key><string>/bin/true</string></dict></plist>
+PLIST
+    printf 'OWNERSHIP_CHANGED\n'
+}
+unregister_app_bundle() { :; }
+selected_apps=("0|$HOME/Applications/OwnedApp.app|OwnedApp|com.example.owned|0|Never")
+files_cleaned=0 total_items=0 total_size_cleaned=0
+mole_test_select_all_uninstall_data
+printf 'd\n' | batch_uninstall_applications
+if [[ "$MOLE_DRY_RUN" == 1 ]]; then
+    [[ -d "$HOME/Applications/OwnedApp.app" ]] || exit 1
+else
+    [[ ! -e "$HOME/Applications/OwnedApp.app" ]] || exit 1
+fi
+[[ -f "$HOME/Library/LaunchAgents/com.thirdparty.owned.plist" ]] || exit 1
+SCRIPT
+        [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+        [[ "$output" == *"OWNERSHIP_CHANGED"* ]] || return 1
+        [[ "$output" == *"Kept (agent ownership unverified; review the plist): ~/Library/LaunchAgents/com.thirdparty.owned.plist"* ]] || return 1
+        [[ "$(printf '%s\n' "$output" | grep -cF 'Kept (agent ownership unverified; review the plist):')" -eq 1 ]] || return 1
+        [[ "$output" != *"Could not remove"* && "$output" != *"Kept $HOME/Library/LaunchAgents"* ]] || return 1
+        # A dry run reports the plan the user confirmed and does not shrink it
+        # for the kept row; a real run subtracts the bytes it retained.
+        local plan_total
+        plan_total=$(printf '%s\n' "$output" | sed -n 's/.*Remove 1 app, \([0-9.]*[KMGT]*B\).*/\1/p')
+        plan_total=${plan_total##*$'\n'} # The final preview includes the explicit data choice.
+        [[ -n "$plan_total" ]] || return 1
+        if [[ "$preview" == 1 ]]; then
+            [[ "$output" == *"would free"*"$plan_total"* ]] || return 1
+        else
+            [[ "$output" == *"freed"* && "$output" != *"freed"*"$plan_total"* ]] || return 1
+        fi
+    done
+}
+
+@test "batch uninstall reports a refused leftover agent once and still removes its intact sibling" {
+    run env HOME="$BATS_TEST_TMPDIR/home" PROJECT_ROOT="$PROJECT_ROOT" MOLE_DRY_RUN=0 /bin/bash --noprofile --norc <<'SCRIPT'
+set -euo pipefail
+mkdir -p "$HOME"
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+export MOLE_UNINSTALL_MODE=1 MOLE_DELETE_MODE=trash
+export MOLE_TEST_TRASH_DIR="$HOME/Trash" MOLE_DELETE_LOG="$HOME/deletions.log"
+app="$HOME/Applications/AgentOwned.app"
+changed="$HOME/Library/LaunchAgents/com.thirdparty.changed.plist"
+intact="$HOME/Library/LaunchAgents/com.thirdparty.intact.plist"
+mkdir -p "$app/Contents/MacOS" "${changed%/*}"
+touch "$app/Contents/MacOS/AgentOwned"
+for agent in "$changed" "$intact"; do
+    cat > "$agent" <<PLIST
+<plist version="1.0"><dict><key>Program</key><string>$app/Contents/MacOS/AgentOwned</string></dict></plist>
+PLIST
+done
+# The reviewed agent now launches something else when teardown has run.
+stop_launch_services() {
+    cat > "$changed" <<'PLIST'
+<plist version="1.0"><dict><key>Program</key><string>/bin/true</string></dict></plist>
+PLIST
+    printf 'AGENT_CHANGED\n'
+}
+unregister_app_bundle() { :; }
+# A refusal recorded before a successful Trash retry must not become a kept row.
+mv() {
+    if [[ "$1" == "$app" ]]; then
+        _mole_record_uninstall_refusal "$1" access-denied
+        printf '%s\n' "$1" > "$HOME/recovered-move"
+    fi
+    command mv "$@"
+}
+encoded=$(printf '%s\n%s\n' "$changed" "$intact" | base64 | tr -d '\n')
+app_details=("AgentOwned|$app|unknown|0|$encoded||false|false|false|||||guard_login|$(_batch_selected_app_identity "$app")|unknown||missing")
+success_count=0 failed_count=0 brew_apps_removed=0
+failed_items=() success_items=() success_dock_targets=()
+system_extension_warning_apps=() review_only_system_leftovers=()
+review_only_system_leftover_keys=() running_at_uninstall_apps=()
+total_size_freed=0 files_cleaned=0 total_items=0
+_batch_execute_removals
+[[ $success_count -eq 1 && $failed_count -eq 0 ]] || exit 1
+[[ ! -e "$app" && -f "$changed" ]] || exit 1
+# Positive control: the intact agent went through the real sink.
+[[ ! -e "$intact" ]] || exit 1
+[[ "$(cat "$HOME/recovered-move")" == "$app" ]] || exit 1
+[[ "$(grep -c $'\townership-unverified\t' "$MOLE_DELETE_LOG")" -eq 1 ]] || { cat "$MOLE_DELETE_LOG"; exit 1; }
+SCRIPT
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [[ "$output" == *"AGENT_CHANGED"* ]] || return 1
+    [[ "$output" == *"Kept (agent ownership unverified; review the plist): ~/Library/LaunchAgents/com.thirdparty.changed.plist"* ]] || return 1
+    [[ "$(printf '%s\n' "$output" | grep -cF 'Kept (')" -eq 1 ]] || return 1
+    [[ "$output" != *"Could not remove"* && "$output" != *"Kept $HOME/Library/LaunchAgents"* ]] || return 1
+    [[ "$output" != *"macOS denied access:"* && "$output" != *"com.thirdparty.intact"* ]] || return 1
+}
+
+@test "batch uninstall explains actual refusal and clears it for the next app" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'SCRIPT'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+export MOLE_UNINSTALL_MODE=1 MOLE_DELETE_MODE=trash
+export MOLE_TEST_TRASH_DIR="$HOME/Trash"
+mkdir -p "$HOME/Applications/First.app" "$HOME/Applications/Second.app" "$HOME/Library/Caches/com.example.Shared"
+shared="$HOME/Library/Caches/com.example.Shared"
+stop_launch_services() { :; }
+unregister_app_bundle() { :; }
+_mole_should_refuse_live_user_cache_path() { [[ "$1" == "$shared" && "$app_name" == First ]]; }
+_mole_is_critical_deletion_path() { [[ "$1" == "$shared" && "$app_name" == Second ]]; }
+first="$HOME/Applications/First.app"
+second="$HOME/Applications/Second.app"
+encoded=$(printf '%s\n' "$shared" | base64 | tr -d '\n')
+app_details=(
+    "First|$first|unknown|0|$encoded||false|false|false|||||guard_login|$(_batch_selected_app_identity "$first")|unknown||missing"
+    "Second|$second|unknown|0|$encoded||false|false|false|||||guard_login|$(_batch_selected_app_identity "$second")|unknown||missing"
+)
+success_count=0
+failed_count=0
+brew_apps_removed=0
+failed_items=()
+success_items=()
+success_dock_targets=()
+system_extension_warning_apps=()
+review_only_system_leftovers=()
+review_only_system_leftover_keys=()
+running_at_uninstall_apps=()
+total_size_freed=0
+files_cleaned=0
+total_items=0
+_batch_execute_removals
+[[ $success_count -eq 2 && $failed_count -eq 0 ]] || exit 1
+[[ ! -e "$first" && ! -e "$second" && -d "$shared" ]] || exit 1
+SCRIPT
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [[ "$output" == *"Kept (app may be active): ~/Library/Caches/com.example.Shared"* ]] || return 1
+    [[ "$output" == *"Could not remove: ~/Library/Caches/com.example.Shared"* ]] || return 1
+}
+
+@test "batch uninstall dry run does not list a cache only a live app holds" {
+    # A dry run never stops the app, so the live-cache gate trips on a state
+    # the real run will not be in. V1.58.0 stayed quiet here; the row and the
+    # figure beside it must agree with what the real run does.
+    local preview
+    for preview in 1 0; do
+        run env HOME="$BATS_TEST_TMPDIR/home-$preview" PROJECT_ROOT="$PROJECT_ROOT" \
+            MOLE_DRY_RUN="$preview" /bin/bash --noprofile --norc <<'SCRIPT'
+set -euo pipefail
+mkdir -p "$HOME"
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+export MOLE_UNINSTALL_MODE=1 MOLE_DELETE_MODE=trash
+export MOLE_TEST_TRASH_DIR="$HOME/Trash"
+app="$HOME/Applications/Live.app"
+cache="$HOME/Library/Caches/com.example.Live"
+mkdir -p "$app" "$cache"
+printf 'blob\n' > "$cache/blob"
+stop_launch_services() { :; }
+unregister_app_bundle() { :; }
+_mole_should_refuse_live_user_cache_path() { [[ "$1" == "$cache" ]]; }
+cache_kb=$(du -skcP "$cache" | awk 'END {print $1}')
+encoded=$(printf '%s\n' "$cache" | base64 | tr -d '\n')
+app_details=("Live|$app|unknown|$((1000 + cache_kb))|$encoded||false|false|false|||||guard_login|$(_batch_selected_app_identity "$app")|unknown||missing")
+success_count=0 failed_count=0 brew_apps_removed=0 total_size_freed=0 files_cleaned=0 total_items=0
+failed_items=() success_items=() success_dock_targets=() system_extension_warning_apps=()
+review_only_system_leftovers=() review_only_system_leftover_keys=() running_at_uninstall_apps=()
+_batch_execute_removals
+[[ $success_count -eq 1 && $failed_count -eq 0 && -d "$cache" ]] || exit 1
+if [[ "$MOLE_DRY_RUN" == 1 ]]; then
+    # The preview does not size anything, so the figure is the whole plan.
+    [[ $total_size_freed -eq $((1000 + cache_kb)) ]] || { echo "dry-run figure $total_size_freed"; exit 1; }
+else
+    [[ $total_size_freed -eq 1000 ]] || { echo "real figure $total_size_freed"; exit 1; }
+fi
+printf 'FIGURE_OK\n'
+SCRIPT
+        [ "$status" -eq 0 ] || { echo "preview=$preview: $output"; return 1; }
+        [[ "$output" == *FIGURE_OK* ]] || { echo "preview=$preview: $output"; return 1; }
+        if [[ "$preview" == 1 ]]; then
+            [[ "$output" != *"Kept (app may be active)"* ]] || { echo "$output"; return 1; }
+        else
+            # Positive control: the real run still reports the row.
+            [[ "$output" == *"Kept (app may be active): ~/Library/Caches/com.example.Live"* ]] || { echo "$output"; return 1; }
+        fi
+    done
+}
+
+
+@test "nonprivileged batch privacy denial retains the app and offers factual next steps" {
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'SCRIPT'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+mkdir -p "$HOME/Applications/Denied.app"
+app="$HOME/Applications/Denied.app"
+stop_launch_services() { :; }
+unregister_app_bundle() { :; }
+mole_delete() {
+    [[ "$1" == "$app" && "$2" == false ]] || return 99
+    printf 'denied\n' > "$HOME/delete-called"
+    return "$MOLE_ERR_PRIVACY_DENIED"
+}
+remove_file_list() { printf 'unexpected leftovers\n' > "$HOME/leftovers-called"; return 99; }
+app_details=("Denied|$app|unknown|0|||false|false|false|||||guard_login|$(_batch_selected_app_identity "$app")|unknown||missing")
+success_count=0
+failed_count=0
+brew_apps_removed=0
+failed_items=()
+success_items=()
+success_dock_targets=()
+system_extension_warning_apps=()
+review_only_system_leftovers=()
+review_only_system_leftover_keys=()
+running_at_uninstall_apps=()
+total_size_freed=0
+files_cleaned=0
+total_items=0
+_batch_execute_removals
+[[ $success_count -eq 0 && $failed_count -eq 1 ]] || exit 1
+[[ -d "$app" && -s "$HOME/delete-called" && ! -e "$HOME/leftovers-called" ]] || exit 1
+printf 'FAILURE=%s\n' "${failed_items[0]}"
+SCRIPT
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [[ "$output" == *"macOS denied Trash access"* ]] || return 1
+    [[ "$output" == *"Try moving the item to Trash in Finder. Run with --debug for details"* ]] || return 1
+    [[ "$output" != *"check permissions"* ]] || return 1
+    [[ "$output" != *"Full Disk Access"* ]]
+}
+
+
+@test "batch scan debug reports a confirmed sibling without changing its protected plan" {
+    assert_sibling_scan_debug_reason 0 "shared with a live sibling"
+}
+
+@test "batch scan debug reports partial sibling evidence without claiming a sibling exists" {
+    assert_sibling_scan_debug_reason 3 "Could not rule out other copies of bundle id com.example.shared (scan exit 3)"
+}
+
+@test "batch scan debug reports failed sibling evidence without claiming a sibling exists" {
+    assert_sibling_scan_debug_reason 2 "Could not rule out other copies of bundle id com.example.shared (scan exit 2)"
+}
+
+@test "sibling scan diagnostics distinguish receipt and root failures without changing verdicts" {
+    run env HOME="$HOME/sibling-causes" PROJECT_ROOT="$PROJECT_ROOT" MO_DEBUG=1 /bin/bash --noprofile --norc <<'EOF_CAUSES'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+mkdir -p "$HOME/Applications"
+_MOLE_UNINSTALL_LIVE_APP_ROOTS=()
+_MOLE_UNINSTALL_LIVE_VOLUMES_ROOT="$HOME/no-volumes"
+_uninstall_materialize_complete_pkg_apps() { : > "$1"; return 124; }
+rc=0
+uninstall_live_bundle_has_other_install com.example.selected "$HOME/Selected.app" || rc=$?
+[[ $rc -eq "$MOLE_UNINSTALL_SCAN_PARTIAL" ]] || exit 1
+printf 'RECEIPT_VERDICT=%s\n' "$rc"
+_uninstall_materialize_complete_pkg_apps() { : > "$1"; }
+_MOLE_UNINSTALL_LIVE_APP_ROOTS=("$HOME/Applications")
+_uninstall_materialize_complete_find0() { : > "$1"; return "$root_rc"; }
+for root_rc in 3 7; do
+    rc=0
+    uninstall_live_bundle_has_other_install com.example.selected "$HOME/Selected.app" || rc=$?
+    if [[ $root_rc -eq 3 ]]; then [[ $rc -eq 3 ]] || exit 1; else [[ $rc -eq 2 ]] || exit 1; fi
+    printf 'ROOT_VERDICT=%s\n' "$rc"
+done
+EOF_CAUSES
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [[ "$output" == *"Sibling package receipt scan timed out (exit 124)"* && "$output" == *RECEIPT_VERDICT=3* ]] || return 1
+    [[ "$output" == *"Sibling application root scan incomplete (exit 3)"* && "$output" == *ROOT_VERDICT=3* ]] || return 1
+    [[ "$output" == *"Sibling application root scan failed (exit 7)"* && "$output" == *ROOT_VERDICT=2* ]] || return 1
+}
+
+@test "sibling find diagnostics retain partial stdout and sanitize the original error" {
+    run env HOME="$HOME/sibling-find-error" PROJECT_ROOT="$PROJECT_ROOT" MO_DEBUG=1 /bin/bash --noprofile --norc <<'EOF_FIND_ERROR'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+mkdir -p "$HOME"
+scan_file=$(create_temp_file)
+run_with_timeout() {
+    printf '%s\0' "$HOME/Visible.app"
+    printf 'permission denied\033[31m\n' >&2
+    return 1
+}
+rc=0
+_uninstall_materialize_complete_find0 "$scan_file" "$((SECONDS + 5))" "$HOME" || rc=$?
+[[ $rc -eq "$MOLE_UNINSTALL_SCAN_PARTIAL" ]] || exit 1
+IFS= read -r -d '' app < "$scan_file"
+[[ "$app" == "$HOME/Visible.app" ]] || exit 1
+printf 'PARTIAL_CANDIDATE_RETAINED\n'
+EOF_FIND_ERROR
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [[ "$output" == *"Sibling application listing failed (exit 1)"* && "$output" == *"permission denied"* && "$output" == *PARTIAL_CANDIDATE_RETAINED* ]] || return 1
+    [[ "$output" != *$'\033[31m'* ]] || return 1
+}
+
+@test "sibling candidate diagnostics preserve unknown and interrupted plist verdicts" {
+    run env HOME="$HOME/sibling-plist-error" PROJECT_ROOT="$PROJECT_ROOT" MO_DEBUG=1 /bin/bash --noprofile --norc <<'EOF_PLIST_ERROR'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+app="$HOME/Other.app"
+mkdir -p "$app/Contents"
+printf 'not a plist\n' > "$app/Contents/Info.plist"
+run_with_timeout() { return "$probe_rc"; }
+for probe_rc in 1 143; do
+    rc=0
+    _uninstall_collect_live_sibling_candidate "$app" "$HOME/Selected.app" com.example.selected "$((SECONDS + 10))" false || rc=$?
+    if [[ $probe_rc -eq 1 ]]; then [[ $rc -eq 2 ]] || exit 1; else [[ $rc -eq 143 ]] || exit 1; fi
+    printf 'PLIST_VERDICT=%s\n' "$rc"
+done
+EOF_PLIST_ERROR
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [[ "$output" == *"Sibling plist cannot be validated (exit 1)"* && "$output" == *PLIST_VERDICT=2* ]] || return 1
+    [[ "$output" == *"Sibling bundle ID probe incomplete (exit 143)"* && "$output" == *PLIST_VERDICT=143* ]] || return 1
+}
+
+@test "successful sibling scans stay quiet in debug refusal diagnostics" {
+    run env HOME="$HOME/sibling-complete" PROJECT_ROOT="$PROJECT_ROOT" MO_DEBUG=1 /bin/bash --noprofile --norc <<'EOF_COMPLETE'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+pkg_receipt_nonstandard_app_paths() { :; }
+_MOLE_UNINSTALL_LIVE_APP_ROOTS=()
+_MOLE_UNINSTALL_LIVE_VOLUMES_ROOT="$HOME/no-volumes"
+rc=0
+uninstall_live_bundle_has_other_install com.example.selected "$HOME/Selected.app" || rc=$?
+[[ $rc -eq 1 ]] || exit 1
+printf 'COMPLETE_ABSENCE\n'
+EOF_COMPLETE
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [[ "$output" == *COMPLETE_ABSENCE* && "$output" != *"Sibling "* ]] || return 1
+}
+
+@test "sibling scan retains uncertainty for symlink app roots with physical controls" {
+    run env HOME="$HOME/root-scan" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF_ROOT'
+set -euo pipefail
+export MOLE_TEST_NO_AUTH=1 TERM=dumb
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+# Bounded helpers only invoke fixture find/plutil/stat; no authorization or sink.
+run_with_timeout() { shift; "$@"; }
+pkg_receipt_nonstandard_app_paths() { :; }
+_MOLE_UNINSTALL_LIVE_VOLUMES_ROOT="$HOME/no-volumes"
+
+mkdir -p "$HOME/physical/Survivor.app/Contents" "$HOME/Selected.app/Contents"
+for app in "$HOME/physical/Survivor.app" "$HOME/Selected.app"; do
+    printf '%s\n' '<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.example.shared</string></dict></plist>' > "$app/Contents/Info.plist"
+done
+ln -s "$HOME/physical" "$HOME/Applications"
+_MOLE_UNINSTALL_LIVE_APP_ROOTS=("$HOME/Applications")
+rc=0
+uninstall_live_bundle_has_other_install com.example.shared "$HOME/Selected.app" || rc=$?
+printf 'CONFIGURED_HOME_APPLICATIONS_SYMLINK_RC=%s\n' "$rc"
+[[ $rc -eq 2 ]] || { printf 'expected unknown=2, got %s\n' "$rc" >&2; exit 1; }
+_MOLE_UNINSTALL_LIVE_APP_ROOTS=("$HOME/physical")
+rc=0
+uninstall_live_bundle_has_other_install com.example.shared "$HOME/Selected.app" || rc=$?
+printf 'PHYSICAL_POSITIVE_RC=%s\n' "$rc"
+[[ $rc -eq 0 && -n "$_MOLE_UNINSTALL_LIVE_SIBLING_FINGERPRINT" ]] || exit 1
+mkdir -p "$HOME/empty"
+_MOLE_UNINSTALL_LIVE_APP_ROOTS=("$HOME/empty")
+rc=0
+uninstall_live_bundle_has_other_install com.example.shared "$HOME/Selected.app" || rc=$?
+printf 'ORDINARY_EMPTY_ABSENCE_RC=%s\n' "$rc"
+[[ $rc -eq 1 && -z "$_MOLE_UNINSTALL_LIVE_SIBLING_FINGERPRINT" ]] || exit 1
+EOF_ROOT
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [[ "$output" == *ORDINARY_EMPTY_ABSENCE_RC=1* ]] || return 1
+}
+
+@test "symlink app roots keep shared leftovers in preview and final removal" {
+    run env HOME="$HOME/root-plan" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF_ROOT'
+set -euo pipefail
+export MOLE_TEST_NO_AUTH=1 TERM=dumb
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+# Bounded helpers only invoke fixture find/plutil/stat; no authorization or sink.
+run_with_timeout() { shift; "$@"; }
+pkg_receipt_nonstandard_app_paths() { :; }
+_MOLE_UNINSTALL_LIVE_VOLUMES_ROOT="$HOME/no-volumes"
+
+export MO_DEBUG=1
+mkdir -p "$HOME/physical/Survivor.app/Contents" "$HOME/selected/Chosen.app/Contents" "$HOME/Library/Preferences"
+for app in "$HOME/physical/Survivor.app" "$HOME/selected/Chosen.app"; do
+    printf '%s\n' '<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.example.shared</string></dict></plist>' > "$app/Contents/Info.plist"
+done
+printf 'survivor data\n' > "$HOME/Library/Preferences/com.example.shared.plist"
+ln -s "$HOME/physical" "$HOME/Applications"
+_MOLE_UNINSTALL_LIVE_APP_ROOTS=("$HOME/Applications")
+app_path="$HOME/selected/Chosen.app"
+start_inline_spinner() { :; }
+stop_inline_spinner() { :; }
+_batch_refresh_selected_app_bundle_id() { printf 'com.example.shared\n'; }
+official_uninstaller_vendor() { return 1; }
+uninstall_bundle_id_has_surviving_sibling() { return 1; }
+pgrep() { return 1; }
+get_brew_cask_name() { return 1; }
+get_file_owner() { whoami; }
+get_path_size_kb() { printf '1\n'; }
+calculate_total_size() { printf '0\n'; }
+find_app_files() {
+    printf 'discovery\n' >> "$HOME/unexpected-discovery"
+    printf '%s\n' "$HOME/Library/Preferences/com.example.shared.plist"
+}
+find_app_system_files() { :; }
+get_diagnostic_report_paths_for_app() { :; }
+discover_login_item_helper_bundle_ids() { :; }
+has_sensitive_data() { return 1; }
+selected_apps=("0|$app_path|Chosen|com.example.shared|0|Never")
+running_apps=() sudo_apps=() brew_cask_apps=() blocked_apps=() manual_removal_apps=() app_details=() total_estimated_size=0
+_batch_scan_app_details
+[[ ${#app_details[@]} -eq 1 ]] || exit 1
+IFS='|' read -r stored_name stored_path stored_id stored_size stored_related stored_system stored_sensitive stored_sudo stored_brew stored_cask stored_diag stored_review stored_login stored_guard rest <<< "${app_details[0]}"
+printf 'PREVIEW_ID=%s GUARD=%s RELATED=%s\n' "$stored_id" "$stored_guard" "$stored_related"
+[[ "$stored_id" == unknown && "$stored_guard" == guard_login && -z "$stored_related" && -z "$stored_system" ]] || exit 1
+[[ ! -e "$HOME/unexpected-discovery" ]] || exit 1
+# Invoke the production final installation recheck, but replace every mutation.
+stop_launch_services() { printf 'app-only teardown\n' >> "$HOME/teardown"; }
+unregister_app_bundle() { :; }
+remove_login_item() { printf 'unexpected-login\n' >> "$HOME/forbidden"; return 99; }
+force_kill_app() { printf 'unexpected-kill\n' >> "$HOME/forbidden"; return 99; }
+bootout_login_item_helpers() { printf 'unexpected-helper\n' >> "$HOME/forbidden"; return 99; }
+remove_file_list() { [[ -z "$1" ]] && return 0; printf 'unexpected-leftovers\n' >> "$HOME/forbidden"; return 99; }
+mole_delete() {
+    [[ "$1" == "$HOME/selected/Chosen.app" && "$2" == false && -n "${3:-}" ]] || return 99
+    printf '%s\n' "$1" >> "$HOME/app-sink-attempt"
+    return 0
+}
+success_count=0 failed_count=0 brew_apps_removed=0 total_size_freed=0 files_cleaned=0 total_items=0
+failed_items=() success_items=() success_dock_targets=() system_extension_warning_apps=()
+review_only_system_leftovers=() review_only_system_leftover_keys=() running_at_uninstall_apps=()
+rc=0
+_batch_execute_removals || rc=$?
+printf 'FINAL_RC=%s SUCCESS=%s FAILED=%s\n' "$rc" "$success_count" "$failed_count"
+[[ $rc -eq 0 && $success_count -eq 1 && $failed_count -eq 0 ]] || exit 1
+[[ -f "$HOME/app-sink-attempt" && ! -e "$HOME/forbidden" ]] || exit 1
+[[ -f "$HOME/Library/Preferences/com.example.shared.plist" && -d "$HOME/physical/Survivor.app" && -d "$HOME/selected/Chosen.app" ]] || exit 1
+printf 'SHARED_LEFTOVERS_PRESERVED_WITHOUT_REAL_DELETION\n'
+EOF_ROOT
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [[ "$output" == *SHARED_LEFTOVERS_PRESERVED_WITHOUT_REAL_DELETION* ]] || return 1
+}
+
+@test "system Time Machine snapshots permit the same leftover plan in preview and execution" {
+    assert_time_machine_batch_plan allowed
+}
+
+@test "new external sibling after Time Machine preview prevents final removal" {
+    assert_time_machine_batch_plan new-sibling
+}
+
+@test "sibling find diagnostics show the cause after a Perl timeout preamble" {
+    run env HOME="$HOME/find-cause" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF_FIND_CAUSE'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+FIND_BSD=find  # route the scan through the stub
+mkdir -p "$HOME/bin" "$HOME/Volumes"
+cat > "$HOME/bin/find" <<'FIND'
+#!/bin/bash
+printf 'find: %s/Restricted: Permission denied\n' "$1" >&2
+exit 1
+FIND
+chmod +x "$HOME/bin/find"
+export PATH="$HOME/bin:$PATH" MO_DEBUG=1
+MO_TIMEOUT_BIN=""
+MO_TIMEOUT_PERL_BIN="$(command -v perl)"
+debug_log() { printf 'DEBUG:%s\n' "$1"; }
+result_file=$(mktemp "$HOME/result.XXXXXX")
+result=0
+_uninstall_materialize_complete_find0 "$result_file" "$((SECONDS + 5))" "$HOME/Volumes" -maxdepth 2 || result=$?
+printf 'SCAN_RC=%s\n' "$result"
+[[ "$result" -eq "$MOLE_UNINSTALL_SCAN_PARTIAL" ]] || exit 1
+EOF_FIND_CAUSE
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [[ "$output" == *"SCAN_RC=3"* ]] || return 1
+    [[ "$output" == *"Sibling application listing failed (exit 1)"* ]] || return 1
+    [[ "$output" == *"Restricted: Permission denied"* ]] || { echo "$output"; return 1; }
+    [[ "$output" != *"Perl fallback"* ]] || return 1
+}
+
+
+@test "calculate_total_size accepts empty and missing-only plans on Bash 3.2" {
+    run env PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+get_path_size_kb() { echo UNEXPECTED_SIZE_PROBE; return 99; }
+[[ "$(calculate_total_size '')" == 0 ]] || exit 1
+[[ "$(calculate_total_size "$HOME/missing")" == 0 ]] || exit 1
+printf 'empty-plan-zero\n'
+EOF
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [[ "$output" == *"empty-plan-zero"* ]] || return 1
+    [[ "$output" != *"UNEXPECTED_SIZE_PROBE"* ]]
+}
+
+@test "force_kill_app continues immediately after SIGTERM exits" {
+    run env PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+export MOLE_TEST_NO_AUTH=1
+source "$PROJECT_ROOT/lib/core/common.sh"
+running=1
+pgrep() { [[ "$running" == 1 ]]; }
+pkill() { running=0; }
+sleep() { echo "unexpected-wait:$*"; return 99; }
+force_kill_app MolePerfFixture || exit $?
+[[ "$running" == 0 ]] || exit 1
+printf 'exited-without-wait\n'
+EOF
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"exited-without-wait"* ]] || return 1
+    [[ "$output" != *"unexpected-wait"* ]]
+}
+
+
+@test "parallel preview preserves path order and measures each invocation fresh" {
+    run env PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+fixture=$(mktemp -d "$HOME/preview-workers.XXXXXX")
+files=''
+for i in 1 2 3 4 5 6; do
+    touch "$fixture/$i"
+    files+="$fixture/$i"$'\n'
+done
+get_path_size_kb() {
+    printf '%s\n' "$1" >> "$fixture/calls"
+    [[ "${1##*/}" != 1 ]] || sleep 0.05
+    printf '%s\n' "$size_value"
+}
+size_value=1
+first=$(_uninstall_print_preview_paths "$files" 'row:') || exit 1
+size_value=2
+second=$(_uninstall_print_preview_paths "$files" 'row:') || exit 1
+[[ $(wc -l < "$fixture/calls") -eq 12 ]] || exit 1
+index=1
+tilde='~'
+display="${fixture/#$HOME/$tilde}"
+while IFS= read -r row; do
+    [[ "$row" == "row:$display/$index "* ]] || exit 1
+    index=$((index+1))
+done <<< "$first"
+[[ "$index" == 7 && "$first" != "$second" ]] || exit 1
+printf 'ordered-fresh-preview\n'
+EOF
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"ordered-fresh-preview"* ]]
+}
+
+@test "parallel preview drains failed workers and restores caller traps" {
+    run env PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+fixture=$(mktemp -d "$HOME/preview-cancel.XXXXXX")
+files=''
+for i in 1 2 3 4 5 6; do touch "$fixture/$i"; files+="$fixture/$i"$'\n'; done
+create_temp_dir() { mktemp -d "$fixture/output.XXXXXX"; }
+get_path_size_kb() {
+    touch "$1.started"
+    [[ "${1##*/}" != 1 ]] || return 130
+    sleep 0.05
+    printf 'finished:%s\n' "$1" >> "$fixture/finished"
+    echo 1
+}
+trap ':' INT
+before=$(trap -p INT)
+rc=0
+_uninstall_print_preview_paths "$files" row: > "$fixture/rows" || rc=$?
+[[ $rc == 130 && "$(trap -p INT)" == "$before" ]] || exit 1
+[[ ! -s "$fixture/rows" ]] || exit 1
+[[ $(wc -l < "$fixture/finished") -eq 3 ]] || exit 1
+[[ -e "$fixture/1.started" && -e "$fixture/4.started" && ! -e "$fixture/5.started" ]] || exit 1
+[[ -z "$(find "$fixture" -type d -name 'output.*')" ]] || exit 1
+printf 'drained-and-restored\n'
+EOF
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"drained-and-restored"* ]]
+}
+
+@test "parallel preview drains a slow worker through repeated interruption" {
+    run env PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/uninstall/batch.sh"
+fixture=$(mktemp -d "$HOME/preview-signals.XXXXXX")
+files=''
+for i in 1 2 3 4 5; do touch "$fixture/$i"; files+="$fixture/$i"$'\n'; done
+create_temp_dir() { mktemp -d "$fixture/output.XXXXXX"; }
+get_path_size_kb() {
+    touch "$1.started"
+    case "${1##*/}" in
+        1) return 130 ;;
+        2) sleep 0.6 ;;
+        *) sleep 0.2 ;;
+    esac
+    printf 'finished:%s\n' "$1" >> "$fixture/finished"
+    echo 1
+}
+owner=$$
+(
+    ready=0
+    for ((tick=0; tick<200; tick++)); do
+        if [[ -f "$fixture/4.started" ]]; then ready=1; break; fi
+        sleep 0.01
+    done
+    [[ $ready == 1 ]] || exit 1
+    sleep 0.05
+    kill -TERM "$owner"
+    sleep 0.05
+    kill -TERM "$owner"
+) &
+sender=$!
+trap ':' TERM
+before=$(trap -p TERM)
+rc=0
+_uninstall_print_preview_paths "$files" row: > "$fixture/rows" || rc=$?
+wait "$sender" || exit 1
+[[ $rc == 143 && "$(trap -p TERM)" == "$before" ]] || exit 1
+[[ $(wc -l < "$fixture/finished") -eq 3 ]] || exit 1
+[[ ! -s "$fixture/rows" && ! -e "$fixture/5.started" ]] || exit 1
+[[ -z "$(find "$fixture" -type d -name 'output.*')" ]] || exit 1
+printf 'repeated-signals-drained\n'
+EOF
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [[ "$output" == *"repeated-signals-drained"* ]]
+}
+
+@test "uninstall exit reclaims registered directories after interrupted allocation" {
+    local phase fixture
+    for phase in inventory preview; do
+        fixture=$(mktemp -d "$HOME/exit-cleanup.XXXXXX")
+        mkdir -p "$fixture/home" "$fixture/tmp"
+        run env HOME="$fixture/home" TMPDIR="$fixture/tmp/" PROJECT_ROOT="$PROJECT_ROOT" \
+            REVIEW_FIXTURE="$fixture" REVIEW_PHASE="$phase" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/bin/uninstall.sh"
+eval "$(declare -f register_temp_dir | sed '1s/register_temp_dir/_fixture_register_temp_dir/')"
+register_temp_dir() {
+    _fixture_register_temp_dir "$@"
+    printf '%s\n' "$1" > "$REVIEW_FIXTURE/allocated"
+    printf '%s\n' "$MOLE_TEMP_REGISTRY_FILE" > "$REVIEW_FIXTURE/registry"
+    sleep 0.2
+}
+is_homebrew_available() { return 0; }
+_mole_brew_prepare_batch_inventory() { echo UNEXPECTED_INVENTORY; return 97; }
+_batch_scan_app_details_impl() { :; }
+if [[ "$REVIEW_PHASE" == preview ]]; then
+    _batch_scan_app_details() { app_details=(fixture); }
+    files=''
+    for i in 1 2 3 4; do touch "$HOME/$i"; files+="$HOME/$i"$'\n'; done
+    _batch_preview_and_confirm() { _uninstall_print_preview_paths "$files" row:; }
+fi
+selected_apps=(one two)
+(
+    ready=0
+    for ((tick=0; tick<100; tick++)); do
+        if [[ -s "$REVIEW_FIXTURE/allocated" ]]; then ready=1; break; fi
+        sleep 0.005
+    done
+    [[ $ready == 1 ]] || exit 1
+    kill -TERM "$$"
+) &
+sender=$!
+rc=0
+batch_uninstall_applications || rc=$?
+wait "$sender" || exit 1
+[[ $rc == 130 ]] || exit 1
+printf 'allocation-interrupted\n'
+EOF
+        [ "$status" -eq 0 ] || { echo "$phase: $output"; return 1; }
+        [[ "$output" == *"allocation-interrupted"* && "$output" != *"UNEXPECTED_INVENTORY"* ]] || return 1
+        [[ -s "$fixture/allocated" && -s "$fixture/registry" ]] || return 1
+        [[ ! -d "$(cat "$fixture/allocated")" && ! -e "$(cat "$fixture/registry")" ]] || return 1
+    done
+}
+
+@test "uninstall INT cleanup preserves cancellation status and runs once" {
+    run /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/bin/uninstall.sh"
+stop_uninstall_interactive_screen() { printf 'screen-restored\n'; }
+log_operation_session_end() { printf 'session-ended\n'; }
+cleanup_temp_files() { printf 'scratch-reclaimed\n'; }
+show_cursor() { :; }
+kill -INT "$$"
+printf 'unexpected-continuation\n'
+EOF
+    [ "$status" -eq 130 ] || { echo "$output"; return 1; }
+    [ "$output" = $'screen-restored\nsession-ended\nscratch-reclaimed' ]
+}
+
+@test "uninstall TERM cleanup preserves cancellation status and runs once" {
+    run /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/bin/uninstall.sh"
+stop_uninstall_interactive_screen() { printf 'screen-restored\n'; }
+log_operation_session_end() { printf 'session-ended\n'; }
+cleanup_temp_files() { printf 'scratch-reclaimed\n'; }
+show_cursor() { :; }
+kill -TERM "$$"
+printf 'unexpected-continuation\n'
+EOF
+    [ "$status" -eq 143 ] || { echo "$output"; return 1; }
+    [ "$output" = $'screen-restored\nsession-ended\nscratch-reclaimed' ]
+}
+
+@test "uninstall EXIT cleanup keeps an ordinary command failure" {
+    run /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/bin/uninstall.sh"
+stop_uninstall_interactive_screen() { :; }
+log_operation_session_end() { :; }
+cleanup_temp_files() { printf 'scratch-reclaimed\n'; }
+show_cursor() { :; }
+exit 42
+EOF
+    [ "$status" -eq 42 ] || { echo "$output"; return 1; }
+    [ "$output" = 'scratch-reclaimed' ]
+}
+
+@test "Nix self-removal refuses before discovery in normal and dry-run mode" {
+    for dry_run in false true; do
+        run env DRY_RUN="$dry_run" /bin/bash <<'SCRIPT'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/manage/update.sh"
+source "$PROJECT_ROOT/lib/manage/remove.sh"
+SCRIPT_DIR=/nix/store/0123456789-mole/share/mole
+_remove_config_dir() { touch "$HOME/discovery-called"; }
+ensure_sudo_session() { touch "$HOME/auth-called"; return 97; }
+remove_mole "$DRY_RUN"
+SCRIPT
+        [ "$status" -eq 1 ] || { echo "$output"; return 1; }
+        [[ "$output" == *'nix profile remove mole'* ]] || return 1
+        [ ! -e "$HOME/discovery-called" ] || return 1
+        [ ! -e "$HOME/auth-called" ] || return 1
+    done
+}
+>>>>>>> d7e9f6fc (fix: keep Mole correct with GNU tools first in PATH)

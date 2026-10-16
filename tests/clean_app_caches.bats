@@ -1469,7 +1469,7 @@ EOF
     mkdir -p "$neatdm_dir/12345"
     touch "$neatdm_dir/12345/seg.x0"
     # Set mtime to 31 days ago
-    touch -t "$(date -v-31d '+%Y%m%d%H%M.%S')" "$neatdm_dir/12345/seg.x0"
+    touch -t "$(/bin/date -v-31d '+%Y%m%d%H%M.%S')" "$neatdm_dir/12345/seg.x0"
 
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=true /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail
@@ -1517,7 +1517,7 @@ EOF
     rm -rf "$neatdm_dir"
     mkdir -p "$neatdm_dir/history-backup"
     touch "$neatdm_dir/history-backup/seg.x0"
-    touch -t "$(date -v-31d '+%Y%m%d%H%M.%S')" "$neatdm_dir/history-backup/seg.x0"
+    touch -t "$(/bin/date -v-31d '+%Y%m%d%H%M.%S')" "$neatdm_dir/history-backup/seg.x0"
 
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" DRY_RUN=true /bin/bash --noprofile --norc << 'EOF'
 set -euo pipefail

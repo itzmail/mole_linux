@@ -1196,7 +1196,7 @@ source "$PROJECT_ROOT/lib/optimize/tasks.sh"
 periodic() { true; }
 export -f periodic
 tmplog="$(mktemp /tmp/mole-test-daily.XXXXXX)"
-touch -t "$(date -v-10d +%Y%m%d%H%M.%S)" "$tmplog"
+touch -t "$(/bin/date -v-10d +%Y%m%d%H%M.%S)" "$tmplog"
 MOLE_PERIODIC_LOG="$tmplog" execute_optimization periodic_maintenance
 [[ "$(optimize_outcome_count applied)" == "1" ]] || exit 1
 rm -f "$tmplog"

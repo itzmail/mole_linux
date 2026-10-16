@@ -520,7 +520,7 @@ source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/clean/apps.sh"
 
 mkdir -p "$HOME/Library/Caches/com.example.LiveApp"
-touch -t "$(date -v-31d +%Y%m%d%H%M.%S)" "$HOME/Library/Caches/com.example.LiveApp"
+touch -t "$(/bin/date -v-31d +%Y%m%d%H%M.%S)" "$HOME/Library/Caches/com.example.LiveApp"
 
 scan_installed_apps() {
     : > "$1"
@@ -564,7 +564,7 @@ source "$PROJECT_ROOT/lib/clean/apps.sh"
 mkdir -p "$HOME/Applications/LiveApp.app" \
     "$HOME/Applications/Partial.app/Contents" \
     "$HOME/Library/Caches/com.example.LiveApp"
-touch -t "$(date -v-31d +%Y%m%d%H%M.%S)" "$HOME/Library/Caches/com.example.LiveApp"
+touch -t "$(/bin/date -v-31d +%Y%m%d%H%M.%S)" "$HOME/Library/Caches/com.example.LiveApp"
 rm -f "$HOME/.cache/mole/installed_apps_cache"
 
 cat > "$HOME/Applications/Partial.app/Contents/Info.plist" <<'PLIST'
@@ -635,7 +635,7 @@ source "$PROJECT_ROOT/lib/clean/apps.sh"
 
 mkdir -p "$HOME/Applications/Broken.app/Contents" \
     "$HOME/Library/Caches/com.example.LiveApp"
-touch -t "$(date -v-31d +%Y%m%d%H%M.%S)" "$HOME/Library/Caches/com.example.LiveApp"
+touch -t "$(/bin/date -v-31d +%Y%m%d%H%M.%S)" "$HOME/Library/Caches/com.example.LiveApp"
 rm -f "$HOME/.cache/mole/installed_apps_cache"
 
 stub_dir="$HOME/stub-bin-errexit-scan"
@@ -691,7 +691,7 @@ source "$PROJECT_ROOT/lib/clean/apps.sh"
 bad_name=$'Bad\\033[2J-\033[2J.app'
 mkdir -p "$HOME/Applications/$bad_name/Contents" \
     "$HOME/Library/Caches/com.example.LiveApp"
-touch -t "$(date -v-31d +%Y%m%d%H%M.%S)" "$HOME/Library/Caches/com.example.LiveApp"
+touch -t "$(/bin/date -v-31d +%Y%m%d%H%M.%S)" "$HOME/Library/Caches/com.example.LiveApp"
 
 stub_dir="$HOME/stub-bin-control-name"
 mkdir -p "$stub_dir"
@@ -796,7 +796,7 @@ mkdir -p "$HOME/Library/Saved Application State/com.test.orphan.savedState"
 # Create a file with some content so directory size > 0
 echo "test data" > "$HOME/Library/Saved Application State/com.test.orphan.savedState/data.plist"
 # Set modification time to 31 days ago (older than 30-day threshold)
-touch -t "$(date -v-31d +%Y%m%d%H%M.%S 2>/dev/null || date -d '31 days ago' +%Y%m%d%H%M.%S)" "$HOME/Library/Saved Application State/com.test.orphan.savedState" 2>/dev/null || true
+touch -t "$(/bin/date -v-31d +%Y%m%d%H%M.%S 2>/dev/null || date -d '31 days ago' +%Y%m%d%H%M.%S)" "$HOME/Library/Saved Application State/com.test.orphan.savedState" 2>/dev/null || true
 
 # Disable spinner for test
 start_section_spinner() { :; }
@@ -847,8 +847,8 @@ mkdir -p "$HOME/Library/Caches/com.test.orphan2"
 echo "data1" > "$HOME/Library/Caches/com.test.orphan1/data"
 echo "data2" > "$HOME/Library/Caches/com.test.orphan2/data"
 # Set modification time to 31 days ago
-touch -t "$(date -v-31d +%Y%m%d%H%M.%S 2>/dev/null || date -d '31 days ago' +%Y%m%d%H%M.%S)" "$HOME/Library/Caches/com.test.orphan1" 2>/dev/null || true
-touch -t "$(date -v-31d +%Y%m%d%H%M.%S 2>/dev/null || date -d '31 days ago' +%Y%m%d%H%M.%S)" "$HOME/Library/Caches/com.test.orphan2" 2>/dev/null || true
+touch -t "$(/bin/date -v-31d +%Y%m%d%H%M.%S 2>/dev/null || date -d '31 days ago' +%Y%m%d%H%M.%S)" "$HOME/Library/Caches/com.test.orphan1" 2>/dev/null || true
+touch -t "$(/bin/date -v-31d +%Y%m%d%H%M.%S 2>/dev/null || date -d '31 days ago' +%Y%m%d%H%M.%S)" "$HOME/Library/Caches/com.test.orphan2" 2>/dev/null || true
 
 # Mock safe_clean to fail on first item, succeed on second
 safe_clean() {

@@ -104,6 +104,7 @@ func TestGetDirectorySizeFromDuMeasuresUserLibraryInOneTraversal(t *testing.T) {
 		t.Fatalf("write du stub: %v", err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	useDuStub(t, filepath.Join(binDir, "du"))
 	t.Setenv("MOLE_TEST_DU_OPERANDS", operandLog)
 
 	size, err := getDirectorySizeFromDuWithExcludeAndIgnores(context.Background(), library, "", overviewIgnoreNamesForPath(library))
@@ -198,6 +199,29 @@ func TestGetDirectorySizeFromDuWithIgnoresSkipsCloudPlaceholderTree(t *testing.T
 	}
 	if withIgnore <= 0 {
 		t.Fatalf("expected non-zero size for included files, got %d", withIgnore)
+	}
+}
+
+func TestDuIgnoresUseSystemDuWhenGNUDuIsFirstInPath(t *testing.T) {
+	base := t.TempDir()
+	writeFileWithSize(t, filepath.Join(base, "Application Support", "state.dat"), 4096)
+	writeFileWithSize(t, filepath.Join(base, "Mobile Documents", "cloud.dat"), 1024*1024)
+
+	// GNU coreutils du has no -I, so a gnubin PATH broke every ignore-aware
+	// size, including the User Library overview row.
+	stubDir := t.TempDir()
+	stub := "#!/bin/sh\nfor arg; do [ \"$arg\" = -I ] && { echo \"du: invalid option -- 'I'\" >&2; exit 1; }; done\nexec /usr/bin/du \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(stubDir, "du"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	size, err := getDirectorySizeFromDuWithExcludeAndIgnores(context.Background(), base, "", []string{"Mobile Documents"})
+	if err != nil {
+		t.Fatalf("ignore-aware size failed with a GNU du in PATH: %v", err)
+	}
+	if size <= 0 || size >= 1024*1024 {
+		t.Fatalf("expected the ignored tree to be skipped, got %d", size)
 	}
 }
 
@@ -329,6 +353,7 @@ func TestFoldedDirectoryRetainsPartialDuOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", stubDir)
+	useDuStub(t, filepath.Join(stubDir, "du"))
 	size, err := getDirectorySizeFromDu(context.Background(), folded)
 	if size != 8192 || err == nil {
 		t.Fatalf("du lost partial bytes or failure: %d, %v", size, err)
@@ -372,6 +397,7 @@ func TestDuFailureKeepsDiagnosticAndPartialBytes(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Setenv("PATH", stubDir)
+			useDuStub(t, filepath.Join(stubDir, "du"))
 			size, err := getDirectorySizeFromDu(context.Background(), root)
 			if size != tc.wantSize || err == nil || !strings.Contains(err.Error(), tc.diagnostic) {
 				t.Fatalf("du lost subtotal or diagnostic: size=%d err=%v", size, err)

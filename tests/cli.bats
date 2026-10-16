@@ -537,7 +537,7 @@ EOF
 	grep -q "pam_tid.so" "$pam_file"
 
 	local perms
-	perms=$(stat -f "%Lp" "$pam_file" 2>/dev/null || stat -c "%a" "$pam_file" 2>/dev/null)
+	perms=$(/usr/bin/stat -f "%Lp" "$pam_file" 2>/dev/null || stat -c "%a" "$pam_file" 2>/dev/null)
 	[ "$perms" = "444" ]
 }
 
@@ -555,7 +555,7 @@ EOF
 	[ "$status" -eq 0 ]
 
 	local perms
-	perms=$(stat -f "%Lp" "$pam_file" 2>/dev/null || stat -c "%a" "$pam_file" 2>/dev/null)
+	perms=$(/usr/bin/stat -f "%Lp" "$pam_file" 2>/dev/null || stat -c "%a" "$pam_file" 2>/dev/null)
 	[ "$perms" = "444" ]
 }
 
@@ -579,7 +579,7 @@ EOF
 	grep -q "pam_tid.so" "$pam_local"
 
 	local perms
-	perms=$(stat -f "%Lp" "$pam_local" 2>/dev/null || stat -c "%a" "$pam_local" 2>/dev/null)
+	perms=$(/usr/bin/stat -f "%Lp" "$pam_local" 2>/dev/null || stat -c "%a" "$pam_local" 2>/dev/null)
 	[ "$perms" = "444" ]
 }
 
