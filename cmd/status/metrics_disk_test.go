@@ -355,6 +355,75 @@ func TestCorrectDiskTotalBytes(t *testing.T) {
 	})
 }
 
+func TestCollectDisksReadsDiskutilPlistOncePerVolume(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("diskutil corrections are macOS-only")
+	}
+	origPartitions := diskPartitionsFunc
+	origUsage := diskUsageFunc
+	origRunCmd := runCmd
+	origCommandExists := commandExists
+	t.Cleanup(func() {
+		diskPartitionsFunc = origPartitions
+		diskUsageFunc = origUsage
+		runCmd = origRunCmd
+		commandExists = origCommandExists
+	})
+
+	const plistTotal = uint64(1) << 40               // 1 TiB
+	const containerFree = uint64(600) << 30          // 600 GiB
+	const rawTotal = uint64(2) << 40                 // 2 TiB, doubled statfs
+	const rawFree = uint64(700) << 30                // 700 GiB
+	const rawUsed = rawTotal - rawFree               // ~1.3 TiB
+	const correctedUsed = plistTotal - containerFree // 424 GiB
+	const mountpoint = "/Volumes/Correction"
+
+	diskPartitionsFunc = func(bool) ([]disk.PartitionStat, error) {
+		return []disk.PartitionStat{
+			{Device: "/dev/disk9s1", Mountpoint: mountpoint, Fstype: "apfs"},
+		}, nil
+	}
+	diskUsageFunc = func(path string) (*disk.UsageStat, error) {
+		if path != mountpoint {
+			t.Fatalf("unexpected disk usage path %q", path)
+		}
+		return &disk.UsageStat{Path: path, Fstype: "apfs", Total: rawTotal, Used: rawUsed, Free: rawFree}, nil
+	}
+	commandExists = func(name string) bool { return name == "diskutil" }
+	plistCalls := 0
+	runCmd = func(_ context.Context, name string, args ...string) (string, error) {
+		if name != "diskutil" {
+			t.Fatalf("unexpected command %q", name)
+		}
+		for _, arg := range args {
+			if arg == "-plist" {
+				plistCalls++
+			}
+		}
+		return `<plist><dict>
+<key>TotalSize</key><integer>1099511627776</integer>
+<key>APFSContainerFree</key><integer>644245094400</integer>
+</dict></plist>`, nil
+	}
+
+	got, err := collectDisks()
+	if err != nil {
+		t.Fatalf("collectDisks() error = %v", err)
+	}
+	if plistCalls != 1 {
+		t.Fatalf("collectDisks() ran %d `diskutil info -plist` probes for one volume, want 1", plistCalls)
+	}
+	if len(got) != 1 {
+		t.Fatalf("collectDisks() returned %d disks, want 1: %#v", len(got), got)
+	}
+	if got[0].Total != plistTotal {
+		t.Fatalf("Total = %d, want corrected %d", got[0].Total, plistTotal)
+	}
+	if got[0].Used != correctedUsed || got[0].Purgeable != 0 {
+		t.Fatalf("Used/Purgeable = %d/%d, want %d/0", got[0].Used, got[0].Purgeable, correctedUsed)
+	}
+}
+
 func TestCounterDeltaClampsCounterReset(t *testing.T) {
 	if got := counterDelta(150, 100); got != 50 {
 		t.Fatalf("counterDelta increasing = %d, want 50", got)

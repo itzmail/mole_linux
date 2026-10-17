@@ -58,20 +58,26 @@ EOF
 }
 
 @test "bytes_to_human handles large values efficiently" {
-    local start end elapsed
-    local limit_ms="${MOLE_PERF_BYTES_TO_HUMAN_LIMIT_MS:-4000}"
+    # Measured in a plain child shell, not in this Bats process: Bats installs a
+    # DEBUG trap that inflates 1000 calls to 1-2.5s, which hid a real regression.
+    # ~40ms here; the 300ms budget still catches one added fork per call.
+    local limit_ms="${MOLE_PERF_BYTES_TO_HUMAN_LIMIT_MS:-300}"
+    local elapsed
 
-    bytes_to_human 1073741824 > /dev/null
+    elapsed=$(
+        /bin/bash --noprofile --norc -c '
+            source "$1/lib/core/base.sh"
+            bytes_to_human 1073741824 > /dev/null
+            start=$(date +%s%N)
+            for i in {1..1000}; do
+                bytes_to_human 1073741824 > /dev/null
+            done
+            end=$(date +%s%N)
+            printf "%s\n" $(( (end - start) / 1000000 ))
+        ' _ "$PROJECT_ROOT"
+    )
 
-    start=$(date +%s%N)
-    for i in {1..1000}; do
-        bytes_to_human 1073741824 > /dev/null
-    done
-    end=$(date +%s%N)
-
-    elapsed=$(( (end - start) / 1000000 ))
-
-    [ "$elapsed" -lt "$limit_ms" ]
+    [ "$elapsed" -lt "$limit_ms" ] || return 1
 }
 
 @test "bytes_to_human produces correct output for GB range" {
@@ -115,17 +121,28 @@ EOF
     local test_file="$TEST_DATA_DIR/size_test.txt"
     dd if=/dev/zero of="$test_file" bs=1024 count=100 2> /dev/null
 
-    local start end elapsed
-    local limit_ms="${MOLE_PERF_GET_FILE_SIZE_LIMIT_MS:-2000}"
-    start=$(date +%s%N)
-    for i in {1..50}; do
-        get_file_size "$test_file" > /dev/null
-    done
-    end=$(date +%s%N)
+    # Plain child shell for the same reason as the bytes_to_human case: Bats'
+    # per-command DEBUG trap otherwise dominates the measurement. ~165ms for
+    # 50 calls (one stat fork each); 800ms keeps slow-CI headroom while still
+    # catching an added fork per call, which the previous 2000ms limit could not.
+    local limit_ms="${MOLE_PERF_GET_FILE_SIZE_LIMIT_MS:-800}"
+    local elapsed
 
-    elapsed=$(( (end - start) / 1000000 ))
+    elapsed=$(
+        /bin/bash --noprofile --norc -c '
+            source "$1/lib/core/base.sh"
+            file="$2"
+            get_file_size "$file" > /dev/null
+            start=$(date +%s%N)
+            for i in {1..50}; do
+                get_file_size "$file" > /dev/null
+            done
+            end=$(date +%s%N)
+            printf "%s\n" $(( (end - start) / 1000000 ))
+        ' _ "$PROJECT_ROOT" "$test_file"
+    )
 
-    [ "$elapsed" -lt "$limit_ms" ]
+    [ "$elapsed" -lt "$limit_ms" ] || return 1
 }
 
 @test "get_file_mtime returns valid timestamp" {

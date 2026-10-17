@@ -400,6 +400,49 @@ EOF
     rm -rf "$HOME/Projects"
 }
 
+@test "clean_project_caches skips an unwalkable CloudStorage root before scanning it" {
+    mkdir -p "$HOME/Library/CloudStorage/Drive/project/.next/cache"
+    mkdir -p "$HOME/Projects/app/.next/cache"
+    touch "$HOME/Library/CloudStorage/Drive/project/package.json" \
+        "$HOME/Library/CloudStorage/Drive/project/.next/cache/cloud.cache" \
+        "$HOME/Projects/app/package.json" "$HOME/Projects/app/.next/cache/local.cache"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/clean/caches.sh"
+DRY_RUN=true
+real_find="$FIND_BSD"
+find_stub="$HOME/find-stub.sh"
+{
+    printf '#!/bin/bash\n'
+    printf 'printf "%%s\\n" "$*" >> "$HOME/find-calls"\n'
+    printf 'for arg in "$@"; do\n'
+    printf '    if [[ "$arg" == *"/Library/CloudStorage"* ]]; then\n'
+    printf '        printf "find: %%s: Operation not permitted\\n" "$arg" >&2\n'
+    printf '        exit 1\n'
+    printf '    fi\n'
+    printf 'done\n'
+    printf 'exec %q "$@"\n' "$real_find"
+} > "$find_stub"
+chmod +x "$find_stub"
+FIND_BSD="$find_stub"
+clean_project_caches
+EOF
+    [ "$status" -eq 0 ] || { printf '%s\n' "$output"; return 1; }
+    [ -f "$HOME/find-calls" ] || { printf '%s\n' "$output"; return 1; }
+    # The CloudStorage root is decided by the depth-two precheck and never
+    # handed to the depth-nine scan.
+    [ "$(grep -c -- '/Library/CloudStorage' "$HOME/find-calls")" -eq 1 ] || { cat "$HOME/find-calls"; return 1; }
+    grep -q -- '-maxdepth 2' "$HOME/find-calls" || { cat "$HOME/find-calls"; return 1; }
+    # The readable projects root keeps its normal depth-nine scan.
+    grep -q -- "$HOME/Projects.*-maxdepth 9" "$HOME/find-calls" || { cat "$HOME/find-calls"; return 1; }
+    # Coverage loss is still reported once as a skipped root.
+    [[ "$output" == *"skipped 1 slow/incomplete root scan"* ]] || { printf '%s\n' "$output"; return 1; }
+
+    rm -rf "$HOME/Library/CloudStorage" "$HOME/Projects" "$HOME/find-calls" "$HOME/find-stub.sh"
+}
+
 @test "clean_project_caches groups pycache directories by project root" {
     mkdir -p "$HOME/Projects/python-app/pkg/__pycache__"
     mkdir -p "$HOME/Projects/python-app/subpkg/__pycache__"
