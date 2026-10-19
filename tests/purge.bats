@@ -4830,6 +4830,9 @@ SH
     done
 }
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> fc5368af (fix(purge): re-scan a timed-out container root one child at a time)
 
 # #1666: a container root (purge_paths entry that is not a project) is scanned
 # as one unit first. Only when that scan times out is it scanned again one
@@ -5216,6 +5219,7 @@ EOF
 	[[ "$output" != *"~/many-skipped-1666/p11"* ]] || { echo "$output"; return 1; }
 	[[ "$output" == *"and 3 more"* ]] || { echo "$output"; return 1; }
 }
+<<<<<<< HEAD
 =======
 >>>>>>> f3b6ea5b (fix(purge): bound parallel activity classification safely)
 =======
@@ -5228,3 +5232,5 @@ EOF
 >>>>>>> 77050616 (fix(purge): skip online-only cloud folders during the scan (#1679))
 =======
 >>>>>>> df2f5e06 (fix(purge): preserve cancellation from the dataless capability probe)
+=======
+>>>>>>> fc5368af (fix(purge): re-scan a timed-out container root one child at a time)

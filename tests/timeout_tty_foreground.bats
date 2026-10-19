@@ -40,7 +40,7 @@ setup() {
 # not let run_with_timeout's Perl fallback hand the controlling terminal to a
 # background child, which suspends the foreground command with SIGTTOU (#1205).
 @test "purge: background timeout workers detach stdin from the terminal (#1205)" {
-	run grep -nF "scan_purge_targets \"\$path\" \"\$scan_output\" \"\${scan_output}.verified\" < /dev/null &" "$PROJECT_ROOT/lib/clean/project.sh"
+	run grep -nF "scan_purge_targets \"\$path\" \"\$scan_output\" \"\${scan_output}.verified\" \"\$unit_path\" < /dev/null &" "$PROJECT_ROOT/lib/clean/project.sh"
 	[ "$status" -eq 0 ] || return 1
 
 	run grep -nF "(get_dir_size_kb \"\$_sz_item\" \"\$_size_deadline\" > \"\$_stmp\" 2> /dev/null) < /dev/null &" "$PROJECT_ROOT/lib/clean/project.sh"
