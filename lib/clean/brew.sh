@@ -208,10 +208,6 @@ clean_homebrew() {
             echo -e "  ${GREEN}${ICON_SUCCESS}${NC} Homebrew · skipped (whitelist)"
             note_activity
         else
-<<<<<<< HEAD
-            echo -e "  ${YELLOW}${ICON_DRY_RUN}${NC} Homebrew · would cleanup"
-            note_activity
-=======
             if ! brew_cleanup_ran_recently "$brew_cache_file"; then
                 local dry_run_cleanup_file
                 dry_run_cleanup_file=$(create_temp_file)
@@ -227,7 +223,6 @@ clean_homebrew() {
                     note_activity
                 fi
             fi
->>>>>>> 7d436c60 (refactor: name timeout statuses and gate raw 124 comparisons)
             local dry_run_autoremove_file
             dry_run_autoremove_file=$(create_temp_file)
             local dry_run_autoremove_exit=0

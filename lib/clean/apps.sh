@@ -747,11 +747,6 @@ clean_orphaned_app_data() {
                     if [[ $claude_clean_rc -eq 124 || $claude_clean_rc -ge 128 ]]; then
                         claude_result_rc=$claude_clean_rc
                         break
-<<<<<<< HEAD
-                    elif [[ $claude_clean_rc -eq 0 ]]; then
-                        orphaned_count=$((orphaned_count + 1))
-                        total_orphaned_kb=$((total_orphaned_kb + claude_vm_size_kb))
-=======
                     elif [[ $claude_vm_snapshot_rc -ne 0 || -z "$_ORPHAN_CANDIDATE_IDENTITY" ]]; then
                         continue
                     fi
@@ -784,7 +779,6 @@ clean_orphaned_app_data() {
                             orphaned_count=$((orphaned_count + 1))
                             total_orphaned_kb=$((total_orphaned_kb + claude_vm_size_kb))
                         fi
->>>>>>> 7d436c60 (refactor: name timeout statuses and gate raw 124 comparisons)
                     fi
                 fi
             fi

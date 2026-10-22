@@ -1289,8 +1289,6 @@ opt_launch_agents_cleanup() {
         # unplugged -- neither is a broken agent.
         if [[ -n "$binary" && "$binary" == /* && ! -e "$binary" ]] &&
             launch_agent_volume_mounted "$binary"; then
-<<<<<<< HEAD
-=======
             local label=""
             plist_rc=0
             label=$(run_with_timeout "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
@@ -1302,7 +1300,6 @@ opt_launch_agents_cleanup() {
             # sequences in them must not reach the terminal.
             printf '  %b %s\n' "${YELLOW}${ICON_WARNING}${NC}" \
                 "Launch Agent $(mole_terminal_safe_text "$label"): program missing at $(mole_terminal_safe_text "${binary/#$HOME/~}")"
->>>>>>> 7d436c60 (refactor: name timeout statuses and gate raw 124 comparisons)
             broken_count=$((broken_count + 1))
             broken_plists+=("$plist")
         fi

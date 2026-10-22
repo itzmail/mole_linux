@@ -4795,9 +4795,6 @@ clean_codex_runtimes() {
         fi
 
         if is_codex_runtime_stale "$runtime_dir"; then
-<<<<<<< HEAD
-            _codex_runtime_safe_clean_guarded "$runtime_dir" || return 0
-=======
             local cleanup_rc=0
             _codex_runtime_safe_clean_guarded "$runtime_dir" || cleanup_rc=$?
             if mole_rc_timeout_or_signal "$cleanup_rc"; then
@@ -4806,7 +4803,6 @@ clean_codex_runtimes() {
             elif [[ $cleanup_rc -ne 0 ]]; then
                 break
             fi
->>>>>>> 7d436c60 (refactor: name timeout statuses and gate raw 124 comparisons)
         else
             debug_log "Codex runtime left for manual review: $runtime_dir"
         fi

@@ -759,11 +759,7 @@ clean_project_cache_target() {
     local _MOLE_SAFE_REMOVE_FINAL_GUARD=_project_cache_final_guard
     if declare -f safe_clean > /dev/null 2>&1; then
         local clean_rc=0
-<<<<<<< HEAD
-        safe_clean_guarded _project_cache_final_guard "${target_paths[@]}" "$description" || clean_rc=$?
-=======
         safe_clean "${target_paths[@]}" "$description" || clean_rc=$?
->>>>>>> 7d436c60 (refactor: name timeout statuses and gate raw 124 comparisons)
         if mole_rc_timeout_or_signal "$clean_rc"; then
             return "$clean_rc"
         fi
@@ -778,14 +774,9 @@ clean_project_cache_target() {
         [[ -e "$target_path" ]] || continue
         local remove_rc=0
         safe_remove "$target_path" true || remove_rc=$?
-<<<<<<< HEAD
-        # Same policy as the guarded route: a removal timeout is not a stop.
-        [[ $remove_rc -lt 128 ]] || return "$remove_rc"
-=======
         if mole_rc_timeout_or_signal "$remove_rc"; then
             return "$remove_rc"
         fi
->>>>>>> 7d436c60 (refactor: name timeout statuses and gate raw 124 comparisons)
     done
 }
 

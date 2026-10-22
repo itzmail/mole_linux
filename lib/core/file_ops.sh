@@ -488,9 +488,6 @@ _mole_sqlite_database_in_use() {
     # empty array is an unbound-variable error under set -u.
     [[ ${#family[@]} -gt 0 ]] || return 1
 
-<<<<<<< HEAD
-    _mole_paths_have_open_handle "${family[@]}"
-=======
     local handle_rc=0
     _mole_paths_have_open_handle "${family[@]}" || handle_rc=$?
     if mole_rc_timeout "$handle_rc"; then
@@ -501,7 +498,6 @@ _mole_sqlite_database_in_use() {
         return 2
     fi
     return "$handle_rc"
->>>>>>> 7d436c60 (refactor: name timeout statuses and gate raw 124 comparisons)
 }
 
 _mole_user_cache_sqlite_has_open_handle() {

@@ -262,9 +262,6 @@ if ! diagnostic_guidance_output=$(check_diagnostic_guidance "${diagnostic_guidan
     echo -e "${RED}${ICON_ERROR} Diagnostic instructions must download for review before execution${NC}\n"
     exit 1
 fi
-<<<<<<< HEAD
-echo -e "${GREEN}${ICON_SUCCESS} Diagnostic install guidance passed${NC}\n"
-=======
 printf '%s\n' "$bats_assertion_output"
 echo -e "${GREEN}${ICON_SUCCESS} Bats assertion check passed${NC}\n"
 
@@ -283,6 +280,5 @@ if ! diagnostic_placement_output=$(check_diagnostic_placement "${diagnostic_publ
     exit 1
 fi
 echo -e "${GREEN}${ICON_SUCCESS} Diagnostic placement check passed${NC}\n"
->>>>>>> 7d436c60 (refactor: name timeout statuses and gate raw 124 comparisons)
 
 echo -e "${GREEN}=== Checks Completed ===${NC}"
