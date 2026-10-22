@@ -425,26 +425,10 @@ func finderPurgeableBytes(rawFree, finderFree uint64) uint64 {
 	return finderFree - rawFree
 }
 
-<<<<<<< HEAD
-// getAPFSContainerFreeBytes returns the APFS container free space (including
-// purgeable snapshot space) by parsing `diskutil info -plist`. This corrects
-// for APFS local snapshots which statfs counts as used.
-func getAPFSContainerFreeBytes(mountpoint string) (uint64, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	out, err := runCmd(ctx, "diskutil", "info", "-plist", mountpoint)
-	if err != nil {
-		return 0, err
-	}
-
-	return extractPlistUint(out, "APFSContainerFree")
-=======
 // authPromptsDisabled mirrors the shell test-mode guard: MOLE_TEST_MODE or
 // MOLE_TEST_NO_AUTH set to 1 means nothing may raise an authorization prompt.
 func authPromptsDisabled() bool {
 	return os.Getenv("MOLE_TEST_MODE") == "1" || os.Getenv("MOLE_TEST_NO_AUTH") == "1"
->>>>>>> 8ee1d254 (perf(status,clean): share disk probes and skip dead cloud scans)
 }
 
 // getFinderStartupDiskFreeBytes queries Finder via osascript for the startup

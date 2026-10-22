@@ -1414,8 +1414,6 @@ match_apps_by_name() {
     selected_apps=()
     local -a matched_indices=()
 
-<<<<<<< HEAD
-=======
     # Lowercase every display name and bundle directory name in one tr pass,
     # indexed like apps_data. Forking echo|tr and basename per app, per term,
     # per round cost seconds with a few hundred apps. tr keeps the locale's
@@ -1441,7 +1439,7 @@ match_apps_by_name() {
         done
     fi
 
->>>>>>> d7e9f6fc (fix: keep Mole correct with GNU tools first in PATH)
+
     # `mo uninstall Tor Browser` arrives as two words. Matching each word
     # alone sent "Tor" into a substring hit on WebSTORm while the app the
     # user actually named sat in the list (#1365). When the words joined
@@ -1474,14 +1472,9 @@ match_apps_by_name() {
             fi
         done
         if [[ "$every_word_exact" == "false" ]]; then
-<<<<<<< HEAD
-            local joined_lower
-            joined_lower=$(echo "$*" | tr '[:upper:]' '[:lower:]')
-            local joined_app
-=======
             local joined_lower joined_app joined_idx=0
             joined_lower=$(echo "$*" | /usr/bin/tr '[:upper:]' '[:lower:]')
->>>>>>> d7e9f6fc (fix: keep Mole correct with GNU tools first in PATH)
+
             for joined_app in "${apps_data[@]}"; do
                 IFS='|' read -r epoch app_path app_name bundle_id size last_used size_kb <<< "$joined_app"
                 local joined_name_lower joined_dir_lower

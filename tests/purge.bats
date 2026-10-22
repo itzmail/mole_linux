@@ -3335,8 +3335,6 @@ EOF
     [ "$status" -eq 0 ]
 }
 
-<<<<<<< HEAD
-=======
 @test "purge protects tracked source under a folder renamed only in case" {
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash <<'EOF'
 set -euo pipefail
@@ -3356,7 +3354,6 @@ EOF
     [ "$status" -eq 0 ]
 }
 
->>>>>>> d7e9f6fc (fix: keep Mole correct with GNU tools first in PATH)
 @test "purge keeps and reports a candidate whose content probe could not finish" {
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" /bin/bash <<'EOF_INNER'
 set -euo pipefail
