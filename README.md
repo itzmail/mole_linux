@@ -10,6 +10,19 @@
   <a href="https://github.com/itzmail/mole_linux/commits"><img src="https://img.shields.io/github/commit-activity/m/itzmail/mole_linux?style=flat-square" alt="Commits"></a>
 </p>
 
+> [!IMPORTANT]
+> **This fork is no longer maintained.** The upstream project now ships an official Linux version, built first for Omarchy and other Arch-based systems, with Debian/Ubuntu support. Please use the original instead:
+>
+> - Repository: [tw93/Mole `linux` branch](https://github.com/tw93/Mole/tree/linux)
+> - Releases: [Mole CLI for Linux releases](https://github.com/tw93/Mole/releases?q=linux)
+> - Install:
+>
+>   ```bash
+>   curl -fsSL https://raw.githubusercontent.com/tw93/Mole/linux/install.sh | bash
+>   ```
+>
+> Please report Linux issues and send pull requests to [tw93/Mole](https://github.com/tw93/Mole). The content below is kept for reference only.
+
 ## Overview
 
 Mole is an all-in-one terminal maintenance and cleanup tool for Linux. It helps you reclaim disk space, safely uninstall desktop and CLI applications along with their config/cache leftovers, explore disk usage visually, and monitor system health.
