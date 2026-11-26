@@ -1853,3 +1853,27 @@ EOF
 	}
 	[[ "$output" == *"HEAL_SHAPE_OK"* ]]
 }
+
+@test "install channel comes from this install's own receipt, not a stale default (#1589)" {
+	# install.sh --config moves the config dir and the launcher records where it
+	# went in SCRIPT_DIR. Reading the default path first let a receipt left by an
+	# earlier default install decide which channel a relocated install updates
+	# from, which is how a stable install could silently start taking nightlies.
+	local relocated="$TEST_ROOT/relocated"
+	mkdir -p "$relocated" "$HOME/.config/mole"
+	printf 'CHANNEL=nightly\n' > "$HOME/.config/mole/install_channel"
+	printf 'CHANNEL=stable\n' > "$relocated/install_channel"
+
+	run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" RELOCATED="$relocated" \
+		/bin/bash --noprofile --norc << 'INNER'
+set -euo pipefail
+SCRIPT_DIR="$RELOCATED"
+source "$PROJECT_ROOT/lib/core/common.sh" > /dev/null 2>&1
+source "$PROJECT_ROOT/lib/manage/update.sh" > /dev/null 2>&1
+get_install_channel
+INNER
+
+	[ "$status" -eq 0 ] || { echo "$output"; return 1; }
+	[[ "$output" == *"stable"* ]] || { echo "got: $output"; return 1; }
+	[[ "$output" != *"nightly"* ]] || { echo "got: $output"; return 1; }
+}

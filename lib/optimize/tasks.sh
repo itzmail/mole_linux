@@ -18,16 +18,6 @@ readonly MOLE_TM_THIN_TIMEOUT=180
 readonly MOLE_TM_THIN_VALUE=9999999999
 readonly MOLE_SQLITE_MAX_SIZE=104857600 # 100MB
 
-# Dry-run aware output.
-opt_msg() {
-    local message="$1"
-    if [[ "${MOLE_DRY_RUN:-0}" == "1" ]]; then
-        echo -e "  ${YELLOW}${ICON_DRY_RUN}${NC} $message"
-    else
-        echo -e "  ${GREEN}${ICON_SUCCESS}${NC} $message"
-    fi
-}
-
 opt_numeric_kb() {
     local size_kb="${1:-0}"
     [[ "$size_kb" =~ ^[0-9]+$ ]] && echo "$size_kb" || echo "0"

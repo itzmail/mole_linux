@@ -10,7 +10,7 @@ setup_file() {
     [[ "$status" -eq 0 ]] || return 1
 }
 
-@test "bin/optimize.sh guards on MOLE_IS_LINUX before sourcing optimize modules" {
+@test "bin/optimize.sh dispatches on MOLE_IS_LINUX before sourcing Darwin modules" {
     run grep -n 'MOLE_IS_LINUX' "$PROJECT_ROOT/bin/optimize.sh"
     [[ "$status" -eq 0 ]] || return 1
 
@@ -18,15 +18,6 @@ setup_file() {
     guard_line=$(grep -n 'MOLE_IS_LINUX' "$PROJECT_ROOT/bin/optimize.sh" | head -1 | cut -d: -f1)
     source_line=$(grep -n 'lib/optimize/catalog.sh' "$PROJECT_ROOT/bin/optimize.sh" | head -1 | cut -d: -f1)
     [[ "$guard_line" -lt "$source_line" ]] || return 1
-}
-
-@test "mole optimize exits 1 with a clear message on Linux" {
-    if [[ "$(uname -s)" != "Linux" ]]; then
-        skip "guard behavior only observable on a real Linux host"
-    fi
-    run "$PROJECT_ROOT/bin/optimize.sh"
-    [[ "$status" -eq 1 ]] || return 1
-    [[ "$output" == *"not supported on Linux"* ]] || return 1
 }
 
 @test "bin/installer.sh has valid bash syntax" {

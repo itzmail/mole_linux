@@ -11,6 +11,7 @@ set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/linux.sh"
 _linux_detect_pkg_manager() { echo "apt"; }
+_linux_detect_desktop_packages() { :; }
 _linux_list_webapps() { :; }
 dpkg-query() {
     cat <<'FIXTURE'
@@ -23,12 +24,32 @@ EOF
     [[ "$output" == "firefox|120.0|350000|CLI|firefox" ]] || return 1
 }
 
+@test "linux_list_uninstallable_packages tags desktop packages as Desktop" {
+    run env PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/lib/core/common.sh"
+source "$PROJECT_ROOT/lib/uninstall/linux.sh"
+_linux_detect_pkg_manager() { echo "apt"; }
+_linux_detect_desktop_packages() { echo "firefox"; }
+_linux_list_webapps() { :; }
+dpkg-query() {
+    cat <<'FIXTURE'
+firefox|120.0|install ok installed|optional|350000
+FIXTURE
+}
+linux_list_uninstallable_packages
+EOF
+    [[ "$status" -eq 0 ]] || return 1
+    [[ "$output" == "firefox|120.0|350000|Desktop|firefox" ]] || return 1
+}
+
 @test "linux_list_uninstallable_packages excludes essential/required/important/standard priority packages" {
     run env PROJECT_ROOT="$PROJECT_ROOT" /bin/bash --noprofile --norc <<'EOF'
 set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/linux.sh"
 _linux_detect_pkg_manager() { echo "apt"; }
+_linux_detect_desktop_packages() { :; }
 _linux_list_webapps() { :; }
 dpkg-query() {
     cat <<'FIXTURE'
@@ -51,6 +72,7 @@ set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/linux.sh"
 _linux_detect_pkg_manager() { echo "apt"; }
+_linux_detect_desktop_packages() { :; }
 _linux_list_webapps() { :; }
 dpkg-query() {
     cat <<'FIXTURE'
@@ -71,6 +93,7 @@ set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/linux.sh"
 _linux_detect_pkg_manager() { echo "apt"; }
+_linux_detect_desktop_packages() { :; }
 _linux_list_webapps() { :; }
 dpkg-query() {
     cat <<'FIXTURE'
@@ -90,6 +113,7 @@ set -euo pipefail
 source "$PROJECT_ROOT/lib/core/common.sh"
 source "$PROJECT_ROOT/lib/uninstall/linux.sh"
 _linux_detect_pkg_manager() { echo "apt"; }
+_linux_detect_desktop_packages() { :; }
 _linux_list_webapps() { :; }
 dpkg-query() {
     cat <<'FIXTURE'

@@ -48,7 +48,11 @@ mole_path_identity() {
     if [[ -e "$normalized" || -L "$normalized" ]]; then
         if command -v stat > /dev/null 2>&1; then
             local fs_id=""
-            fs_id=$(stat -L -f '%d:%i' "$normalized" 2> /dev/null || stat -f '%d:%i' "$normalized" 2> /dev/null || true)
+            if [[ "$(uname -s)" == "Linux" ]]; then
+                fs_id=$(stat -L -c '%d:%i' "$normalized" 2> /dev/null || stat -c '%d:%i' "$normalized" 2> /dev/null || true)
+            else
+                fs_id=$(stat -L -f '%d:%i' "$normalized" 2> /dev/null || stat -f '%d:%i' "$normalized" 2> /dev/null || true)
+            fi
             if [[ "$fs_id" =~ ^[0-9]+:[0-9]+$ ]]; then
                 printf 'inode:%s\n' "$fs_id"
                 return 0

@@ -16,7 +16,13 @@ if [[ -n "${MOLE_MANAGE_UPDATE_LOADED:-}" ]]; then
     return 0
 fi
 readonly MOLE_MANAGE_UPDATE_LOADED=1
-readonly MOLE_UPDATE_REPO="${MOLE_UPDATE_REPO:-itzmail/mole_linux}"
+if [[ -z "${MOLE_UPDATE_REPO:-}" ]]; then
+    if [[ "$OSTYPE" == "linux"* ]]; then
+        MOLE_UPDATE_REPO="itzmail/mole_linux"
+    else
+        MOLE_UPDATE_REPO="tw93/mole"
+    fi
+fi
 
 curl_download_with_retry() {
     local url="$1"
@@ -488,7 +494,7 @@ _update_self_heal_reinstall() {
         heal_output=$(
             set -o pipefail
             curl -fsSL --connect-timeout 10 --max-time 60 \
-                "https://raw.githubusercontent.com/${MOLE_UPDATE_REPO}/main/install.sh" |
+                "https://raw.githubusercontent.com/${MOLE_UPDATE_REPO:-tw93/mole}/main/install.sh" |
                 MOLE_ASSUME_SUDO_AUTH="$assume_sudo" MOLE_VERSION="$update_ref" \
                     MOLE_INSTALL_COMMIT="$install_commit" MOLE_INSTALL_RECEIPT="$install_receipt" \
                     bash -s -- --prefix "$install_dir" --config "$config_dir" 2>&1
@@ -500,7 +506,7 @@ _update_self_heal_reinstall() {
         heal_output=$(
             set -o pipefail
             wget --timeout=10 --tries=3 -qO- \
-                "https://raw.githubusercontent.com/${MOLE_UPDATE_REPO}/main/install.sh" |
+                "https://raw.githubusercontent.com/${MOLE_UPDATE_REPO:-tw93/mole}/main/install.sh" |
                 MOLE_ASSUME_SUDO_AUTH="$assume_sudo" MOLE_VERSION="$update_ref" \
                     MOLE_INSTALL_COMMIT="$install_commit" MOLE_INSTALL_RECEIPT="$install_receipt" \
                     bash -s -- --prefix "$install_dir" --config "$config_dir" 2>&1
@@ -527,7 +533,7 @@ _update_print_manual_reinstall() {
     printf -v quoted_install_dir '%q' "$install_dir"
     printf -v quoted_config_dir '%q' "$config_dir"
     printf '%s Reinstall manually: curl -fsSL https://raw.githubusercontent.com/%s/main/install.sh | MOLE_VERSION=%s bash -s -- --prefix %s --config %s\n' \
-        "${ICON_REVIEW}" "$MOLE_UPDATE_REPO" "$quoted_ref" "$quoted_install_dir" "$quoted_config_dir"
+        "${ICON_REVIEW}" "${MOLE_UPDATE_REPO:-tw93/mole}" "$quoted_ref" "$quoted_install_dir" "$quoted_config_dir"
 }
 
 # Version discovery must report "unknown" by returning empty, never by failing.
@@ -538,14 +544,14 @@ _update_print_manual_reinstall() {
 # all that way. The trailing `|| true` is what keeps the failure recoverable.
 get_latest_version() {
     curl -fsSL --connect-timeout 2 --max-time 3 -H "Cache-Control: no-cache" \
-        "https://raw.githubusercontent.com/${MOLE_UPDATE_REPO}/main/mole" 2> /dev/null |
+        "https://raw.githubusercontent.com/${MOLE_UPDATE_REPO:-tw93/mole}/main/mole" 2> /dev/null |
         grep '^VERSION=' | head -1 | sed 's/VERSION="\(.*\)"/\1/' || true
 }
 
 get_latest_version_from_github() {
     local version
     version=$(curl -fsSL --connect-timeout 2 --max-time 3 \
-        "https://api.github.com/repos/${MOLE_UPDATE_REPO}/releases/latest" 2> /dev/null |
+        "https://api.github.com/repos/${MOLE_UPDATE_REPO:-tw93/mole}/releases/latest" 2> /dev/null |
         grep '"tag_name"' | head -1 | sed -E 's/.*"([^"]+)".*/\1/' || true)
     version="${version#v}"
     version="${version#V}"
@@ -711,10 +717,13 @@ is_homebrew_install() {
 }
 
 get_install_channel() {
-    # Try user config dir first (matches install.sh behavior), fallback to SCRIPT_DIR
-    local channel_file="${MOLE_CONFIG_DIR:-$HOME/.config/mole}/install_channel"
+    # This install's own receipt wins. install.sh --config can move the config
+    # dir, and the launcher records where it went in SCRIPT_DIR, so reading the
+    # default path first let a receipt left by an earlier default install decide
+    # which channel a relocated install updates from (tw93/Mole#1589).
+    local channel_file="${MOLE_CONFIG_DIR:-${SCRIPT_DIR:-}}/install_channel"
     if [[ ! -f "$channel_file" ]]; then
-        channel_file="$SCRIPT_DIR/install_channel"
+        channel_file="$HOME/.config/mole/install_channel"
     fi
     local channel="stable"
     if [[ -f "$channel_file" ]]; then
@@ -727,12 +736,12 @@ get_install_channel() {
 }
 
 # Read one field out of the install channel receipt, empty when absent.
-# User config dir first (matches install.sh), then the install directory.
+# Same precedence as get_install_channel: this install's own receipt first.
 _read_install_channel_field() {
     local key="$1"
-    local channel_file="${MOLE_CONFIG_DIR:-$HOME/.config/mole}/install_channel"
+    local channel_file="${MOLE_CONFIG_DIR:-${SCRIPT_DIR:-}}/install_channel"
     if [[ ! -f "$channel_file" ]]; then
-        channel_file="$SCRIPT_DIR/install_channel"
+        channel_file="$HOME/.config/mole/install_channel"
     fi
     if [[ -f "$channel_file" ]]; then
         sed -n "s/^${key}=\(.*\)$/\1/p" "$channel_file" | head -1
@@ -753,10 +762,10 @@ get_latest_commit_from_github() {
     local sha=""
     if command -v curl > /dev/null 2>&1; then
         response=$(curl -fsSL --connect-timeout 2 --max-time 3 \
-            "https://api.github.com/repos/${MOLE_UPDATE_REPO}/commits/main" 2> /dev/null || true)
+            "https://api.github.com/repos/${MOLE_UPDATE_REPO:-tw93/mole}/commits/main" 2> /dev/null || true)
     elif command -v wget > /dev/null 2>&1; then
         response=$(wget --timeout=3 --tries=1 -qO- \
-            "https://api.github.com/repos/${MOLE_UPDATE_REPO}/commits/main" 2> /dev/null || true)
+            "https://api.github.com/repos/${MOLE_UPDATE_REPO:-tw93/mole}/commits/main" 2> /dev/null || true)
     fi
     sha=$(printf '%s\n' "$response" |
         grep '"sha"[[:space:]]*:[[:space:]]*"[0-9a-f]\{40\}"' | head -1 | sed -E 's/.*"sha"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/') || sha=""
@@ -799,7 +808,7 @@ get_latest_commit_from_github() {
             git -c credential.helper= -c core.askPass=/usr/bin/false \
             -c protocol.allow=never -c protocol.https.allow=always \
             -c http.sslVerify=true -C / \
-            ls-remote "https://github.com/${MOLE_UPDATE_REPO}.git" refs/heads/main \
+            ls-remote "https://github.com/${MOLE_UPDATE_REPO:-tw93/mole}.git" refs/heads/main \
             2> /dev/null); then
             sha=$(printf '%s\n' "$response" |
                 awk '$2 == "refs/heads/main" { print $1; exit }')
@@ -844,9 +853,25 @@ read_update_message_cache() {
 
 # Background update notice
 check_for_updates() {
+    [[ "${MOLE_TEST_MODE:-0}" == "1" ]] && return 0
+
     local msg_cache="$HOME/.cache/mole/update_message"
+    local timestamp_file="$HOME/.cache/mole/version_check"
     ensure_user_dir "$(dirname "$msg_cache")"
     ensure_user_file "$msg_cache"
+
+    local last_check
+    last_check=$(get_file_mtime "$timestamp_file" 2> /dev/null || echo 0)
+    local now
+    now=$(get_epoch_seconds 2> /dev/null || date +%s)
+    local check_interval="${MOLE_UPDATE_CHECK_INTERVAL:-3600}"
+
+    if [[ "$last_check" =~ ^[0-9]+$ && "$now" =~ ^[0-9]+$ && "$last_check" -gt 0 ]] &&
+        ((now - last_check < check_interval)); then
+        return 0
+    fi
+
+    touch "$timestamp_file" 2> /dev/null || true
 
     (
         (
@@ -891,6 +916,18 @@ check_for_updates() {
             fi
         ) > /dev/null 2>&1 < /dev/null &
     )
+}
+
+show_cli_update_notice() {
+    [[ "${MOLE_TEST_MODE:-0}" == "1" ]] && return 0
+    [[ -t 1 ]] || return 0
+
+    local msg_cache="$HOME/.cache/mole/update_message"
+    local update_message
+    update_message="$(read_update_message_cache "$msg_cache")"
+    if [[ -n "$update_message" ]]; then
+        printf '%s\n' "$update_message"
+    fi
 }
 
 # UI helpers
@@ -1143,7 +1180,7 @@ update_mole() (
     if [[ "$nightly_update" != "true" ]]; then
         installer_ref="V${latest#V}"
     fi
-    local installer_url="https://raw.githubusercontent.com/${MOLE_UPDATE_REPO}/${installer_ref}/install.sh"
+    local installer_url="https://raw.githubusercontent.com/${MOLE_UPDATE_REPO:-tw93/mole}/${installer_ref}/install.sh"
     local tmp_installer
     tmp_installer="$(mktemp_file)" || {
         log_error "Update failed"

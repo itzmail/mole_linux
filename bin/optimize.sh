@@ -20,8 +20,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$SCRIPT_DIR/lib/core/common.sh"
 
 if [[ "$MOLE_IS_LINUX" == "true" ]]; then
-    echo "Error: mole optimize is not supported on Linux (macOS-specific maintenance: Spotlight, launchctl, TimeMachine)." >&2
-    exit 1
+    source "$SCRIPT_DIR/lib/optimize/linux.sh"
+    linux_optimize_main "$@"
+    exit $?
 fi
 
 # Clean temp files on exit.
@@ -157,17 +158,6 @@ show_system_health() {
 
     printf "${ICON_ADMIN} System  %s/%s GB RAM | %s/%s GB Disk | Uptime %sd\n" \
         "$mem_used" "$mem_total" "$disk_used" "$disk_total" "$uptime"
-}
-
-announce_action() {
-    local name="$1"
-
-    if [[ "${FIRST_ACTION:-true}" == "true" ]]; then
-        export FIRST_ACTION=false
-    else
-        echo ""
-    fi
-    echo -e "${BLUE}${ICON_ARROW} ${name}${NC}"
 }
 
 cleanup_all() {

@@ -17,9 +17,9 @@ _linux_detect_pkg_manager() {
 
 _linux_detect_desktop_packages() {
     if [[ -d /var/lib/pacman/local ]]; then
-        grep -l 'usr/share/applications/.*\.desktop' /var/lib/pacman/local/*/files 2>/dev/null | awk -F'/' '{print $(NF-1)}' | sed -E 's/-[0-9]+[^-]*-[0-9]+[^-]*$//'
+        grep -l 'usr/share/applications/.*\.desktop' /var/lib/pacman/local/*/files 2> /dev/null | awk -F'/' '{print $(NF-1)}' | sed -E 's/-[0-9]+[^-]*-[0-9]+[^-]*$//'
     elif [[ -d /var/lib/dpkg/info ]]; then
-        grep -l 'usr/share/applications/.*\.desktop' /var/lib/dpkg/info/*.list 2>/dev/null | awk -F'/' '{n=$NF; sub(/\.list$/, "", n); sub(/:.*$/, "", n); print n}'
+        grep -l 'usr/share/applications/.*\.desktop' /var/lib/dpkg/info/*.list 2> /dev/null | awk -F'/' '{n=$NF; sub(/\.list$/, "", n); sub(/:.*$/, "", n); print n}'
     fi
 }
 
@@ -30,7 +30,7 @@ _linux_list_webapps() {
         base="$(basename "$f")"
         # Skip if system application with same name exists
         [[ -f "/usr/share/applications/$base" ]] && continue
-        name="$(grep -m1 '^Name=' "$f" 2>/dev/null | cut -d= -f2-)"
+        name="$(grep -m1 '^Name=' "$f" 2> /dev/null | cut -d= -f2-)"
         [[ -z "$name" ]] && name="${base%.desktop}"
         echo "2|webapp:$base|-|0|Webapp|$name"
     done
@@ -41,12 +41,12 @@ linux_list_uninstallable_packages() {
     pm=$(_linux_detect_pkg_manager)
 
     local desktop_pkgs
-    desktop_pkgs=$(_linux_detect_desktop_packages 2>/dev/null || true)
+    desktop_pkgs=$(_linux_detect_desktop_packages 2> /dev/null || true)
 
     case "$pm" in
         pacman)
             {
-                _linux_list_webapps 2>/dev/null || true
+                _linux_list_webapps 2> /dev/null || true
                 pacman -Qie 2> /dev/null | awk -F': ' '
                     /^Name/ { name=$2; sub(/^[ \t]+/, "", name); sub(/[ \t]+$/, "", name) }
                     /^Version/ { ver=$2; sub(/^[ \t]+/, "", ver); sub(/[ \t]+$/, "", ver) }
@@ -88,7 +88,7 @@ linux_list_uninstallable_packages() {
             ;;
         apt)
             {
-                _linux_list_webapps 2>/dev/null || true
+                _linux_list_webapps 2> /dev/null || true
                 dpkg-query -W -f='${Package}|${Version}|${Status}|${Priority}|${Installed-Size}\n' 2> /dev/null |
                     awk -F'|' '
                         $3 !~ /install ok installed/ { next }
@@ -177,14 +177,15 @@ linux_uninstall_package() {
         return 0
     fi
 
-    local -a sudo_prefix=()
     if [[ "${MOLE_TEST_NO_AUTH:-0}" != "1" && "${MOLE_TEST_MODE:-0}" != "1" ]]; then
         sudo -v
-        sudo_prefix=(sudo)
-    fi
-
-    if run_with_timeout "$MOLE_TIMEOUT_PKG_CLEANUP_SEC" "${sudo_prefix[@]}" "${remove_cmd[@]}"; then
-        return 0
+        if run_with_timeout "$MOLE_TIMEOUT_PKG_CLEANUP_SEC" sudo "${remove_cmd[@]}"; then
+            return 0
+        fi
+    else
+        if run_with_timeout "$MOLE_TIMEOUT_PKG_CLEANUP_SEC" "${remove_cmd[@]}"; then
+            return 0
+        fi
     fi
     echo "Error: package removal failed for $pkgname" >&2
     return 1
@@ -216,7 +217,7 @@ linux_clean_package_leftovers() {
 _linux_uninstall_require_supported_pm() {
     local pm
     pm=$(_linux_detect_pkg_manager)
-    if [[ "$pm" == "none" ]]; then
+    if [[ "$pm" == "none" || -z "$pm" ]]; then
         echo "Error: mole uninstall is not supported on this system (pacman or apt-get/dpkg-query not found)." >&2
         return 1
     fi
@@ -334,7 +335,7 @@ _linux_uninstall_interactive() {
 }
 
 _linux_uninstall_usage() {
-    cat <<'EOF'
+    cat << 'EOF'
 Mole - Linux Application & Package Uninstaller
 
 Usage:
@@ -352,6 +353,11 @@ EOF
 }
 
 linux_uninstall_main() {
+    if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+        _linux_uninstall_usage
+        return 0
+    fi
+
     _linux_uninstall_require_supported_pm || return 1
 
     local -a targets=()
@@ -361,11 +367,11 @@ linux_uninstall_main() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --dry-run|-n)
+            --dry-run | -n)
                 export MOLE_DRY_RUN=1
                 shift
                 ;;
-            --help|-h)
+            --help | -h)
                 _linux_uninstall_usage
                 return 0
                 ;;

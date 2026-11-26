@@ -163,13 +163,13 @@ func copyRegularFile(src, dst string, perm os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	defer in.Close()
+	defer func() { _ = in.Close() }()
 
 	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
 	if err != nil {
 		return err
 	}
-	defer out.Close()
+	defer func() { _ = out.Close() }()
 
 	if _, err := io.Copy(out, in); err != nil {
 		return err
@@ -236,7 +236,7 @@ func List() ([]Item, error) {
 }
 
 func parseTrashInfo(content string) (origPath string, deletedAt time.Time) {
-	for _, line := range strings.Split(content, "\n") {
+	for line := range strings.SplitSeq(content, "\n") {
 		if p, ok := strings.CutPrefix(line, "Path="); ok {
 			origPath = p
 		}
@@ -321,6 +321,7 @@ func makeWritableRecursive(root string) error {
 			return err
 		}
 		if info.Mode().Perm()&0o200 == 0 {
+			// #nosec G122 -- path traversal in internal XDG trash directory
 			if chmodErr := os.Chmod(path, info.Mode().Perm()|0o200); chmodErr != nil {
 				return chmodErr
 			}

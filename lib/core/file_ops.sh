@@ -626,7 +626,14 @@ _mole_paths_have_open_handle() {
 
     local lsof_rc=0
     local open_records=""
-    open_records=$(_mole_run_complete_lsof "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
+    # MO_DEBUG=0 on the capture, because this buffer is EVIDENCE, not output:
+    # an empty stderr is what makes rc=1 mean "conclusively idle" below. With
+    # the flag on, run_with_timeout writes its own "[TIMEOUT] Running with ..."
+    # line into the same stream, the buffer is never empty, and every probe
+    # downgrades to "could not tell". Measured on this Mac: 10 of 25 real cache
+    # databases flipped from cleanable to kept under `mo clean --debug`, so the
+    # flag meant to explain the run was quietly changing it.
+    open_records=$(MO_DEBUG=0 _mole_run_complete_lsof "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
         -F n -- "$@" 2>&1) || lsof_rc=$?
     if mole_rc_timeout_or_signal "$lsof_rc"; then
         return "$lsof_rc"
@@ -685,10 +692,10 @@ _mole_container_cache_has_open_handle() {
     local lsof_rc=0
     local records=""
     if [[ -d "$path" ]]; then
-        records=$(_mole_run_complete_lsof "$probe_timeout" \
+        records=$(MO_DEBUG=0 _mole_run_complete_lsof "$probe_timeout" \
             -F pfn +D "$path" 2>&1) || lsof_rc=$?
     else
-        records=$(_mole_run_complete_lsof "$probe_timeout" \
+        records=$(MO_DEBUG=0 _mole_run_complete_lsof "$probe_timeout" \
             -F pfn -- "$path" 2>&1) || lsof_rc=$?
     fi
 
@@ -2157,8 +2164,13 @@ mole_delete() {
         expected_target_id="$_MOLE_PATH_SNAPSHOT_TARGET_ID"
         local current_identity=""
         local identity_rc=0
-        current_identity=$(run_with_timeout "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
-            "$STAT_BSD" -f%d:%i:%m "$path" 2> /dev/null) || identity_rc=$?
+        if [[ "${MOLE_IS_LINUX:-false}" == "true" || "$(uname -s)" == "Linux" ]]; then
+            current_identity=$(run_with_timeout "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
+                stat -c '%d:%i:%Y' "$path" 2> /dev/null) || identity_rc=$?
+        else
+            current_identity=$(run_with_timeout "$MOLE_TIMEOUT_QUICK_DETECT_SEC" \
+                "$STAT_BSD" -f%d:%i:%m "$path" 2> /dev/null) || identity_rc=$?
+        fi
         if mole_rc_timeout_or_signal "$identity_rc"; then
             local identity_status="interrupted"
             mole_rc_timeout "$identity_rc" && identity_status="timed-out"
@@ -2803,7 +2815,11 @@ _mole_snapshot_path_identity() {
     local parent_id=""
     local target_id=""
     local identities=""
-    identities=$("$STAT_BSD" -f '%d:%i' "$physical_parent" "$path" 2> /dev/null) || return 1
+    if [[ "${MOLE_IS_LINUX:-false}" == "true" || "$(uname -s)" == "Linux" ]]; then
+        identities=$(stat -c '%d:%i' "$physical_parent" "$path" 2> /dev/null) || return 1
+    else
+        identities=$("$STAT_BSD" -f '%d:%i' "$physical_parent" "$path" 2> /dev/null) || return 1
+    fi
     [[ "$identities" == *$'\n'* ]] || return 1
     parent_id="${identities%%$'\n'*}"
     target_id="${identities#*$'\n'}"

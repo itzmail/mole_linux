@@ -173,3 +173,23 @@ optimize_failed_actions() {
 optimize_outcomes_succeeded() {
     [[ "$(optimize_outcome_count "$MOLE_OPTIMIZE_OUTCOME_FAILED")" -eq 0 ]]
 }
+
+# Dry-run aware output.
+opt_msg() {
+    local message="$1"
+    if [[ "${MOLE_DRY_RUN:-0}" == "1" ]]; then
+        echo -e "  ${YELLOW}${ICON_DRY_RUN}${NC} $message"
+    else
+        echo -e "  ${GREEN}${ICON_SUCCESS}${NC} $message"
+    fi
+}
+
+announce_action() {
+    local name="$1"
+    if [[ "${FIRST_ACTION:-true}" == "true" ]]; then
+        export FIRST_ACTION=false
+    else
+        echo ""
+    fi
+    echo -e "${BLUE}${ICON_ARROW} ${name}${NC}"
+}

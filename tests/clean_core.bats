@@ -1153,6 +1153,168 @@ EOF
     [[ "$output" == *"cache.bin  # size unknown"* ]] || return 1
 }
 
+@test "dry-run ledger counts a candidate nested under a measured candidate once" {
+    # "User essentials" sweeps ~/Library/Caches/* whole, then "Developer
+    # tools" lists ~/Library/Caches/Yarn/v6 again. A real run frees those
+    # bytes once, but the preview measured both, so Potential space counted
+    # them twice. The nested row stays in the preview file (a whitelist entry
+    # for the child is how a user protects it) and is marked as counted under
+    # its ancestor. An ancestor whose own size is unknown must not hide its
+    # measured children, and a stale unknown-size duplicate of a measured
+    # ancestor must not either. A child recorded before its parent is still
+    # covered. A path with a newline inside survives both engines unchanged.
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_NO_AUTH=1 \
+        /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/bin/clean.sh"
+
+DRY_RUN=true
+parent="$HOME/Library/Caches/Yarn"
+child="$parent/v6"
+sibling="$HOME/Library/Caches/Other"
+unknown_parent="$HOME/Library/Caches/Slow"
+unknown_child="$unknown_parent/berry"
+late_parent="$HOME/Library/Application Support/Quark/videoCache"
+early_child="$late_parent/abc_contents"
+dup_parent="$HOME/Library/Caches/Twice"
+dup_child="$dup_parent/inner"
+newline_parent="$HOME/Library/Caches/Odd"$'\n'"name"
+newline_child="$newline_parent/sub"
+mkdir -p "$child" "$sibling" "$unknown_child" "$early_child" "$dup_child" "$newline_child"
+
+for engine in perl bash; do
+    if [[ "$engine" == "bash" ]]; then
+        command() {
+            if [[ "${1:-}" == "-v" && "${2:-}" == "perl" ]]; then
+                return 1
+            fi
+            builtin command "$@"
+        }
+    fi
+    CLEAN_PREVIEW_FINAL_FILE="$HOME/nested-preview-$engine.txt"
+    prepare_clean_preview_file
+
+    CURRENT_SECTION="User essentials"
+    record_dry_run_cleanup_target "$parent/" 3072 1 true
+    record_dry_run_cleanup_target "$sibling" 512 1 true
+    record_dry_run_cleanup_target "$unknown_parent" 0 1 false
+    record_dry_run_cleanup_target "$dup_parent" 0 1 false
+    record_dry_run_cleanup_target "$dup_parent" 800 1 true
+    record_dry_run_cleanup_target "$newline_parent" 100 1 true
+    CURRENT_SECTION="Apps & utilities"
+    record_dry_run_cleanup_target "$early_child" 900 3 true
+    CURRENT_SECTION="Developer tools"
+    record_dry_run_cleanup_target "$child" 3072 4 true
+    record_dry_run_cleanup_target "$unknown_child" 256 2 true
+    record_dry_run_cleanup_target "$dup_child" 64 1 true
+    record_dry_run_cleanup_target "$newline_child" 50 1 true
+    CURRENT_SECTION="Application Support"
+    record_dry_run_cleanup_target "$late_parent" 1000 1 true
+
+    render_clean_preview_from_ledger
+    printf '%s TOTAL_KB=%s ITEMS=%s PARTIAL=%s\n' \
+        "$engine" "$total_size_cleaned" "$files_cleaned" "$DRY_RUN_TOTAL_PARTIAL"
+    grep -v '^#' "$EXPORT_LIST_FILE" | tr '\n' '|' | sed "s|^|$engine |"
+    printf '\n'
+done
+EOF
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+    local engine
+    for engine in perl bash; do
+        # Yarn 3072 + Other 512 + Slow/berry 256 + Twice/inner 64 + Odd 100
+        # + Quark videoCache 1000. Yarn/v6, abc_contents and Odd/sub are
+        # inside measured ancestors; Twice stays unknown, so inner counts.
+        [[ "$output" == *"$engine TOTAL_KB=5004 ITEMS=9 PARTIAL=true"* ]] || return 1
+        [[ "$output" == *"$engine "*"$HOME/Library/Caches/Yarn/  # 3.1MB|"* ]] || return 1
+        [[ "$output" == *"$HOME/Library/Caches/Yarn/v6  # 3.1MB, 4 items, counted under $HOME/Library/Caches/Yarn|"* ]] || return 1
+        [[ "$output" == *"$HOME/Library/Caches/Slow  # size unknown|"* ]] || return 1
+        [[ "$output" == *"$HOME/Library/Caches/Slow/berry  # 262KB, 2 items|"* ]] || return 1
+        [[ "$output" == *"$HOME/Library/Caches/Twice/inner  # 66KB|"* ]] || return 1
+        [[ "$output" == *"videoCache/abc_contents  # 922KB, 3 items, counted under $HOME/Library/Application Support/Quark/videoCache|"* ]] || return 1
+        [[ "$output" == *"name/sub  # 51KB, counted under $HOME/Library/Caches/Odd|name|"* ]] || return 1
+    done
+    # Both engines render the same preview body.
+    local perl_body bash_body
+    perl_body=$(printf '%s\n' "$output" | grep '^perl ' | sed 's/^perl //')
+    bash_body=$(printf '%s\n' "$output" | grep '^bash ' | sed 's/^bash //')
+    [[ -n "$perl_body" && "$perl_body" == "$bash_body" ]] || return 1
+}
+
+@test "dry-run ledger engines agree on separator bytes, trailing newlines and covered unknown rows" {
+    # Raw ledger records exercise what record_dry_run_cleanup_target cannot
+    # produce on demand: a path: identity, a path holding the byte the Bash
+    # fallback uses to join its lookup strings, a path ending in a newline,
+    # and an unknown-size child under a measured parent. Both engines must
+    # emit identical bytes, and a covered unknown row must not make the
+    # total partial, because its bytes are inside the measured parent.
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_NO_AUTH=1 \
+        /bin/bash --noprofile --norc << 'EOF'
+set -euo pipefail
+source "$PROJECT_ROOT/bin/clean.sh"
+
+DRY_RUN=true
+sep=$'\x1f'
+nl=$'\n'
+record() {
+    printf '%s\0%s\0%s\0%s\0%s\0%s\0' "$1" "$2" "$3" "$4" "Section" "$5" \
+        >> "$CLEAN_PREVIEW_LEDGER_FILE"
+}
+render_case() {
+    local engine="$1" case_name="$2"
+    CLEAN_PREVIEW_FINAL_FILE="$HOME/$case_name-$engine.txt"
+    prepare_clean_preview_file
+    if [[ "$case_name" == "mixed" ]]; then
+        record "path:/a" 100 1 true "/a"
+        record "path:/b" 100 1 true "/b"
+        # A separate identity that reads like two joined entries.
+        record "path:/a$sep${sep}path:/b" 100 1 true "/a$sep${sep}path:/b"
+        # An unknown path whose ancestor reads like two joined entries.
+        record "path:/a$sep$sep/b/c" 0 1 false "/a$sep$sep/b/c"
+        record "path:/n$nl" 200 1 true "/n$nl"
+        record "path:/n$nl/sub" 50 1 true "/n$nl/sub"
+    else
+        record "path:/p" 100 1 true "/p"
+        record "path:/p/q" 0 3 false "/p/q"
+    fi
+    emit_deduplicated_dry_run_ledger > "$HOME/$case_name-$engine.ledger"
+    render_clean_preview_from_ledger
+    printf '%s %s TOTAL_KB=%s ITEMS=%s PARTIAL=%s\n' "$engine" "$case_name" \
+        "$total_size_cleaned" "$files_cleaned" "$DRY_RUN_TOTAL_PARTIAL"
+}
+render_case perl mixed
+render_case perl covered
+command() {
+    if [[ "${1:-}" == "-v" && "${2:-}" == "perl" ]]; then
+        return 1
+    fi
+    builtin command "$@"
+}
+render_case bash mixed
+render_case bash covered
+
+cmp -s "$HOME/mixed-perl.ledger" "$HOME/mixed-bash.ledger" && echo "MIXED_LEDGER_EQUAL"
+cmp -s "$HOME/covered-perl.ledger" "$HOME/covered-bash.ledger" && echo "COVERED_LEDGER_EQUAL"
+cmp -s "$HOME/mixed-perl.txt" "$HOME/mixed-bash.txt" && echo "MIXED_PREVIEW_EQUAL"
+EOF
+
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+    local engine
+    for engine in perl bash; do
+        [[ "$output" == *"$engine mixed TOTAL_KB=500 ITEMS=5 PARTIAL=true"* ]] || return 1
+        [[ "$output" == *"$engine covered TOTAL_KB=100 ITEMS=1 PARTIAL=false"* ]] || return 1
+    done
+    [[ "$output" == *"MIXED_LEDGER_EQUAL"* ]] || return 1
+    [[ "$output" == *"COVERED_LEDGER_EQUAL"* ]] || return 1
+    [[ "$output" == *"MIXED_PREVIEW_EQUAL"* ]] || return 1
+}
+
 @test "dry-run preview propagates live-cache and SQLite safety timeouts" {
     run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" MOLE_TEST_NO_AUTH=1 \
         bash --noprofile --norc << 'EOF'

@@ -9,6 +9,10 @@ if ! command -v ensure_user_dir > /dev/null 2>&1; then
     # shellcheck disable=SC1090
     source "$CORE_LIB_DIR/common.sh"
 fi
+if ! declare -F _mole_snapshot_path_identity > /dev/null 2>&1; then
+    # shellcheck disable=SC1090
+    source "$CORE_LIB_DIR/file_ops.sh"
+fi
 # shellcheck disable=SC1090
 source "$PROJECT_LIB_DIR/purge_shared.sh"
 
@@ -18,6 +22,9 @@ readonly MIN_AGE_DAYS=7
 # Scan depth defaults (relative to search root).
 readonly PURGE_MIN_DEPTH_DEFAULT=1
 readonly PURGE_MAX_DEPTH_DEFAULT=6
+# Replacement text for ${path/#$HOME/...}: a quoted variable is never tilde-expanded,
+# while a bare ~ expands to $HOME on bash 5.2+ and \~ stays literal on bash 3.2.
+_PURGE_HOME_TILDE='~'
 # Search paths (default, can be overridden via config file).
 readonly DEFAULT_PURGE_SEARCH_PATHS=("${MOLE_PURGE_DEFAULT_SEARCH_PATHS[@]}")
 
@@ -172,7 +179,7 @@ write_purge_config() {
     if [[ ${#paths[@]} -gt 0 ]]; then
         for path in "${paths[@]}"; do
             # Convert $HOME to ~ for portability
-            path="${path/#$HOME/~}"
+            path="${path/#$HOME/$_PURGE_HOME_TILDE}"
             if ! printf '%s\n' "$path" >> "$tmp_file"; then
                 rm -f "$tmp_file" 2> /dev/null || true
                 return 1
@@ -191,7 +198,7 @@ write_purge_config() {
 warn_purge_config_write_failure() {
     [[ -t 1 ]] || return 0
     [[ -z "${_PURGE_DISCOVERY_SILENT:-}" ]] || return 0
-    echo -e "${YELLOW}${ICON_WARNING}${NC} Could not save purge paths to ${PURGE_CONFIG_FILE/#$HOME/~}, using discovered paths for this run" >&2
+    echo -e "${YELLOW}${ICON_WARNING}${NC} Could not save purge paths to ${PURGE_CONFIG_FILE/#$HOME/$_PURGE_HOME_TILDE}, using discovered paths for this run" >&2
 }
 
 format_purge_target_path() {
@@ -2353,7 +2360,7 @@ clean_project_artifacts() {
         # heading keeps the full count.
         local failed_shown_limit=10
         for ((scan_index = 0; scan_index < ${#failed_scan_roots[@]} && scan_index < failed_shown_limit; scan_index++)); do
-            local display_root="${failed_scan_roots[$scan_index]/#$HOME/~}"
+            local display_root="${failed_scan_roots[$scan_index]/#$HOME/$_PURGE_HOME_TILDE}"
             echo -e "  ${GRAY}${display_root}${NC} (status ${failed_scan_statuses[$scan_index]:-1})"
         done
         if [[ ${#failed_scan_roots[@]} -gt $failed_shown_limit ]]; then
@@ -2503,7 +2510,7 @@ clean_project_artifacts() {
         safe_scan_root_indexes=("${kept_root_indexes[@]+"${kept_root_indexes[@]}"}")
     fi
     for item in "${uninspected_paths[@]+"${uninspected_paths[@]}"}"; do
-        echo -e "${YELLOW}${ICON_WARNING}${NC} Could not inspect ${item/#$HOME/~}; kept" >&2
+        echo -e "${YELLOW}${ICON_WARNING}${NC} Could not inspect ${item/#$HOME/$_PURGE_HOME_TILDE}; kept" >&2
     done
     if [[ ${#safe_to_clean[@]} -eq 0 ]]; then
         echo -e "${GRAY}No eligible project artifacts to purge${NC}"
@@ -2801,7 +2808,7 @@ clean_project_artifacts() {
     for item in "${safe_to_clean[@]}"; do
         local item_index=$_sz_idx
         local project_root="${project_roots[$item_index]}"
-        local project_path="${project_root/#$HOME/~}"
+        local project_path="${project_root/#$HOME/$_PURGE_HOME_TILDE}"
         local artifact_type="${item#"$project_root/"}"
         # Builtin reads keep the old cat mapping: an unreadable result is 0,
         # an empty one or a second line is invalid. The files are removed
@@ -3008,7 +3015,7 @@ clean_project_artifacts() {
         stop_inline_spinner
     fi
     for item in "${size_failed_paths[@]+"${size_failed_paths[@]}"}"; do
-        echo -e "${YELLOW}${ICON_WARNING}${NC} Could not measure ${item/#$HOME/~}; skipped" >&2
+        echo -e "${YELLOW}${ICON_WARNING}${NC} Could not measure ${item/#$HOME/$_PURGE_HOME_TILDE}; skipped" >&2
     done
     # Exit early if no artifacts were found to avoid unbound variable errors
     # when expanding empty arrays with set -u active.

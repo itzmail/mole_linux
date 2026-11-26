@@ -171,7 +171,12 @@ echo ""
 
 echo "2. Running unit tests..."
 if command -v bats > /dev/null 2>&1 && [ -d "tests" ]; then
-    if [[ -z "${TERM:-}" ]]; then
+    # bats needs a real terminfo entry; it exits 1 with zero assertions without
+    # one. A non-interactive bash supplies TERM=dumb rather than leaving it
+    # empty, so an emptiness check never fires for the case this guard exists
+    # for, and `make test` reported "Unit tests failed" after running 28 of
+    # 1935 assertions with nothing actually broken.
+    if [[ -z "${TERM:-}" || "${TERM}" == "dumb" ]]; then
         export TERM="xterm-256color"
     fi
     if [[ $# -eq 0 ]]; then
